@@ -1,0 +1,174 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { createClient } from "@/lib/supabase-browser";
+import {
+  ArrowLeft,
+  Plus,
+  GitMerge,
+  Trash2,
+  Edit2,
+  Zap,
+  Calendar,
+} from "lucide-react";
+import type { MappingProfile } from "@/lib/types";
+
+interface Props {
+  profiles: MappingProfile[];
+}
+
+export default function MappingsListClient({ profiles: initial }: Props) {
+  const router = useRouter();
+  const supabase = createClient();
+  const [profiles, setProfiles] = useState(initial);
+
+  async function handleDelete(id: string, name: string) {
+    if (!confirm(`Delete mapping profile "${name}"?`)) return;
+    await supabase.from("mapping_profiles").delete().eq("id", id);
+    setProfiles((p: MappingProfile[]) => p.filter((x) => x.id !== id));
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-950 text-white">
+      <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top_right,_rgba(99,102,241,0.06)_0%,_transparent_50%)] pointer-events-none" />
+
+      {/* Header */}
+      <header className="sticky top-0 z-50 bg-gray-900/80 backdrop-blur-xl border-b border-gray-800">
+        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => router.push("/dashboard")}
+              className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors text-sm"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              Dashboard
+            </button>
+            <span className="text-gray-700">|</span>
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center">
+                <GitMerge className="w-3.5 h-3.5 text-white" />
+              </div>
+              <span className="font-semibold text-white">Field Mappings</span>
+            </div>
+          </div>
+
+          <button
+            onClick={() => router.push("/mappings/new")}
+            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-all shadow-lg shadow-indigo-600/20"
+          >
+            <Plus className="w-4 h-4" />
+            New Profile
+          </button>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-6 py-10">
+        <div className="mb-8">
+          <h2 className="text-3xl font-bold text-white">Mapping Profiles</h2>
+          <p className="text-gray-400 mt-1">
+            Define how source fields map to target fields for your tasks.
+          </p>
+        </div>
+
+        {profiles.length === 0 ? (
+          <div className="bg-gray-900 border border-gray-800 rounded-3xl p-16 text-center">
+            <div className="w-16 h-16 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mx-auto mb-4">
+              <GitMerge className="w-8 h-8 text-indigo-400" />
+            </div>
+            <h3 className="text-white font-semibold text-lg mb-2">
+              No mapping profiles yet
+            </h3>
+            <p className="text-gray-500 text-sm mb-6 max-w-sm mx-auto">
+              Create a profile to visually map source fields (Excel / API) to
+              your target destination fields.
+            </p>
+            <button
+              onClick={() => router.push("/mappings/new")}
+              className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition-all"
+            >
+              <Plus className="w-4 h-4" />
+              Create First Profile
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {profiles.map((p) => {
+              const srcCount = p.source_fields?.length ?? 0;
+              const tgtCount = p.target_fields?.length ?? 0;
+              const mapCount = p.mappings?.length ?? 0;
+
+              return (
+                <div
+                  key={p.id}
+                  className="bg-gray-900 border border-gray-800 hover:border-indigo-500/40 rounded-2xl p-6 shadow-lg transition-all group cursor-pointer"
+                  onClick={() => router.push(`/mappings/${p.id}`)}
+                >
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center group-hover:bg-indigo-500/20 transition-colors">
+                      <GitMerge className="w-5 h-5 text-indigo-400" />
+                    </div>
+                    <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        onClick={() => router.push(`/mappings/${p.id}`)}
+                        className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-gray-700 flex items-center justify-center text-gray-400 hover:text-white transition-all"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleDelete(p.id, p.name)}
+                        className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-red-500/20 flex items-center justify-center text-gray-400 hover:text-red-400 transition-all"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <h3 className="text-white font-semibold mb-1 truncate">
+                    {p.name}
+                  </h3>
+                  {p.description && (
+                    <p className="text-gray-500 text-xs mb-4 line-clamp-2">
+                      {p.description}
+                    </p>
+                  )}
+
+                  {/* Stats */}
+                  <div className="flex items-center gap-3 mt-4 pt-4 border-t border-gray-800">
+                    <div className="flex items-center gap-1.5">
+                      <Zap className="w-3 h-3 text-yellow-400" />
+                      <span className="text-xs text-gray-400">
+                        {srcCount} source
+                      </span>
+                    </div>
+                    <span className="text-gray-700">→</span>
+                    <div className="flex items-center gap-1.5">
+                      <Zap className="w-3 h-3 text-emerald-400" />
+                      <span className="text-xs text-gray-400">
+                        {tgtCount} target
+                      </span>
+                    </div>
+                    <div className="ml-auto flex items-center gap-1 text-xs text-indigo-400 font-medium">
+                      <GitMerge className="w-3 h-3" />
+                      {mapCount} mapped
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1 mt-3 text-xs text-gray-600">
+                    <Calendar className="w-3 h-3" />
+                    Updated{" "}
+                    {new Date(p.updated_at).toLocaleDateString(undefined, {
+                      month: "short",
+                      day: "numeric",
+                      year: "numeric",
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
