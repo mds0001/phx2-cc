@@ -136,6 +136,80 @@ export async function POST(request: NextRequest) {
         }
       }
 
+      // ── Dell Premier ─────────────────────────────────────────
+      case "dell": {
+        const { base_url, client_id, client_secret, forwarded_client_id, scope } = config;
+        if (!base_url)    return result(false, "No Base URL configured");
+        if (!client_id)   return result(false, "No Client ID configured");
+        if (!client_secret) return result(false, "No Client Secret configured");
+
+        const tokenUrl = `${base_url.replace(/\/$/, "")}/auth/oauth/v2/token`;
+        const body = new URLSearchParams({
+          grant_type:    "client_credentials",
+          client_id,
+          client_secret,
+          scope: scope || "oob",
+        });
+
+        try {
+          const res = await fetch(tokenUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+              ...(forwarded_client_id ? { "X-FORWARDED-CLIENT-ID": forwarded_client_id } : {}),
+            },
+            body: body.toString(),
+            signal: AbortSignal.timeout(10000),
+          });
+
+          if (res.ok) {
+            const data = await res.json().catch(() => ({}));
+            const tokenType = data.token_type ?? "Bearer";
+            const expiresIn = data.expires_in ? ` (expires in ${data.expires_in}s)` : "";
+            if (data.access_token) {
+              return result(true, `OAuth token obtained — ${tokenType}${expiresIn}`);
+            }
+            return result(false, `HTTP ${res.status} but no access_token in response`);
+          }
+
+          const body2 = await res.text().catch(() => "");
+          return result(false, `Token request failed — HTTP ${res.status}: ${body2.slice(0, 200) || res.statusText}`);
+        } catch (e) {
+          return result(false, `Unreachable: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+
+      // ── CDW ──────────────────────────────────────────────────
+      case "cdw": {
+        const { base_url, subscription_key } = config;
+        if (!base_url)         return result(false, "No Base URL configured");
+        if (!subscription_key) return result(false, "No Subscription Key configured");
+
+        // Ping the CDW API Management portal root — a HEAD request is enough
+        // to confirm the key is accepted and the gateway is reachable.
+        const pingUrl = base_url.replace(/\/$/, "");
+        try {
+          const res = await fetch(pingUrl, {
+            method: "GET",
+            headers: {
+              "Ocp-Apim-Subscription-Key": subscription_key,
+              Accept: "application/json",
+            },
+            signal: AbortSignal.timeout(10_000),
+          });
+
+          // 200/201 = connected and authorised
+          // 401/403 = gateway reached but key rejected
+          // 404     = gateway reached, path unknown (still means connectivity works)
+          if (res.status === 401 || res.status === 403) {
+            return result(false, `Gateway reachable but subscription key rejected — HTTP ${res.status}`);
+          }
+          return result(true, `CDW gateway reachable — HTTP ${res.status}`);
+        } catch (e) {
+          return result(false, `Unreachable: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+
       default:
         return result(false, `Unknown connection type: ${type}`);
     }

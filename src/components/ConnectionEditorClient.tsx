@@ -6,7 +6,7 @@ import {
   ArrowLeft, Plug, Save, Check, Eye, EyeOff,
   File, Cloud, Mail, Database, Globe,
   Upload, X, FileText, Loader2, Zap,
-  Wifi, WifiOff, FlaskConical,
+  Wifi, WifiOff, FlaskConical, ShoppingCart, Package,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
 import type { EndpointConnection, ConnectionType } from "@/lib/types";
@@ -18,7 +18,9 @@ const TYPE_OPTIONS: { value: ConnectionType; label: string; icon: React.ReactNod
   { value: "smtp",   label: "SMTP",    icon: <Mail     className="w-5 h-5" />, desc: "Email / SMTP server" },
   { value: "odbc",   label: "ODBC",    icon: <Database className="w-5 h-5" />, desc: "Database via ODBC" },
   { value: "portal", label: "Portal",  icon: <Globe    className="w-5 h-5" />, desc: "Web portal / API" },
-  { value: "ivanti", label: "Ivanti",  icon: <Zap      className="w-5 h-5" />, desc: "Ivanti Neurons for Service Management" },
+  { value: "ivanti", label: "Ivanti",  icon: <Zap          className="w-5 h-5" />, desc: "Ivanti Neurons for Service Management" },
+  { value: "dell",   label: "Dell",    icon: <ShoppingCart className="w-5 h-5" />, desc: "Dell Premier API — catalog, quotes & orders" },
+  { value: "cdw",    label: "CDW",     icon: <Package      className="w-5 h-5" />, desc: "CDW API — PO status, orders & catalog" },
 ];
 
 const TYPE_COLOR: Record<ConnectionType, string> = {
@@ -28,6 +30,8 @@ const TYPE_COLOR: Record<ConnectionType, string> = {
   odbc:   "bg-violet-500/10 border-violet-500/40 text-violet-400",
   portal: "bg-rose-500/10 border-rose-500/40 text-rose-400",
   ivanti: "bg-orange-500/10 border-orange-500/40 text-orange-400",
+  dell:   "bg-blue-500/10 border-blue-500/40 text-blue-400",
+  cdw:    "bg-red-500/10 border-red-500/40 text-red-400",
 };
 
 const TYPE_RING: Record<ConnectionType, string> = {
@@ -37,6 +41,8 @@ const TYPE_RING: Record<ConnectionType, string> = {
   odbc:   "ring-violet-500",
   portal: "ring-rose-500",
   ivanti: "ring-orange-500",
+  dell:   "ring-blue-500",
+  cdw:    "ring-red-500",
 };
 
 // ── Field helper components ──────────────────────────────────
@@ -340,6 +346,138 @@ function IvantiForm({ config, onChange }: { config: Record<string, string>; onCh
   );
 }
 
+function DellForm({ config, onChange }: { config: Record<string, string>; onChange: (k: string, v: string) => void }) {
+  return (
+    <>
+      <div className="flex items-center gap-2 px-4 py-3 bg-blue-500/10 border border-blue-500/20 rounded-xl">
+        <ShoppingCart className="w-4 h-4 text-blue-400 shrink-0" />
+        <p className="text-xs text-blue-300">Dell Premier API — OAuth 2.0 (Client Credentials). Credentials are provided by your Dell Account Representative via TechDirect.</p>
+      </div>
+
+      <Field label="Base URL">
+        <TextInput
+          value={config.base_url ?? "https://apigtwb2c.us.dell.com"}
+          onChange={(v) => onChange("base_url", v)}
+          placeholder="https://apigtwb2c.us.dell.com"
+          type="url"
+        />
+        <p className="text-xs text-gray-500 mt-1">Dell API Gateway — do not change unless instructed by Dell</p>
+      </Field>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Field label="Client ID">
+          <TextInput
+            value={config.client_id ?? ""}
+            onChange={(v) => onChange("client_id", v)}
+            placeholder="Provided by Dell Integration Team"
+          />
+        </Field>
+        <Field label="Client Secret">
+          <PasswordInput
+            value={config.client_secret ?? ""}
+            onChange={(v) => onChange("client_secret", v)}
+            placeholder="Provided by Dell Integration Team"
+          />
+        </Field>
+      </div>
+
+      <Field label="X-Forwarded-Client-ID">
+        <TextInput
+          value={config.forwarded_client_id ?? ""}
+          onChange={(v) => onChange("forwarded_client_id", v)}
+          placeholder="e.g. CA_17_12_Test_CN_CLIENTID_Catalog"
+        />
+        <p className="text-xs text-gray-500 mt-1">Required header value provided by Dell — identifies your integration to the API Gateway</p>
+      </Field>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Field label="Premier Account / Store ID (optional)">
+          <TextInput
+            value={config.premier_account_id ?? ""}
+            onChange={(v) => onChange("premier_account_id", v)}
+            placeholder="Your Dell Premier account ID"
+          />
+        </Field>
+        <Field label="OAuth Scope">
+          <TextInput
+            value={config.scope ?? "oob"}
+            onChange={(v) => onChange("scope", v)}
+            placeholder="oob"
+          />
+          <p className="text-xs text-gray-500 mt-1">Default: <span className="font-mono">oob</span></p>
+        </Field>
+      </div>
+
+      <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 text-xs text-gray-400 space-y-1.5">
+        <p className="font-semibold text-gray-300">Available APIs with these credentials:</p>
+        <p>• <span className="text-blue-400 font-mono">POST /auth/oauth/v2/token</span> — get Bearer token (auto-managed)</p>
+        <p>• <span className="text-blue-400 font-mono">GET /PROD/CatalogAPI/</span> — product catalog &amp; negotiated pricing</p>
+        <p>• <span className="text-blue-400 font-mono">GET /api/quote/{"{QuoteNumber}/{QuoteVersion}/{locale}"}</span> — quote details</p>
+        <p>• <span className="text-blue-400 font-mono">GET /v1/premier/orderstatus</span> — order status by date range</p>
+        <p>• <span className="text-blue-400 font-mono">POST</span> — Purchase Order, POA, ASN, Invoice APIs</p>
+      </div>
+    </>
+  );
+}
+
+function CdwForm({ config, onChange }: { config: Record<string, string>; onChange: (k: string, v: string) => void }) {
+  return (
+    <>
+      <div className="flex items-center gap-2 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-xl">
+        <Package className="w-4 h-4 text-red-400 shrink-0" />
+        <p className="text-xs text-red-300">
+          CDW API access requires approval. Contact{" "}
+          <span className="font-mono">apiuser@cdw.com</span> with your account number and use-case.
+          Once approved, CDW provides endpoint URLs and subscription keys via their Azure API Management portal.
+        </p>
+      </div>
+
+      <Field label="Base URL">
+        <TextInput
+          value={config.base_url ?? "https://portal.apiconnect.cdw.com"}
+          onChange={(v) => onChange("base_url", v)}
+          placeholder="https://portal.apiconnect.cdw.com"
+          type="url"
+        />
+        <p className="text-xs text-gray-500 mt-1">
+          Endpoint URL provided by CDW — typically under{" "}
+          <span className="font-mono">portal.apiconnect.cdw.com</span>
+        </p>
+      </Field>
+
+      <Field label="Subscription Key">
+        <PasswordInput
+          value={config.subscription_key ?? ""}
+          onChange={(v) => onChange("subscription_key", v)}
+          placeholder="Ocp-Apim-Subscription-Key value from CDW portal"
+        />
+        <p className="text-xs text-gray-500 mt-1">
+          Azure API Management subscription key — sent as{" "}
+          <span className="font-mono">Ocp-Apim-Subscription-Key</span> header
+        </p>
+      </Field>
+
+      <Field label="CDW Account Number (optional)">
+        <TextInput
+          value={config.account_number ?? ""}
+          onChange={(v) => onChange("account_number", v)}
+          placeholder="Your CDW customer account number"
+        />
+      </Field>
+
+      <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 text-xs text-gray-400 space-y-1.5">
+        <p className="font-semibold text-gray-300">Available APIs (after approval):</p>
+        <p>• <span className="text-red-400 font-mono">PO Status API</span> — real-time purchase order status &amp; history</p>
+        <p>• <span className="text-red-400 font-mono">Customer Order API</span> — submit and track orders</p>
+        <p>• <span className="text-red-400 font-mono">PO Confirmation API</span> — acknowledge CDW purchase orders</p>
+        <p>• <span className="text-red-400 font-mono">Catalog / Pricing API</span> — product catalog and negotiated pricing</p>
+        <p>• <span className="text-red-400 font-mono">eProcurement (cXML / EDI)</span> — deep ERP integrations (Ariba, Coupa, Oracle)</p>
+        <p className="pt-1 text-gray-500">Developer portal: <span className="font-mono">portal.apiconnect.cdw.com</span></p>
+      </div>
+    </>
+  );
+}
+
 // ── Main editor ───────────────────────────────────────────────
 export default function ConnectionEditorClient({
   connection,
@@ -379,6 +517,8 @@ export default function ConnectionEditorClient({
       t === "odbc"   ? { port: "1433" } :
       t === "smtp"   ? { port: "587" } :
       t === "ivanti" ? { business_object: "CI__Computers", api_key: "251E668B0B42478EB3DA9D6E8446CA0B" } :
+      t === "dell"   ? { base_url: "https://apigtwb2c.us.dell.com", scope: "oob" } :
+      t === "cdw"    ? { base_url: "https://portal.apiconnect.cdw.com" } :
       {}
     );
   }
@@ -507,7 +647,7 @@ export default function ConnectionEditorClient({
         {/* Type Selector */}
         <section className="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
           <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Connection Type</h2>
-          <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
+          <div className="grid grid-cols-4 sm:grid-cols-8 gap-3">
             {TYPE_OPTIONS.map((opt) => {
               const active = type === opt.value;
               return (
@@ -560,6 +700,8 @@ export default function ConnectionEditorClient({
           {type === "odbc"   && <OdbcForm   config={config} onChange={setConfigField} />}
           {type === "portal" && <PortalForm config={config} onChange={setConfigField} />}
           {type === "ivanti" && <IvantiForm config={config} onChange={setConfigField} />}
+          {type === "dell"   && <DellForm   config={config} onChange={setConfigField} />}
+          {type === "cdw"    && <CdwForm    config={config} onChange={setConfigField} />}
         </section>
 
         {/* Save footer */}

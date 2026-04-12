@@ -19,25 +19,33 @@ import {
   Zap,
   GitMerge,
   Plug,
+  Users,
+  AlertTriangle,
+  Shield,
 } from "lucide-react";
-import type { Profile } from "@/lib/types";
+import type { Profile, UserRole } from "@/lib/types";
 
 interface Counts {
   active: number;
   waiting: number;
   completed: number;
   total: number;
+  bohAttention: number;
 }
 
 interface Props {
   profile: Profile | null;
   initialCounts: Counts;
+  role: UserRole;
 }
 
-export default function DashboardClient({ profile, initialCounts }: Props) {
+export default function DashboardClient({ profile, initialCounts, role }: Props) {
+  const isAdmin = role === "administrator";
   const router = useRouter();
   const supabase = createClient();
   const { theme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   const [counts, setCounts] = useState<Counts>(initialCounts);
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 
@@ -68,12 +76,13 @@ export default function DashboardClient({ profile, initialCounts }: Props) {
             .from("scheduled_tasks")
             .select("status");
           if (data) {
-            setCounts({
+            setCounts((prev) => ({
+              ...prev,
               active: data.filter((t) => t.status === "active").length,
               waiting: data.filter((t) => t.status === "waiting").length,
               completed: data.filter((t) => t.status === "completed").length,
               total: data.length,
-            });
+            }));
           }
         }
       )
@@ -187,7 +196,7 @@ export default function DashboardClient({ profile, initialCounts }: Props) {
               className="w-9 h-9 rounded-xl bg-gray-800 hover:bg-gray-700 flex items-center justify-center text-gray-400 hover:text-white transition-all"
               title="Toggle theme"
             >
-              {theme === "dark" ? (
+              {mounted && theme === "dark" ? (
                 <Sun className="w-4 h-4" />
               ) : (
                 <Moon className="w-4 h-4" />
@@ -295,6 +304,62 @@ export default function DashboardClient({ profile, initialCounts }: Props) {
                 <span className="group-hover:translate-x-1 transition-transform">→</span>
               </div>
             </button>
+
+            {/* Back of House — Administrators only */}
+            {isAdmin && (
+              <button
+                onClick={() => router.push("/boh/customers")}
+                className={`w-full bg-gray-900 hover:bg-gray-800 border rounded-3xl p-6 text-left transition-all duration-200 group shadow-lg ${
+                  counts.bohAttention > 0
+                    ? "border-yellow-500/40 hover:border-yellow-500/60"
+                    : "border-gray-800 hover:border-indigo-500/40"
+                }`}
+              >
+                <div className="flex items-start justify-between mb-4">
+                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-colors ${
+                    counts.bohAttention > 0
+                      ? "bg-yellow-500/10 border border-yellow-500/20 group-hover:bg-yellow-500/20"
+                      : "bg-indigo-500/10 border border-indigo-500/20 group-hover:bg-indigo-500/20"
+                  }`}>
+                    <Users className={`w-6 h-6 ${counts.bohAttention > 0 ? "text-yellow-400" : "text-indigo-400"}`} />
+                  </div>
+                  {counts.bohAttention > 0 && (
+                    <span className="flex items-center gap-1 px-2.5 py-1 bg-yellow-500/15 border border-yellow-500/30 text-yellow-400 rounded-full text-xs font-semibold">
+                      <AlertTriangle className="w-3 h-3" />
+                      {counts.bohAttention} need attention
+                    </span>
+                  )}
+                </div>
+                <h4 className="text-white font-semibold text-lg">Back of House</h4>
+                <p className="text-gray-400 text-sm mt-1">
+                  Customer management, licenses, payments &amp; subscription alerts.
+                </p>
+                <div className={`mt-4 flex items-center gap-1 text-sm font-medium ${counts.bohAttention > 0 ? "text-yellow-400" : "text-indigo-400"}`}>
+                  Open Customers
+                  <span className="group-hover:translate-x-1 transition-transform">→</span>
+                </div>
+              </button>
+            )}
+
+            {/* User Management — Administrators only */}
+            {isAdmin && (
+              <button
+                onClick={() => router.push("/users")}
+                className="w-full bg-gray-900 hover:bg-gray-800 border border-gray-800 hover:border-indigo-500/40 rounded-3xl p-6 text-left transition-all duration-200 group shadow-lg"
+              >
+                <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mb-4 group-hover:bg-indigo-500/20 transition-colors">
+                  <Shield className="w-6 h-6 text-indigo-400" />
+                </div>
+                <h4 className="text-white font-semibold text-lg">User Management</h4>
+                <p className="text-gray-400 text-sm mt-1">
+                  Invite, edit, and manage user accounts and their role permissions.
+                </p>
+                <div className="mt-4 flex items-center gap-1 text-indigo-400 text-sm font-medium">
+                  Manage Users
+                  <span className="group-hover:translate-x-1 transition-transform">→</span>
+                </div>
+              </button>
+            )}
           </div>
 
           {/* Col 2: Task Summary (realtime) */}
@@ -364,12 +429,14 @@ export default function DashboardClient({ profile, initialCounts }: Props) {
                 <h4 className="text-white font-semibold text-lg">{fullName}</h4>
                 <p className="text-gray-400 text-sm">{profile?.email}</p>
 
-                <div className="mt-2 px-3 py-1 rounded-full bg-gray-800 border border-gray-700">
-                  <span className="text-xs font-medium text-gray-300 flex items-center gap-1">
-                    <User className="w-3 h-3" />
-                    {profile?.user_type === "admin"
-                      ? "Administrator"
-                      : "User"}
+                <div className={`mt-2 px-3 py-1 rounded-full border ${
+                  isAdmin
+                    ? "bg-indigo-500/10 border-indigo-500/20"
+                    : "bg-teal-500/10 border-teal-500/20"
+                }`}>
+                  <span className={`text-xs font-medium flex items-center gap-1 ${isAdmin ? "text-indigo-300" : "text-teal-300"}`}>
+                    <Shield className="w-3 h-3" />
+                    {isAdmin ? "Administrator" : "Schedule Administrator"}
                   </span>
                 </div>
 

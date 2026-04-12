@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Plus, Plug, Trash2, Edit2, File, Cloud, Mail, Database, Globe,
-  ArrowLeft, Zap,
+  ArrowLeft, Zap, ShoppingCart, Package,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
 import type { EndpointConnection, ConnectionType } from "@/lib/types";
@@ -15,7 +15,9 @@ const TYPE_META: Record<ConnectionType, { label: string; icon: React.ReactNode; 
   smtp:   { label: "SMTP",   icon: <Mail     className="w-4 h-4" />, color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/25" },
   odbc:   { label: "ODBC",   icon: <Database className="w-4 h-4" />, color: "text-violet-400",  bg: "bg-violet-500/10 border-violet-500/25"   },
   portal: { label: "Portal", icon: <Globe    className="w-4 h-4" />, color: "text-rose-400",    bg: "bg-rose-500/10 border-rose-500/25"       },
-  ivanti: { label: "Ivanti", icon: <Zap      className="w-4 h-4" />, color: "text-orange-400",  bg: "bg-orange-500/10 border-orange-500/25"   },
+  ivanti: { label: "Ivanti", icon: <Zap          className="w-4 h-4" />, color: "text-orange-400", bg: "bg-orange-500/10 border-orange-500/25" },
+  dell:   { label: "Dell",   icon: <ShoppingCart className="w-4 h-4" />, color: "text-blue-400",   bg: "bg-blue-500/10 border-blue-500/25"   },
+  cdw:    { label: "CDW",    icon: <Package      className="w-4 h-4" />, color: "text-red-400",    bg: "bg-red-500/10 border-red-500/25"     },
 };
 
 function configSummary(conn: EndpointConnection): string {
@@ -26,7 +28,9 @@ function configSummary(conn: EndpointConnection): string {
     case "smtp":   return c.server ? `${c.server}:${c.port || "587"}` : "No server";
     case "odbc":   return c.server_name ? `${c.server_name}:${c.port || "1433"}` : "No server";
     case "portal": return c.url         || "No URL";
-    case "ivanti": return c.url         || "No URL";
+    case "ivanti": return c.url      || "No URL";
+    case "dell":   return c.base_url || "No URL";
+    case "cdw":    return c.base_url || "No URL";
     default:       return "";
   }
 }

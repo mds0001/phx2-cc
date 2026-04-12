@@ -20,8 +20,13 @@ import {
   Info,
   Plug,
   ArrowRightLeft,
+  Sparkles,
+  BrainCircuit,
+  Filter,
+  AlertCircle,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
+import { validateFilterExpression } from "@/lib/filterExpression";
 import type {
   MappingProfile,
   FieldDef,
@@ -57,6 +62,7 @@ const TRANSFORMS: { value: TransformType; label: string; desc: string }[] = [
   { value: "trim",      label: "Trim",           desc: "Remove leading/trailing whitespace" },
   { value: "static",    label: "Static Value",   desc: "Always output a fixed value" },
   { value: "concat",    label: "Concat Fields",  desc: "Join two source fields together" },
+  { value: "ai_lookup", label: "AI Lookup",      desc: "Classify using Claude AI from multiple source fields" },
 ];
 
 // ── Helper ─────────────────────────────────────────────────────
@@ -98,6 +104,10 @@ export default function MappingEditorClient({ profile, isNew, userId }: Props) {
   const [targetConnectionId, setTargetConnectionId] = useState<string | null>(
     profile?.target_connection_id ?? null
   );
+  const [filterExpression, setFilterExpression] = useState<string>(
+    profile?.filter_expression ?? ""
+  );
+  const [filterError, setFilterError] = useState<string | null>(null);
   const [connections, setConnections] = useState<EndpointConnection[]>([]);
 
   useEffect(() => {
@@ -242,6 +252,7 @@ export default function MappingEditorClient({ profile, isNew, userId }: Props) {
         mappings,
         source_connection_id: sourceConnectionId ?? null,
         target_connection_id: targetConnectionId ?? null,
+        filter_expression: filterExpression.trim() || null,
         created_by: userId,
       };
 
@@ -276,12 +287,31 @@ export default function MappingEditorClient({ profile, isNew, userId }: Props) {
     }
   }, [
     name, description, sourceFields, targetFields, mappings,
-    sourceConnectionId, targetConnectionId,
+    sourceConnectionId, targetConnectionId, filterExpression,
     userId, isNew, profile, supabase, router,
   ]);
 
+  // ── Add AI Lookup row ────────────────────────────────────────
+  function addAiLookupRow() {
+    setMappings((prev) => [
+      ...prev,
+      {
+        id: uid(),
+        sourceFieldId: "__ai__",         // sentinel — no single source field
+        targetFieldId: targetFields[0]?.id ?? "",
+        transform: "ai_lookup",
+        aiSourceFields: [],
+        aiOutputKey: "",
+        aiPrompt: "",
+      },
+    ]);
+  }
+
   // ── Derived helpers ──────────────────────────────────────────
-  const mappedSourceIds = new Set(mappings.map((m) => m.sourceFieldId));
+  // Exclude the AI sentinel so normal source fields aren't marked as "mapped"
+  const mappedSourceIds = new Set(
+    mappings.filter((m) => m.sourceFieldId !== "__ai__").map((m) => m.sourceFieldId)
+  );
   const mappedTargetIds = new Set(mappings.map((m) => m.targetFieldId));
 
   function getMappingForSource(sourceFieldId: string) {
@@ -479,6 +509,127 @@ export default function MappingEditorClient({ profile, isNew, userId }: Props) {
               </button>
             </p>
           )}
+        </div>
+
+        {/* ── Row Filter ── */}
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
+          <div className="flex items-center gap-2 mb-1">
+            <Filter className="w-4 h-4 text-violet-400" />
+            <h3 className="text-sm font-semibold text-white">Row Filter</h3>
+            <span className="text-xs text-gray-500 ml-1">— skip rows that don&apos;t match this expression</span>
+          </div>
+          <p className="text-xs text-gray-600 mb-4">
+            Leave blank to include all rows. Use field names from your source, e.g.{" "}
+            <code className="text-violet-400 bg-violet-500/10 px-1 py-0.5 rounded">Status == &quot;Active&quot; AND Type != &quot;Laptop&quot;</code>
+          </p>
+
+          <div className="flex flex-col gap-2">
+            <div className="relative">
+              <textarea
+                value={filterExpression}
+                onChange={(e) => {
+                  setFilterExpression(e.target.value);
+                  const err = validateFilterExpression(e.target.value);
+                  setFilterError(err);
+                }}
+                placeholder={`Status == "Active"\nManufacturer == "Dell" AND Type != "Monitor"\n\`Asset Tag\` is_not_empty`}
+                rows={3}
+                spellCheck={false}
+                className={`w-full font-mono text-sm bg-gray-800 border rounded-xl px-4 py-3 text-violet-300 placeholder-gray-600 focus:outline-none focus:ring-2 resize-none leading-relaxed ${
+                  filterError
+                    ? "border-red-500/60 focus:ring-red-500"
+                    : "border-gray-700 focus:ring-violet-500"
+                }`}
+              />
+              {filterExpression.trim() !== "" && !filterError && (
+                <div className="absolute top-3 right-3 flex items-center gap-1 text-emerald-400 text-xs">
+                  <Check className="w-3 h-3" />
+                  valid
+                </div>
+              )}
+            </div>
+
+            {filterError && (
+              <div className="flex items-start gap-2 text-red-400 text-xs bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                {filterError}
+              </div>
+            )}
+
+            {/* Source field chips — click to insert */}
+            {sourceFields.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                <span className="text-xs text-gray-600 self-center">Insert field:</span>
+                {sourceFields.map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => {
+                      const token = f.name.includes(" ") ? `\`${f.name}\`` : f.name;
+                      setFilterExpression((prev) => (prev ? prev + " " + token : token));
+                      setFilterError(validateFilterExpression(
+                        (filterExpression ? filterExpression + " " + token : token)
+                      ));
+                    }}
+                    className="px-2 py-0.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 hover:border-violet-500/50 text-gray-400 hover:text-violet-300 rounded-lg text-xs font-mono transition-all"
+                  >
+                    {f.name}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Quick reference */}
+            <details className="group mt-1">
+              <summary className="text-xs text-gray-600 hover:text-gray-400 cursor-pointer select-none list-none flex items-center gap-1">
+                <ChevronDown className="w-3 h-3 group-open:rotate-180 transition-transform" />
+                Expression syntax reference
+              </summary>
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div className="bg-gray-800/60 rounded-xl p-3 space-y-1.5">
+                  <p className="text-gray-400 font-semibold mb-2">Operators</p>
+                  {[
+                    ["==", "equals"],
+                    ["!=", "not equals"],
+                    [">  <  >=  <=", "numeric compare"],
+                    ["contains", "substring match"],
+                    ["starts_with", "prefix match"],
+                    ["ends_with", "suffix match"],
+                    ["is_empty", "null / blank check"],
+                    ["is_not_empty", "has a value"],
+                  ].map(([op, desc]) => (
+                    <div key={op} className="flex gap-2">
+                      <code className="text-violet-400 w-28 shrink-0">{op}</code>
+                      <span className="text-gray-500">{desc}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="bg-gray-800/60 rounded-xl p-3 space-y-2">
+                  <p className="text-gray-400 font-semibold mb-2">Examples</p>
+                  {[
+                    `Status == "Active"`,
+                    `Type != "Monitor"`,
+                    `Price >= 500`,
+                    `Description contains "server"`,
+                    `\`Asset Tag\` is_not_empty`,
+                    `(Status == "Active" OR Status == "Trial") AND Manufacturer == "Dell"`,
+                  ].map((ex) => (
+                    <code
+                      key={ex}
+                      className="block text-violet-300 bg-gray-900 rounded-lg px-2 py-1 cursor-pointer hover:bg-gray-950 transition-colors truncate"
+                      title={ex}
+                      onClick={() => {
+                        setFilterExpression(ex);
+                        setFilterError(validateFilterExpression(ex));
+                      }}
+                    >
+                      {ex}
+                    </code>
+                  ))}
+                </div>
+              </div>
+            </details>
+          </div>
         </div>
 
         {/* ── Two-panel field browsers ── */}
@@ -749,6 +900,16 @@ export default function MappingEditorClient({ profile, isNew, userId }: Props) {
                 {mappings.length}
               </span>
             </h3>
+            <button
+              type="button"
+              onClick={addAiLookupRow}
+              disabled={sourceFields.length === 0 || targetFields.length === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-500/10 hover:bg-violet-500/20 border border-violet-500/25 text-violet-400 rounded-lg text-xs font-medium transition-all disabled:opacity-40"
+              title="Add an AI Lookup row that classifies data using Claude"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              Add AI Lookup
+            </button>
           </div>
 
           {mappings.length === 0 ? (
@@ -782,6 +943,119 @@ export default function MappingEditorClient({ profile, isNew, userId }: Props) {
               {/* Mapping rows */}
               <div className="divide-y divide-gray-800/60">
                 {mappings.map((mapping) => {
+                  const isAiLookup = mapping.transform === "ai_lookup";
+
+                  // ── AI Lookup row ──────────────────────────
+                  if (isAiLookup) {
+                    const selectedAiSources = mapping.aiSourceFields ?? [];
+                    return (
+                      <div
+                        key={mapping.id}
+                        className="px-5 py-4 hover:bg-gray-800/30 transition-colors bg-violet-500/5 border-l-2 border-violet-500/40"
+                      >
+                        <div className="flex items-center gap-2 mb-3">
+                          <BrainCircuit className="w-4 h-4 text-violet-400 shrink-0" />
+                          <span className="text-xs font-semibold text-violet-300 uppercase tracking-wider">AI Lookup</span>
+                          <button
+                            onClick={() => removeMapping(mapping.id)}
+                            className="ml-auto w-5 h-5 flex items-center justify-center text-gray-600 hover:text-red-400 transition-colors rounded"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                          {/* Source fields multi-select */}
+                          <div className="flex flex-col gap-1.5">
+                            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1">
+                              <span className="w-2 h-2 rounded-full bg-yellow-400 inline-block" />
+                              Source Fields
+                            </p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {sourceFields.map((f) => {
+                                const active = selectedAiSources.includes(f.id);
+                                return (
+                                  <button
+                                    key={f.id}
+                                    type="button"
+                                    onClick={() => {
+                                      const next = active
+                                        ? selectedAiSources.filter((id) => id !== f.id)
+                                        : [...selectedAiSources, f.id];
+                                      updateMapping(mapping.id, { aiSourceFields: next });
+                                    }}
+                                    className={`px-2 py-1 rounded-lg text-xs font-medium border transition-all ${
+                                      active
+                                        ? "bg-yellow-500/20 border-yellow-500/40 text-yellow-300"
+                                        : "bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-500"
+                                    }`}
+                                  >
+                                    {active && <Check className="w-2.5 h-2.5 inline mr-1" />}
+                                    {f.name}
+                                  </button>
+                                );
+                              })}
+                              {sourceFields.length === 0 && (
+                                <p className="text-xs text-gray-600">Add source fields above</p>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* AI output key */}
+                          <div className="flex flex-col gap-1.5">
+                            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1">
+                              <Sparkles className="w-3 h-3 text-violet-400" />
+                              Output Key
+                            </p>
+                            <input
+                              type="text"
+                              value={mapping.aiOutputKey ?? ""}
+                              onChange={(e) =>
+                                updateMapping(mapping.id, { aiOutputKey: e.target.value })
+                              }
+                              placeholder="e.g. device_type"
+                              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-violet-500"
+                            />
+                            <p className="text-xs text-gray-600">Key name in the AI JSON response</p>
+                            <textarea
+                              value={mapping.aiPrompt ?? ""}
+                              onChange={(e) =>
+                                updateMapping(mapping.id, { aiPrompt: e.target.value })
+                              }
+                              placeholder="Custom AI instruction (optional) — e.g. 'Classify using ITIL taxonomy. Device types: Laptop, Desktop, Server, Printer, Network Device.'"
+                              rows={2}
+                              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-violet-500 resize-none mt-1"
+                            />
+                          </div>
+
+                          {/* Target field */}
+                          <div className="flex flex-col gap-1.5">
+                            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1">
+                              <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" />
+                              Target Field
+                            </p>
+                            <div className="relative">
+                              <select
+                                value={mapping.targetFieldId}
+                                onChange={(e) =>
+                                  updateMapping(mapping.id, { targetFieldId: e.target.value })
+                                }
+                                className="w-full appearance-none bg-gray-800 border border-gray-700 rounded-lg pl-3 pr-7 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                              >
+                                <option value="">— Select target field —</option>
+                                {targetFields.map((f) => (
+                                  <option key={f.id} value={f.id}>{f.name}</option>
+                                ))}
+                              </select>
+                              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-500 pointer-events-none" />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  // ── Regular mapping row ────────────────────
                   const srcName = getFieldName(sourceFields, mapping.sourceFieldId);
                   const tgtName = getFieldName(targetFields, mapping.targetFieldId);
 
@@ -817,7 +1091,7 @@ export default function MappingEditorClient({ profile, isNew, userId }: Props) {
                             }
                             className="w-full appearance-none bg-gray-800 border border-gray-700 rounded-lg pl-3 pr-7 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
                           >
-                            {TRANSFORMS.map((t) => (
+                            {TRANSFORMS.filter((t) => t.value !== "ai_lookup").map((t) => (
                               <option key={t.value} value={t.value}>
                                 {t.label}
                               </option>

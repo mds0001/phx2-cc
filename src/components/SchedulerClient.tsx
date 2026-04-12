@@ -29,9 +29,11 @@ import type {
   RuleType,
   RecurrenceType,
   MappingProfile,
+  EndpointConnection,
 } from "@/lib/types";
 import { applyMappingProfile } from "@/lib/types";
-import { GitMerge } from "lucide-react";
+import { evaluateFilter } from "@/lib/filterExpression";
+import { GitMerge, Plug } from "lucide-react";
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -111,6 +113,8 @@ interface FormState {
   ivantiUrl: string;
   file: File | null;
   mappingProfileId: string | null;
+  sourceConnectionId: string | null;
+  targetConnectionId: string | null;
 }
 
 const EMPTY_FORM: FormState = {
@@ -121,6 +125,8 @@ const EMPTY_FORM: FormState = {
   ivantiUrl: "",
   file: null,
   mappingProfileId: null,
+  sourceConnectionId: null,
+  targetConnectionId: null,
 };
 
 // ─── Component ───────────────────────────────────────────────
@@ -153,15 +159,23 @@ export default function SchedulerClient({
 
   const [runningTasks, setRunningTasks] = useState<Set<string>>(new Set());
   const [mappingProfiles, setMappingProfiles] = useState<MappingProfile[]>([]);
+  const [endpointConnections, setEndpointConnections] = useState<EndpointConnection[]>([]);
 
-  // Fetch mapping profiles once on mount
+  // Fetch mapping profiles and endpoint connections once on mount
   useEffect(() => {
     supabase
       .from("mapping_profiles")
-      .select("id, name, source_fields, target_fields, mappings")
+      .select("id, name, source_fields, target_fields, mappings, source_connection_id, target_connection_id")
       .order("name")
       .then(({ data }) => {
         if (data) setMappingProfiles(data as MappingProfile[]);
+      });
+    supabase
+      .from("endpoint_connections")
+      .select("id, name, type, config")
+      .order("name")
+      .then(({ data }) => {
+        if (data) setEndpointConnections(data as EndpointConnection[]);
       });
   }, [supabase]);
 
@@ -285,22 +299,46 @@ export default function SchedulerClient({
                 ? `Using mapping profile "${mappingProfile.name}" (${mappingProfile.mappings.length} mappings)`
                 : "No mapping profile — sending raw row data",
             });
+          }
 
-            // Load target endpoint connection if set on the profile
-            if (mappingProfile?.target_connection_id) {
-              const { data: conn } = await supabase
-                .from("endpoint_connections")
-                .select("*")
-                .eq("id", mappingProfile.target_connection_id)
-                .single();
-              if (conn) {
-                targetConnection = conn.config as Record<string, string>;
-                await supabase.from("task_logs").insert({
-                  task_id: task.id,
-                  action: "INFO",
-                  details: `Using target connection "${conn.name}" [${conn.type.toUpperCase()}]${targetConnection.url ? `: ${targetConnection.url}` : ""}`,
-                });
-              }
+          // Resolve target endpoint connection:
+          // Priority: task-level > mapping profile-level > task ivanti_url (legacy)
+          const resolvedTargetConnId =
+            task.target_connection_id ?? mappingProfile?.target_connection_id ?? null;
+
+          if (resolvedTargetConnId) {
+            const { data: conn } = await supabase
+              .from("endpoint_connections")
+              .select("*")
+              .eq("id", resolvedTargetConnId)
+              .single();
+            if (conn) {
+              targetConnection = conn.config as Record<string, string>;
+              const src = task.target_connection_id ? "task" : "mapping profile";
+              await supabase.from("task_logs").insert({
+                task_id: task.id,
+                action: "INFO",
+                details: `Target connection (${src}): "${conn.name}" [${conn.type.toUpperCase()}]${targetConnection.url ? ` — ${targetConnection.url}` : ""}`,
+              });
+            }
+          }
+
+          // Log source connection if set (used by file-based sources in future)
+          const resolvedSourceConnId =
+            task.source_connection_id ?? mappingProfile?.source_connection_id ?? null;
+          if (resolvedSourceConnId) {
+            const { data: srcConn } = await supabase
+              .from("endpoint_connections")
+              .select("id, name, type")
+              .eq("id", resolvedSourceConnId)
+              .single();
+            if (srcConn) {
+              const src = task.source_connection_id ? "task" : "mapping profile";
+              await supabase.from("task_logs").insert({
+                task_id: task.id,
+                action: "INFO",
+                details: `Source connection (${src}): "${srcConn.name}" [${srcConn.type.toUpperCase()}]`,
+              });
             }
           }
 
@@ -310,10 +348,108 @@ export default function SchedulerClient({
           const effectiveBusinessObject = targetConnection?.business_object ?? undefined;
           const effectiveTenantId       = targetConnection?.tenant_id       ?? undefined;
 
+          // ── Pre-fetch AI lookup results (batched, deduplicated) ──
+          const aiLookupMappings = mappingProfile?.mappings.filter(
+            (m) => m.transform === "ai_lookup"
+          ) ?? [];
+
+          // Cache: JSON.stringify(sourceValues) → AI response
+          const aiCache = new Map<string, Record<string, string>>();
+
+          if (aiLookupMappings.length > 0 && mappingProfile) {
+            const allAiSourceFieldIds = [
+              ...new Set(aiLookupMappings.flatMap((m) => m.aiSourceFields ?? [])),
+            ];
+            const outputKeys = [
+              ...new Set(
+                aiLookupMappings
+                  .map((m) => m.aiOutputKey)
+                  .filter(Boolean) as string[]
+              ),
+            ];
+            const customPrompt =
+              aiLookupMappings.find((m) => m.aiPrompt)?.aiPrompt ?? undefined;
+
+            // Build unique source-value combos across all rows
+            const uniqueCombos = new Map<string, Record<string, string>>();
+            for (const row of rows) {
+              const sourceValues: Record<string, string> = {};
+              for (const fieldId of allAiSourceFieldIds) {
+                const field = mappingProfile.source_fields.find(
+                  (f) => f.id === fieldId
+                );
+                if (field)
+                  sourceValues[field.name] = String(row[field.name] ?? "");
+              }
+              const key = JSON.stringify(sourceValues);
+              if (!uniqueCombos.has(key)) uniqueCombos.set(key, sourceValues);
+            }
+
+            await supabase.from("task_logs").insert({
+              task_id: task.id,
+              action: "INFO",
+              details: `AI Lookup: ${uniqueCombos.size} unique combo(s) — keys: [${outputKeys.join(", ")}]`,
+            });
+
+            for (const [comboKey, sourceValues] of uniqueCombos) {
+              try {
+                const res = await fetch("/api/ai-lookup", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ sourceValues, outputKeys, customPrompt }),
+                });
+                if (res.ok) {
+                  const result = await res.json();
+                  aiCache.set(comboKey, result);
+                }
+              } catch {
+                // Cache miss is fine — applyMappingProfile returns "" for missing keys
+              }
+            }
+          }
+
+          let filteredCount = 0;
           for (let i = 0; i < rows.length; i++) {
             const row = rows[i];
+
+            // Evaluate row filter expression — skip rows that don't match
+            if (mappingProfile?.filter_expression) {
+              const { pass, error } = evaluateFilter(
+                row as Record<string, unknown>,
+                mappingProfile.filter_expression
+              );
+              if (error) {
+                await supabase.from("task_logs").insert({
+                  task_id: task.id,
+                  action: "WARN",
+                  details: `Row filter parse error (row ${i + 1}): ${error}`,
+                });
+              }
+              if (!pass) {
+                filteredCount++;
+                continue;
+              }
+            }
+
+            // Build per-row AI results from cache
+            let aiResults: Record<string, string> | undefined;
+            if (aiLookupMappings.length > 0 && mappingProfile) {
+              const allAiSourceFieldIds = [
+                ...new Set(aiLookupMappings.flatMap((m) => m.aiSourceFields ?? [])),
+              ];
+              const sourceValues: Record<string, string> = {};
+              for (const fieldId of allAiSourceFieldIds) {
+                const field = mappingProfile.source_fields.find(
+                  (f) => f.id === fieldId
+                );
+                if (field)
+                  sourceValues[field.name] = String(row[field.name] ?? "");
+              }
+              aiResults = aiCache.get(JSON.stringify(sourceValues));
+            }
+
             const payload = mappingProfile
-              ? applyMappingProfile(row, mappingProfile)
+              ? applyMappingProfile(row, mappingProfile, aiResults)
               : row;
             await supabase.from("task_logs").insert({
               task_id: task.id,
@@ -348,6 +484,15 @@ export default function SchedulerClient({
                 }`,
               });
             }
+          }
+
+          // Log filter summary if any rows were skipped
+          if (filteredCount > 0) {
+            await supabase.from("task_logs").insert({
+              task_id: task.id,
+              action: "INFO",
+              details: `Row filter: ${filteredCount} of ${rows.length} rows skipped (did not match expression)`,
+            });
           }
         } else if (task.rule_type === "Data Transfer") {
           if (!task.source_file_path)
@@ -553,6 +698,8 @@ export default function SchedulerClient({
         ivanti_url:
           form.ruleType === "Ivanti CI Sync" ? form.ivantiUrl : null,
         mapping_profile_id: form.mappingProfileId ?? null,
+        source_connection_id: form.sourceConnectionId ?? null,
+        target_connection_id: form.targetConnectionId ?? null,
         status: "waiting",
         created_by: userId,
       });
@@ -596,6 +743,8 @@ export default function SchedulerClient({
       ivantiUrl: task.ivanti_url ?? "",
       file: null,
       mappingProfileId: task.mapping_profile_id ?? null,
+      sourceConnectionId: task.source_connection_id ?? null,
+      targetConnectionId: task.target_connection_id ?? null,
     });
   }
 
@@ -637,6 +786,8 @@ export default function SchedulerClient({
               ? editForm.ivantiUrl
               : null,
           mapping_profile_id: editForm.mappingProfileId ?? null,
+          source_connection_id: editForm.sourceConnectionId ?? null,
+          target_connection_id: editForm.targetConnectionId ?? null,
           status: "waiting",
         })
         .eq("id", editTask.id);
@@ -912,6 +1063,78 @@ export default function SchedulerClient({
                           <X className="w-5 h-5" />
                         </button>
                       )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Endpoint Connections */}
+                {(form.ruleType === "Data Transfer" ||
+                  form.ruleType === "Ivanti CI Sync") && (
+                  <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Source Connection */}
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-yellow-400 inline-block" />
+                        Source Endpoint
+                        <span className="text-gray-600 normal-case font-normal">(optional)</span>
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={form.sourceConnectionId ?? ""}
+                          onChange={(e) =>
+                            setForm((p) => ({ ...p, sourceConnectionId: e.target.value || null }))
+                          }
+                          className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent text-sm"
+                        >
+                          <option value="">— None (use task file) —</option>
+                          {endpointConnections.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              [{c.type.toUpperCase()}] {c.name}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => router.push("/connections")}
+                          className="px-3 py-3 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-teal-400 rounded-xl transition-all"
+                          title="Manage connections"
+                        >
+                          <Plug className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Target Connection */}
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" />
+                        Destination Endpoint
+                        <span className="text-gray-600 normal-case font-normal">(optional)</span>
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={form.targetConnectionId ?? ""}
+                          onChange={(e) =>
+                            setForm((p) => ({ ...p, targetConnectionId: e.target.value || null }))
+                          }
+                          className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent text-sm"
+                        >
+                          <option value="">— None (use mapping profile) —</option>
+                          {endpointConnections.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              [{c.type.toUpperCase()}] {c.name}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => router.push("/connections")}
+                          className="px-3 py-3 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-teal-400 rounded-xl transition-all"
+                          title="Manage connections"
+                        >
+                          <Plug className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1380,6 +1603,79 @@ export default function SchedulerClient({
                   </div>
                 )}
 
+                {/* Edit: Endpoint Connections */}
+                {(editForm.ruleType === "Data Transfer" ||
+                  editForm.ruleType === "Ivanti CI Sync") && (
+                  <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Source Connection */}
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-yellow-400 inline-block" />
+                        Source Endpoint
+                        <span className="text-gray-600 normal-case font-normal">(optional)</span>
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={editForm.sourceConnectionId ?? ""}
+                          onChange={(e) =>
+                            setEditForm((p) => ({ ...p, sourceConnectionId: e.target.value || null }))
+                          }
+                          className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent text-sm"
+                        >
+                          <option value="">— None (use task file) —</option>
+                          {endpointConnections.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              [{c.type.toUpperCase()}] {c.name}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => router.push("/connections")}
+                          className="px-3 py-3 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-teal-400 rounded-xl transition-all"
+                          title="Manage connections"
+                        >
+                          <Plug className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Target Connection */}
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" />
+                        Destination Endpoint
+                        <span className="text-gray-600 normal-case font-normal">(optional)</span>
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={editForm.targetConnectionId ?? ""}
+                          onChange={(e) =>
+                            setEditForm((p) => ({ ...p, targetConnectionId: e.target.value || null }))
+                          }
+                          className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent text-sm"
+                        >
+                          <option value="">— None (use mapping profile) —</option>
+                          {endpointConnections.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              [{c.type.toUpperCase()}] {c.name}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => router.push("/connections")}
+                          className="px-3 py-3 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-teal-400 rounded-xl transition-all"
+                          title="Manage connections"
+                        >
+                          <Plug className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Edit: Mapping Profile */}
                 {(editForm.ruleType === "Data Transfer" ||
                   editForm.ruleType === "Ivanti CI Sync") && (
                   <div className="md:col-span-2">
