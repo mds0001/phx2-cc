@@ -53,6 +53,6 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-Write-Host "`nDone\! Last 5 commits:" -ForegroundColor Green
+Write-Host "`nDone! Last 5 commits:" -ForegroundColor Green
 git log --oneline -5
 Read-Host -Prompt "Press Enter to continue..."
