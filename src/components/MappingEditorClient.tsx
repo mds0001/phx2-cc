@@ -292,6 +292,85 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
   const [saveError, setSaveError] = useState<string | null>(null);
   const [filterOpen, setFilterOpen] = useState(() => filterRules.length > 0 || filterExpression.length > 0);
 
+  // ── Auto-Map wizard state ────────────────────────────────────
+  const [autoMapOpen, setAutoMapOpen] = useState(false);
+  const [autoMapStep, setAutoMapStep] = useState<1 | 2 | 3>(1);
+  const [autoMapFile, setAutoMapFile] = useState<File | null>(null);
+  const [autoMapColumns, setAutoMapColumns] = useState<string[]>([]);
+  const [autoMapSamples, setAutoMapSamples] = useState<Record<string, unknown>[]>([]);
+  const [autoMapBoName, setAutoMapBoName] = useState("");
+  const [autoMapConnId, setAutoMapConnId] = useState("");
+  const [autoMapLoading, setAutoMapLoading] = useState(false);
+  const [autoMapError, setAutoMapError] = useState<string | null>(null);
+  const [autoMapSuggestions, setAutoMapSuggestions] = useState<{
+    sourceField: string; targetField: string; confidence: "high" | "medium" | "low"; reason: string;
+  }[]>([]);
+  const [autoMapTargetFields, setAutoMapTargetFields] = useState<string[]>([]);
+  const [autoMapSkipped, setAutoMapSkipped] = useState<Set<string>>(new Set());
+
+  async function handleAutoMapFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setAutoMapFile(file);
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: "array" });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
+    const cols = rows.length > 0 ? Object.keys(rows[0]) : [];
+    setAutoMapColumns(cols);
+    setAutoMapSamples(rows.slice(0, 3));
+    e.target.value = "";
+  }
+
+  async function runAutoMap() {
+    setAutoMapLoading(true);
+    setAutoMapError(null);
+    try {
+      const res = await fetch("/api/auto-map", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          connectionId: autoMapConnId,
+          boName: autoMapBoName,
+          sourceColumns: autoMapColumns,
+          sampleRows: autoMapSamples,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Auto-map failed");
+      setAutoMapSuggestions(data.suggestions ?? []);
+      setAutoMapTargetFields(data.targetFields ?? []);
+      setAutoMapSkipped(new Set());
+      setAutoMapStep(3);
+    } catch (err) {
+      setAutoMapError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAutoMapLoading(false);
+    }
+  }
+
+  function applyAutoMap() {
+    const activeSuggestions = autoMapSuggestions.filter(s => !autoMapSkipped.has(s.sourceField));
+    // Build source fields from mapped columns
+    const newSourceFields: FieldDef[] = autoMapColumns.map(col => ({ id: uid(), name: col }));
+    // Build target fields from all BO fields
+    const newTargetFields: FieldDef[] = autoMapTargetFields.map(f => ({ id: uid(), name: f }));
+    // Build mappings
+    const newMappings: MappingRow[] = activeSuggestions.map(s => {
+      const srcId = newSourceFields.find(f => f.name === s.sourceField)?.id ?? uid();
+      const tgtId = newTargetFields.find(f => f.name === s.targetField)?.id ?? uid();
+      return { id: uid(), sourceFieldId: srcId, targetFieldId: tgtId, transform: "none", staticValue: "", concatFields: [], concatSeparator: "", aiLookupField: "" };
+    });
+    setSourceFields(newSourceFields);
+    setTargetFields(newTargetFields);
+    setMappings(newMappings);
+    setAutoMapOpen(false);
+    setAutoMapStep(1);
+    setAutoMapFile(null);
+    setAutoMapColumns([]);
+    setAutoMapSuggestions([]);
+  }
+
   // ── Source field: Excel upload ───────────────────────────────
   async function handleExcelUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -692,8 +771,15 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
             )}
           </div>
 
-          {/* Save button */}
+          {/* Header actions */}
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => { setAutoMapOpen(true); setAutoMapStep(1); setAutoMapError(null); }}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/30 text-violet-300"
+            >
+              <BrainCircuit className="w-4 h-4" />
+              Auto Map
+            </button>
             <button
               onClick={handleSave}
               disabled={saving}
@@ -2221,7 +2307,7 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
                           return m ? (
                             <p className="text-xs text-indigo-400 truncate">
                               {m.transform === "ai_lookup"
-                                ? `AI → ${m.aiOutputKey || "?"}`
+                                ? `AI \u2192 ${m.aiOutputKey || "?"}`
                                 : m.transform === "ai_guess"
                                   ? "AI Guess"
                                   : m.transform === "static"
@@ -2239,6 +2325,239 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
           </div>
         </div>
       </main>
+
+      {/* Auto-Map Wizard Modal */}
+      {autoMapOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-2xl mx-4 overflow-hidden">
+
+            {/* Modal header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-violet-600 flex items-center justify-center">
+                  <BrainCircuit className="w-4 h-4 text-white" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-semibold text-white">Auto-Map Wizard</h2>
+                  <p className="text-xs text-gray-500">Step {autoMapStep} of 3</p>
+                </div>
+              </div>
+              <button
+                onClick={() => { setAutoMapOpen(false); setAutoMapStep(1); setAutoMapFile(null); setAutoMapColumns([]); setAutoMapError(null); }}
+                className="p-1.5 text-gray-500 hover:text-gray-300 rounded-lg hover:bg-gray-800 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Step progress bar */}
+            <div className="flex gap-1 px-6 pt-4">
+              {[1, 2, 3].map((step) => (
+                <div key={step} className={`h-1 flex-1 rounded-full transition-all ${autoMapStep >= step ? "bg-violet-500" : "bg-gray-700"}`} />
+              ))}
+            </div>
+
+            <div className="px-6 py-5">
+
+              {/* Step 1: Upload file */}
+              {autoMapStep === 1 && (
+                <div className="space-y-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white mb-1">Upload your data file</h3>
+                    <p className="text-xs text-gray-400">Upload the Excel file you want to import. We&apos;ll read the column headers to suggest a mapping.</p>
+                  </div>
+
+                  <label className="flex flex-col items-center justify-center gap-3 w-full h-32 border-2 border-dashed border-gray-700 hover:border-violet-500 rounded-xl cursor-pointer transition-colors bg-gray-800/50 hover:bg-violet-500/5">
+                    <FileSpreadsheet className="w-8 h-8 text-gray-600" />
+                    <span className="text-sm text-gray-400">{autoMapFile ? autoMapFile.name : "Click to upload .xlsx or .xls"}</span>
+                    <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleAutoMapFileUpload} />
+                  </label>
+
+                  {autoMapColumns.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium text-gray-400 mb-2">Detected {autoMapColumns.length} columns:</p>
+                      <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+                        {autoMapColumns.map((col) => (
+                          <span key={col} className="px-2 py-0.5 bg-yellow-500/10 border border-yellow-500/25 text-yellow-300 text-xs rounded-lg">{col}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex justify-end">
+                    <button
+                      onClick={() => setAutoMapStep(2)}
+                      disabled={autoMapColumns.length === 0}
+                      className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 text-white text-sm font-medium rounded-xl transition-all"
+                    >
+                      Next <ArrowRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Step 2: Pick connection + BO name */}
+              {autoMapStep === 2 && (
+                <div className="space-y-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white mb-1">Choose your target system</h3>
+                    <p className="text-xs text-gray-400">Select the Ivanti connection and enter the Business Object name to map into.</p>
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Ivanti Connection</label>
+                    <select
+                      value={autoMapConnId}
+                      onChange={(e) => setAutoMapConnId(e.target.value)}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+                    >
+                      <option value="">— Select a connection —</option>
+                      {connections
+                        .filter((c) => c.type === "ivanti" || (c.type as string) === "ivanti_neurons")
+                        .map((c) => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                    </select>
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Business Object Name</label>
+                    <input
+                      type="text"
+                      value={autoMapBoName}
+                      onChange={(e) => setAutoMapBoName(e.target.value)}
+                      placeholder="e.g. CI__Computers, Vendor, CIManufacturer"
+                      className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 placeholder-gray-600"
+                    />
+                    <p className="text-xs text-gray-500">Must match the Ivanti OData BO name exactly (case-sensitive).</p>
+                  </div>
+
+                  {autoMapError && (
+                    <div className="flex items-start gap-2 p-3 bg-red-500/10 border border-red-500/25 rounded-xl">
+                      <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                      <p className="text-xs text-red-300">{autoMapError}</p>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between">
+                    <button
+                      onClick={() => { setAutoMapStep(1); setAutoMapError(null); }}
+                      className="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium rounded-xl transition-all"
+                    >
+                      <ArrowLeft className="w-4 h-4" /> Back
+                    </button>
+                    <button
+                      onClick={runAutoMap}
+                      disabled={autoMapLoading || !autoMapConnId || !autoMapBoName.trim()}
+                      className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 text-white text-sm font-medium rounded-xl transition-all"
+                    >
+                      {autoMapLoading ? (
+                        <><RefreshCw className="w-4 h-4 animate-spin" /> Analyzing&hellip;</>
+                      ) : (
+                        <><Sparkles className="w-4 h-4" /> Analyze</>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Step 3: Review suggestions */}
+              {autoMapStep === 3 && (
+                <div className="space-y-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white mb-1">Review suggestions</h3>
+                    <p className="text-xs text-gray-400">
+                      AI found {autoMapSuggestions.length} mapping suggestions. Uncheck any you don&apos;t want, then click Apply.
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-gray-700 overflow-hidden">
+                    <div className="max-h-72 overflow-y-auto">
+                      <table className="w-full text-xs">
+                        <thead className="sticky top-0">
+                          <tr className="bg-gray-800 text-gray-400">
+                            <th className="text-left px-3 py-2 font-semibold">Source Column</th>
+                            <th className="text-left px-3 py-2 font-semibold">Target Field</th>
+                            <th className="text-left px-3 py-2 font-semibold">Confidence</th>
+                            <th className="text-center px-3 py-2 font-semibold">Use</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-800">
+                          {autoMapSuggestions.map((s) => {
+                            const skipped = autoMapSkipped.has(s.sourceField);
+                            const confColor =
+                              s.confidence === "high"
+                                ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/25"
+                                : s.confidence === "medium"
+                                ? "text-yellow-400 bg-yellow-500/10 border-yellow-500/25"
+                                : "text-red-400 bg-red-500/10 border-red-500/25";
+                            return (
+                              <tr
+                                key={s.sourceField}
+                                className={`transition-colors ${skipped ? "opacity-40" : "hover:bg-gray-800/50"}`}
+                              >
+                                <td className="px-3 py-2">
+                                  <span className="px-1.5 py-0.5 bg-yellow-500/10 border border-yellow-500/20 text-yellow-300 rounded">{s.sourceField}</span>
+                                </td>
+                                <td className="px-3 py-2">
+                                  <span className="px-1.5 py-0.5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 rounded">{s.targetField}</span>
+                                </td>
+                                <td className="px-3 py-2">
+                                  <span className={`px-2 py-0.5 border rounded-full text-xs font-medium ${confColor}`}>
+                                    {s.confidence}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2 text-center">
+                                  <button
+                                    onClick={() =>
+                                      setAutoMapSkipped((prev) => {
+                                        const next = new Set(prev);
+                                        if (next.has(s.sourceField)) next.delete(s.sourceField);
+                                        else next.add(s.sourceField);
+                                        return next;
+                                      })
+                                    }
+                                    className={`w-5 h-5 rounded border transition-all flex items-center justify-center mx-auto ${
+                                      skipped ? "border-gray-600 bg-transparent" : "border-emerald-500 bg-emerald-500"
+                                    }`}
+                                  >
+                                    {!skipped && <Check className="w-3 h-3 text-white" />}
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-gray-500">
+                    {autoMapSuggestions.length - autoMapSkipped.size} of {autoMapSuggestions.length} mappings will be applied.
+                  </p>
+
+                  <div className="flex items-center justify-between">
+                    <button
+                      onClick={() => { setAutoMapStep(2); setAutoMapError(null); }}
+                      className="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium rounded-xl transition-all"
+                    >
+                      <ArrowLeft className="w-4 h-4" /> Back
+                    </button>
+                    <button
+                      onClick={applyAutoMap}
+                      disabled={autoMapSuggestions.length === autoMapSkipped.size}
+                      className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-sm font-medium rounded-xl transition-all"
+                    >
+                      <Check className="w-4 h-4" /> Apply Mapping
+                    </button>
+                  </div>
+                </div>
+              )}
+
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
