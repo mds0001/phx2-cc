@@ -569,8 +569,18 @@ export default function SchedulerClient({
           // Resolve effective connection from target endpoint
           const effectiveUrl            = fileTargetConnection?.url;
           const effectiveApiKey         = fileTargetConnection?.api_key        ?? undefined;
-          const effectiveBusinessObject = fileTargetConnection?.business_object ?? undefined;
+          // Business object must come from the mapping profile — never fall back to the
+          // connection's default BO, which could silently write to the wrong object.
+          const effectiveBusinessObject = (fileMappingProfile as unknown as { target_business_object?: string })?.target_business_object?.trim() || undefined;
           const effectiveTenantId       = fileTargetConnection?.tenant_id       ?? undefined;
+
+          if (!effectiveBusinessObject && (fileTargetConnType === "ivanti" || fileTargetConnType === "ivanti_neurons")) {
+            await supabase.from("task_logs").insert({
+              task_id: task.id, action: "ERROR",
+              details: `Mapping profile "${fileMappingProfile?.name ?? slot.mapping_profile_id}" has no Business Object set. Open the mapping editor and set the target Business Object before running this task.`,
+            });
+            continue;
+          }
 
           // ── create_only: batch existence check before AI work ──────────────
           // In create_only mode we pre-check which rows already exist in the target
@@ -1012,6 +1022,17 @@ export default function SchedulerClient({
                 action: res.ok ? "SUCCESS" : "WARN",
                 details: `${_label}${_link}`,
               });
+
+              // Surface the Ivanti error detail when the row failed
+              if (!res.ok) {
+                const _errMsg = json?.error ?? json?.message ?? json?.body?.Message ?? json?.body?.error;
+                const _errBody = _errMsg ? String(_errMsg) : JSON.stringify(json).slice(0, 400);
+                await supabase.from("task_logs").insert({
+                  task_id: task.id,
+                  action: "WARN",
+                  details: `Row ${i + 1} Ivanti response: ${_errBody}`,
+                });
+              }
 
               // If the proxy had to strip validated fields on auto-retry, surface a WARN.
               const _strippedFields = json?.strippedFields as string[] | undefined;

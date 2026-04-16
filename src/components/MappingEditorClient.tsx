@@ -155,6 +155,9 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
   const [targetConnectionId, setTargetConnectionId] = useState<string | null>(
     profile?.target_connection_id ?? null
   );
+  const [targetBusinessObject, setTargetBusinessObject] = useState<string>(
+    profile?.target_business_object ?? ""
+  );
   const [filterExpression, setFilterExpression] = useState<string>(
     profile?.filter_expression ?? ""
   );
@@ -300,6 +303,12 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
   const [autoMapSamples, setAutoMapSamples] = useState<Record<string, unknown>[]>([]);
   const [autoMapBoName, setAutoMapBoName] = useState("");
   const [autoMapConnId, setAutoMapConnId] = useState("");
+  const [autoMapBoUrl, setAutoMapBoUrl] = useState("");
+  const [autoMapBoList, setAutoMapBoList] = useState<{ name: string; url: string }[]>([]);
+  const [autoMapBoListLive, setAutoMapBoListLive] = useState(false);
+  const [autoMapBoListLoading, setAutoMapBoListLoading] = useState(false);
+  const [autoMapBoDropdownOpen, setAutoMapBoDropdownOpen] = useState(false);
+  const [autoMapBoHighlight, setAutoMapBoHighlight] = useState(0);
   const [autoMapLoading, setAutoMapLoading] = useState(false);
   const [autoMapError, setAutoMapError] = useState<string | null>(null);
   const [autoMapSuggestions, setAutoMapSuggestions] = useState<{
@@ -307,6 +316,20 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
   }[]>([]);
   const [autoMapTargetFields, setAutoMapTargetFields] = useState<string[]>([]);
   const [autoMapSkipped, setAutoMapSkipped] = useState<Set<string>>(new Set());
+  const [autoMapWarning, setAutoMapWarning] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!autoMapConnId) { setAutoMapBoList([]); return; }
+    setAutoMapBoListLoading(true);
+    setAutoMapBoList([]);
+    setAutoMapBoName("");
+    setAutoMapBoUrl("");
+    fetch("/api/ivanti-bo-list?connectionId=" + autoMapConnId)
+      .then((r) => r.json())
+      .then((d) => { if (Array.isArray(d.bos)) { setAutoMapBoList(d.bos); setAutoMapBoListLive(d.live === true); } })
+      .catch(() => {})
+      .finally(() => setAutoMapBoListLoading(false));
+  }, [autoMapConnId]);
 
   async function handleAutoMapFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -332,6 +355,7 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
         body: JSON.stringify({
           connectionId: autoMapConnId,
           boName: autoMapBoName,
+          boUrl: autoMapBoUrl || undefined,
           sourceColumns: autoMapColumns,
           sampleRows: autoMapSamples,
         }),
@@ -341,6 +365,7 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
       setAutoMapSuggestions(data.suggestions ?? []);
       setAutoMapTargetFields(data.targetFields ?? []);
       setAutoMapSkipped(new Set());
+      setAutoMapWarning(data.warning ?? null);
       setAutoMapStep(3);
     } catch (err) {
       setAutoMapError(err instanceof Error ? err.message : String(err));
@@ -349,13 +374,10 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
     }
   }
 
-  function applyAutoMap() {
+  async function applyAutoMap() {
     const activeSuggestions = autoMapSuggestions.filter(s => !autoMapSkipped.has(s.sourceField));
-    // Build source fields from mapped columns
     const newSourceFields: FieldDef[] = autoMapColumns.map(col => ({ id: uid(), name: col }));
-    // Build target fields from all BO fields
     const newTargetFields: FieldDef[] = autoMapTargetFields.map(f => ({ id: uid(), name: f }));
-    // Build mappings
     const newMappings: MappingRow[] = activeSuggestions.map(s => {
       const srcId = newSourceFields.find(f => f.name === s.sourceField)?.id ?? uid();
       const tgtId = newTargetFields.find(f => f.name === s.targetField)?.id ?? uid();
@@ -364,6 +386,34 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
     setSourceFields(newSourceFields);
     setTargetFields(newTargetFields);
     setMappings(newMappings);
+
+    // Upload the source file and create/update a file endpoint connection named after this profile
+    if (autoMapFile) {
+      try {
+        const ext = autoMapFile.name.split(".").pop()?.toLowerCase() ?? "xlsx";
+        const safeName = autoMapFile.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const storagePath = "connections/" + Date.now() + "_" + safeName;
+        const { error: uploadErr } = await supabase.storage.from("task_files").upload(storagePath, autoMapFile, { upsert: true });
+        if (!uploadErr) {
+          const fileConfig = { file_type: ext, file_mode: "file", file_path: storagePath, file_name: autoMapFile.name };
+          const connName = name.trim() || "Profile";
+          const existingFileConn = sourceConnectionId
+            ? connections.find((c) => c.id === sourceConnectionId && c.type === "file")
+            : null;
+          if (existingFileConn) {
+            await supabase.from("endpoint_connections").update({ name: connName, config: fileConfig }).eq("id", existingFileConn.id);
+          } else {
+            const { data: newConn } = await supabase
+              .from("endpoint_connections")
+              .insert({ name: connName, type: "file", config: fileConfig })
+              .select("id")
+              .single();
+            if (newConn) setSourceConnectionId(newConn.id);
+          }
+        }
+      } catch { /* non-fatal — mappings still applied */ }
+    }
+
     setAutoMapOpen(false);
     setAutoMapStep(1);
     setAutoMapFile(null);
@@ -589,6 +639,7 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
         mappings,
         source_connection_id: sourceConnectionId ?? null,
         target_connection_id: targetConnectionId ?? null,
+        target_business_object: targetBusinessObject.trim() || null,
         filter_expression: filterExpression.trim() || null,
         zip_file_order: zipFileOrder,
         created_by: userId,
@@ -633,7 +684,7 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
   }, [
     name, description, sourceFields, targetFields, mappings,
     sourceConnectionId, targetConnectionId, filterExpression, zipFileOrder,
-    userId, isNew, profile, supabase, router,
+    userId, isNew, profile, supabase, router, targetBusinessObject,
   ]);
 
   // ── AI Guess: loading state for "Fetch from Ivanti" ─────────────────────────
@@ -913,6 +964,7 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
                   </div>
                 ) : null;
               })()}
+
             </div>
 
             {/* Target connection */}
@@ -952,6 +1004,30 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
                     </button>
                   </div>
                 ) : null;
+              })()}
+
+              {/* Target Business Object — required for Ivanti targets, no default */}
+              {targetConnectionId && (() => {
+                const c = connections.find((x) => x.id === targetConnectionId);
+                if (!c || (c.type !== "ivanti" && c.type !== "ivanti_neurons")) return null;
+                return (
+                  <div className="flex flex-col gap-1.5 mt-1">
+                    <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
+                      Business Object
+                      {!targetBusinessObject.trim() && (
+                        <span className="text-red-400 font-normal normal-case">— required</span>
+                      )}
+                    </label>
+                    <input
+                      type="text"
+                      value={targetBusinessObject}
+                      onChange={(e) => setTargetBusinessObject(e.target.value)}
+                      placeholder="e.g. Location, Vendor, CI__Computers"
+                      className={`w-full bg-gray-800 border rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 placeholder-gray-600 ${!targetBusinessObject.trim() ? "border-red-500/50" : "border-gray-700"}`}
+                    />
+                    <p className="text-xs text-gray-500">The Ivanti business object this profile writes to. Must be set explicitly — no default is used.</p>
+                  </div>
+                );
               })()}
             </div>
           </div>
@@ -2367,9 +2443,20 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
                     <p className="text-xs text-gray-400">Upload the Excel file you want to import. We&apos;ll read the column headers to suggest a mapping.</p>
                   </div>
 
-                  <label className="flex flex-col items-center justify-center gap-3 w-full h-32 border-2 border-dashed border-gray-700 hover:border-violet-500 rounded-xl cursor-pointer transition-colors bg-gray-800/50 hover:bg-violet-500/5">
+                  <label
+                    className="flex flex-col items-center justify-center gap-3 w-full h-32 border-2 border-dashed border-gray-700 hover:border-violet-500 rounded-xl cursor-pointer transition-colors bg-gray-800/50 hover:bg-violet-500/5"
+                    onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                    onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const file = e.dataTransfer.files?.[0];
+                      if (!file) return;
+                      handleAutoMapFileUpload({ target: { files: e.dataTransfer.files, value: "" } } as unknown as React.ChangeEvent<HTMLInputElement>);
+                    }}
+                  >
                     <FileSpreadsheet className="w-8 h-8 text-gray-600" />
-                    <span className="text-sm text-gray-400">{autoMapFile ? autoMapFile.name : "Click to upload .xlsx or .xls"}</span>
+                    <span className="text-sm text-gray-400">{autoMapFile ? autoMapFile.name : "Click or drag an .xlsx / .xls file here"}</span>
                     <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleAutoMapFileUpload} />
                   </label>
 
@@ -2421,15 +2508,61 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
                   </div>
 
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Business Object Name</label>
-                    <input
-                      type="text"
-                      value={autoMapBoName}
-                      onChange={(e) => setAutoMapBoName(e.target.value)}
-                      placeholder="e.g. CI__Computers, Vendor, CIManufacturer"
-                      className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 placeholder-gray-600"
-                    />
-                    <p className="text-xs text-gray-500">Must match the Ivanti OData BO name exactly (case-sensitive).</p>
+                    <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                      Business Object Name
+                      {autoMapBoListLoading && <span className="ml-2 text-gray-500 normal-case font-normal">Loading…</span>}
+                    </label>
+                    <div className="relative">
+                      {(() => {
+                        const q = autoMapBoName.toLowerCase();
+                        const filtered = autoMapBoList.filter((b) => b.name.toLowerCase().includes(q)).slice(0, 50);
+                        const accept = (idx: number) => {
+                          const bo = filtered[idx];
+                          if (bo) { setAutoMapBoName(bo.name); setAutoMapBoUrl(bo.url); }
+                          setAutoMapBoDropdownOpen(false);
+                        };
+                        return (
+                          <>
+                            <input
+                              type="text"
+                              value={autoMapBoName}
+                              onChange={(e) => { setAutoMapBoName(e.target.value); setAutoMapBoDropdownOpen(true); setAutoMapBoHighlight(0); }}
+                              onFocus={() => { setAutoMapBoDropdownOpen(true); setAutoMapBoHighlight(0); }}
+                              onBlur={() => setTimeout(() => setAutoMapBoDropdownOpen(false), 150)}
+                              onKeyDown={(e) => {
+                                if (!autoMapBoDropdownOpen || filtered.length === 0) return;
+                                if (e.key === "ArrowDown") { e.preventDefault(); setAutoMapBoHighlight((h) => Math.min(h + 1, filtered.length - 1)); }
+                                else if (e.key === "ArrowUp") { e.preventDefault(); setAutoMapBoHighlight((h) => Math.max(h - 1, 0)); }
+                                else if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); accept(autoMapBoHighlight); }
+                                else if (e.key === "Escape") { setAutoMapBoDropdownOpen(false); }
+                              }}
+                              placeholder={autoMapBoListLoading ? "Loading…" : autoMapBoList.length > 0 ? "Type to search…" : "e.g. Location, Vendor, CI__Computers"}
+                              className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 placeholder-gray-600"
+                            />
+                            {autoMapBoDropdownOpen && filtered.length > 0 && (
+                              <ul className="absolute z-50 mt-1 w-full max-h-52 overflow-y-auto bg-gray-800 border border-gray-700 rounded-xl shadow-xl text-sm">
+                                {filtered.map((bo, i) => (
+                                  <li
+                                    key={bo.name}
+                                    onMouseDown={() => accept(i)}
+                                    className={"px-4 py-2 cursor-pointer text-white " + (i === autoMapBoHighlight ? "bg-violet-600/30" : "hover:bg-violet-600/20")}
+                                  >
+                                    {bo.name}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      {autoMapBoList.length > 0
+                        ? autoMapBoListLive
+                          ? autoMapBoList.length + " business objects from your Ivanti instance."
+                          : "Showing common Ivanti BOs — type a custom name if yours isn\u0027t listed."
+                        : "Enter the Ivanti OData business object name."}
+                    </p>
                   </div>
 
                   {autoMapError && (
@@ -2470,6 +2603,13 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
                       AI found {autoMapSuggestions.length} mapping suggestions. Uncheck any you don&apos;t want, then click Apply.
                     </p>
                   </div>
+
+                  {autoMapWarning && (
+                    <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs">
+                      <span className="mt-0.5">⚠</span>
+                      <span>{autoMapWarning}</span>
+                    </div>
+                  )}
 
                   <div className="rounded-xl border border-gray-700 overflow-hidden">
                     <div className="max-h-72 overflow-y-auto">

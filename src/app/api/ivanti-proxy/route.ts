@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 
 const FALLBACK_API_KEY = "251E668B0B42478EB3DA9D6E8446CA0B";
 
+// Module-level cache: maps "${base}:${boName}" -> resolved (pluralized) BO name.
+// Avoids a $top=0 probe on every row — probe runs once per BO per process lifetime.
+const boNameCache = new Map<string, string>();
+
 // Escape a string value for use inside an OData $filter single-quoted literal.
 function odataEscape(val: string): string {
   return val.replace(/'/g, "''");
@@ -20,8 +24,13 @@ function boNameFromLinkField(fieldName: string): string | null {
 }
 // Convert Excel serial date numbers to ISO date strings for Ivanti.
 // Excel epoch = Dec 30 1899; JS epoch = Jan 1 1970 => offset of 25569 days.
-// Only converts fields whose name contains "date" (case-insensitive) and whose
-// value is an integer in the range 25569–73050 (roughly 1970–2099).
+// Converts fields whose name suggests a date value (case-insensitive keywords)
+// and whose value is an integer in the range 25569–73050 (roughly 1970–2099).
+const DATE_FIELD_KEYWORDS = ["date", "expir", "yearend", "year_end", "fiscal", "warranty", "renewal", "purchased", "retired", "disposed", "received"];
+function looksLikeDateField(key: string): boolean {
+  const k = key.toLowerCase().replace(/[_\s]/g, "");
+  return DATE_FIELD_KEYWORDS.some((kw) => k.includes(kw));
+}
 function convertExcelDates(payload: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = { ...payload };
   for (const [key, value] of Object.entries(result)) {
@@ -30,7 +39,7 @@ function convertExcelDates(payload: Record<string, unknown>): Record<string, unk
       Number.isInteger(value) &&
       value >= 25569 &&
       value <= 73050 &&
-      key.toLowerCase().includes("date")
+      looksLikeDateField(key)
     ) {
       const ms = (value - 25569) * 86_400_000;
       const iso = new Date(ms).toISOString().split("T")[0]; // YYYY-MM-DD
@@ -289,8 +298,7 @@ export async function POST(request: NextRequest) {
       dateConvertedData, ivantiUrl, resolvedKey, tenantId, effectiveObject, linkFieldNames ?? [], linkFieldBoNames ?? {}
     );
 
-    const base     = ivantiUrl.replace(/\/$/, "");
-    const endpoint = `${base}/api/odata/businessobject/${effectiveObject}`;
+    const base = ivantiUrl.replace(/\/$/, "");
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -298,6 +306,30 @@ export async function POST(request: NextRequest) {
       Accept: "application/json",
     };
     if (tenantId) headers["X-Tenant-Id"] = tenantId;
+
+    // Resolve the correct BO endpoint name — try as-is, then pluralized (Ivanti Neurons
+    // uses plural entity set names: Location→Locations, Vendor→Vendors, etc.)
+    // Result is cached at module level so the probe only runs once per BO per process.
+    const cacheKey = `${base}:${effectiveObject}`;
+    let resolvedBoName: string;
+    if (boNameCache.has(cacheKey)) {
+      resolvedBoName = boNameCache.get(cacheKey)!;
+      console.log(`[ivanti-proxy] BO name cache hit: ${effectiveObject} -> ${resolvedBoName}`);
+    } else {
+      resolvedBoName = effectiveObject;
+      const probeNames = effectiveObject.endsWith("s")
+        ? [effectiveObject]
+        : [effectiveObject, effectiveObject + "s"];
+      for (const candidate of probeNames) {
+        try {
+          const probeRes = await fetch(`${base}/api/odata/businessobject/${candidate}?$top=0`, { headers });
+          if (probeRes.ok) { resolvedBoName = candidate; break; }
+        } catch { /* try next */ }
+      }
+      boNameCache.set(cacheKey, resolvedBoName);
+      console.log(`[ivanti-proxy] BO name probe: ${effectiveObject} -> ${resolvedBoName} (cached)`);
+    }
+    const endpoint = `${base}/api/odata/businessobject/${resolvedBoName}`;
 
     // ── Upsert: check for an existing record by upsertKey (default "Name") ────
     const keyField = upsertKey ?? "Name";

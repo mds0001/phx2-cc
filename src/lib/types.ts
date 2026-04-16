@@ -161,6 +161,7 @@ export interface MappingProfile {
   mappings: MappingRow[];
   source_connection_id?: string | null;
   target_connection_id?: string | null;
+  target_business_object?: string | null;
   filter_expression?: string | null;
   /** Ordered list of zip file entries (path + optional per-file target override) */
   zip_file_order?: ZipFileEntry[] | null;
