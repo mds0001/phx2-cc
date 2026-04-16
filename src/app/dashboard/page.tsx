@@ -43,15 +43,34 @@ export default async function DashboardPage() {
     if (flag) bohAttention++;
   }
 
+  const COMPLETED = ["completed", "completed_with_errors", "completed_with_warnings"];
   const counts = {
     active: tasks?.filter((t) => t.status === "active").length ?? 0,
     waiting: tasks?.filter((t) => t.status === "waiting").length ?? 0,
-    completed: tasks?.filter((t) => t.status === "completed").length ?? 0,
+    completed: tasks?.filter((t) => COMPLETED.includes(t.status)).length ?? 0,
+    completedWithErrors: tasks?.filter((t) => t.status === "completed_with_errors").length ?? 0,
+    completedWithWarnings: tasks?.filter((t) => t.status === "completed_with_warnings").length ?? 0,
+    cancelled: tasks?.filter((t) => t.status === "cancelled").length ?? 0,
     total: tasks?.length ?? 0,
     bohAttention,
   };
 
+  // Fetch the 10 most recent SUMMARY log entries so the dashboard can show "Recent Runs"
+  const { data: recentSummaryLogs } = await supabase
+    .from("task_logs")
+    .select("id, task_id, details, created_at, scheduled_tasks(task_name, status)")
+    .eq("action", "SUMMARY")
+    .order("created_at", { ascending: false })
+    .limit(10);
+
   const role = (profile as { role?: string } | null)?.role ?? "schedule_administrator";
 
-  return <DashboardClient profile={profile} initialCounts={counts} role={role as import("@/lib/types").UserRole} />;
+  return (
+    <DashboardClient
+      profile={profile}
+      initialCounts={counts}
+      role={role as import("@/lib/types").UserRole}
+      initialRecentRuns={(recentSummaryLogs ?? []) as unknown as import("@/components/DashboardClient").RecentRun[]}
+    />
+  );
 }

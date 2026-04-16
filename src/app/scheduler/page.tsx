@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
 import SchedulerClient from "@/components/SchedulerClient";
@@ -23,10 +24,12 @@ export default async function SchedulerPage() {
     .order("created_at", { ascending: false });
 
   return (
-    <SchedulerClient
-      profile={profile}
-      initialTasks={tasks ?? []}
-      userId={user.id}
-    />
+    <Suspense>
+      <SchedulerClient
+        profile={profile}
+        initialTasks={tasks ?? []}
+        userId={user.id}
+      />
+    </Suspense>
   );
 }

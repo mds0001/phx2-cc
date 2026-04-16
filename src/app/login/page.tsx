@@ -26,31 +26,19 @@ export default function LoginPage() {
     setError(null);
     setMessage(null);
     setLoading(true);
-
     try {
       if (mode === "login") {
-        const { error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
         router.push("/dashboard");
         router.refresh();
       } else {
         const { error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: {
-              first_name: firstName,
-              last_name: lastName,
-            },
-          },
+          email, password,
+          options: { data: { first_name: firstName, last_name: lastName } },
         });
         if (error) throw error;
-        setMessage(
-          "Account created! Please check your email to confirm your account before logging in."
-        );
+        setMessage("Account created! Check your email to confirm before signing in.");
         setMode("login");
       }
     } catch (err: unknown) {
@@ -61,42 +49,43 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
-      <div className="fixed inset-0 bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950 pointer-events-none" />
-      <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top_right,_rgba(99,102,241,0.08)_0%,_transparent_60%)] pointer-events-none" />
-      <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_bottom_left,_rgba(16,185,129,0.06)_0%,_transparent_60%)] pointer-events-none" />
+    <div className="min-h-screen bg-[#0F172A] flex items-center justify-center p-4 overflow-hidden">
+      {/* Background glows */}
+      <div className="fixed inset-0 pointer-events-none">
+        <div className="absolute top-0 right-0 w-[600px] h-[600px] bg-[radial-gradient(ellipse,rgba(0,245,255,0.07)_0%,transparent_70%)]" />
+        <div className="absolute bottom-0 left-0 w-[600px] h-[600px] bg-[radial-gradient(ellipse,rgba(123,97,255,0.08)_0%,transparent_70%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(15,23,42,0)_0%,rgba(15,23,42,0.8)_100%)]" />
+      </div>
 
       <div className="relative w-full max-w-md">
+        {/* Logo + wordmark */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-indigo-600 mb-4 shadow-lg shadow-indigo-600/30">
-            <Zap className="w-7 h-7 text-white" />
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-4 shadow-lg lg-glow-cyan"
+            style={{ background: "linear-gradient(135deg, #00F5FF 0%, #7B61FF 100%)" }}>
+            <Zap className="w-8 h-8 text-white" strokeWidth={2.5} />
           </div>
-          <h1 className="text-3xl font-bold text-white tracking-tight">phx2</h1>
-          <p className="text-gray-400 mt-1 text-sm">Task Scheduling Platform</p>
+          <h1 className="text-3xl font-bold text-white tracking-tight lg-gradient-text">LuminaGrid</h1>
+          <p className="text-slate-400 mt-1.5 text-sm">Intelligent data flow, anywhere to anywhere.</p>
         </div>
 
-        <div className="bg-gray-900 rounded-3xl border border-gray-800 p-8 shadow-2xl">
-          <div className="flex bg-gray-800 rounded-2xl p-1 mb-8">
-            <button
-              onClick={() => { setMode("login"); setError(null); setMessage(null); }}
-              className={`flex-1 py-2 px-4 rounded-xl text-sm font-medium transition-all duration-200 ${
-                mode === "login"
-                  ? "bg-indigo-600 text-white shadow-md"
-                  : "text-gray-400 hover:text-white"
-              }`}
-            >
-              Sign In
-            </button>
-            <button
-              onClick={() => { setMode("signup"); setError(null); setMessage(null); }}
-              className={`flex-1 py-2 px-4 rounded-xl text-sm font-medium transition-all duration-200 ${
-                mode === "signup"
-                  ? "bg-indigo-600 text-white shadow-md"
-                  : "text-gray-400 hover:text-white"
-              }`}
-            >
-              Sign Up
-            </button>
+        {/* Card */}
+        <div className="bg-[#1E2937] rounded-3xl border border-slate-700/60 p-8 shadow-2xl">
+          {/* Tab switcher */}
+          <div className="flex bg-slate-800/80 rounded-2xl p-1 mb-8">
+            {(["login", "signup"] as Mode[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => { setMode(m); setError(null); setMessage(null); }}
+                className={`flex-1 py-2 px-4 rounded-xl text-sm font-medium transition-all duration-200 ${
+                  mode === m
+                    ? "text-white shadow-md"
+                    : "text-slate-400 hover:text-white"
+                }`}
+                style={mode === m ? { background: "linear-gradient(135deg, #00c8ff 0%, #7B61FF 100%)" } : {}}
+              >
+                {m === "login" ? "Sign In" : "Sign Up"}
+              </button>
+            ))}
           </div>
 
           {error && (
@@ -113,87 +102,59 @@ export default function LoginPage() {
           <form onSubmit={handleSubmit} className="space-y-5">
             {mode === "signup" && (
               <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">
-                    First Name
-                  </label>
-                  <input
-                    type="text"
-                    value={firstName}
-                    onChange={(e) => setFirstName(e.target.value)}
-                    required
-                    placeholder="John"
-                    className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">
-                    Last Name
-                  </label>
-                  <input
-                    type="text"
-                    value={lastName}
-                    onChange={(e) => setLastName(e.target.value)}
-                    required
-                    placeholder="Doe"
-                    className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
-                  />
-                </div>
+                {[["First Name", firstName, setFirstName, "John"], ["Last Name", lastName, setLastName, "Doe"]].map(([label, val, setter, ph]) => (
+                  <div key={label as string}>
+                    <label className="block text-xs font-medium text-slate-400 mb-2 uppercase tracking-wider">{label as string}</label>
+                    <input
+                      type="text" value={val as string}
+                      onChange={(e) => (setter as (v: string) => void)(e.target.value)}
+                      required placeholder={ph as string}
+                      className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/60 focus:border-transparent transition-all"
+                    />
+                  </div>
+                ))}
               </div>
             )}
 
             <div>
-              <label className="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">
-                Email Address
-              </label>
+              <label className="block text-xs font-medium text-slate-400 mb-2 uppercase tracking-wider">Email Address</label>
               <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                placeholder="you@example.com"
-                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+                required placeholder="you@example.com"
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/60 focus:border-transparent transition-all"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">
-                Password
-              </label>
+              <label className="block text-xs font-medium text-slate-400 mb-2 uppercase tracking-wider">Password</label>
               <div className="relative">
                 <input
-                  type={showPassword ? "text" : "password"}
-                  value={password}
+                  type={showPassword ? "text" : "password"} value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  required
-                  minLength={6}
-                  placeholder="••••••••"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all pr-12"
+                  required minLength={6} placeholder="••••••••"
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/60 focus:border-transparent transition-all pr-12"
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors"
-                >
+                <button type="button" onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition-colors">
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
             </div>
 
             <button
-              type="submit"
-              disabled={loading}
-              className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-800 disabled:cursor-not-allowed text-white font-semibold py-3 px-6 rounded-xl transition-all duration-200 shadow-lg shadow-indigo-600/20 hover:shadow-indigo-600/40 mt-2"
+              type="submit" disabled={loading}
+              className="w-full text-white font-semibold py-3 px-6 rounded-xl transition-all duration-200 shadow-lg mt-2 disabled:opacity-60 disabled:cursor-not-allowed lg-glow-cyan"
+              style={{ background: loading ? "#374151" : "linear-gradient(135deg, #00c8ff 0%, #7B61FF 100%)" }}
             >
               {loading
-                ? mode === "login" ? "Signing in…" : "Creating account…"
-                : mode === "login" ? "Sign In" : "Create Account"}
+                ? (mode === "login" ? "Signing in\u2026" : "Creating account\u2026")
+                : (mode === "login" ? "Sign In" : "Create Account")}
             </button>
           </form>
         </div>
 
-        <p className="text-center text-gray-600 text-xs mt-6">
-          phx2 © {new Date().getFullYear()} — Secure Task Scheduling
+        <p className="text-center text-slate-600 text-xs mt-6">
+          LuminaGrid &copy; {new Date().getFullYear()} &mdash; Connect. Transform. Deliver.
         </p>
       </div>
     </div>

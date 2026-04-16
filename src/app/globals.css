@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 :root {
-  --background: #0a0a0f;
+  --background: #0F172A;
   --foreground: #f1f5f9;
 }
 
@@ -40,4 +40,21 @@ body {
 @keyframes spin {
   from { transform: rotate(0deg); }
   to   { transform: rotate(360deg); }
+}
+
+/* LuminaGrid brand gradient */
+.lg-gradient {
+  background: linear-gradient(135deg, #00F5FF 0%, #7B61FF 100%);
+}
+.lg-gradient-text {
+  background: linear-gradient(135deg, #00F5FF 0%, #7B61FF 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.lg-glow-cyan {
+  box-shadow: 0 0 24px rgba(0, 245, 255, 0.20);
+}
+.lg-glow-violet {
+  box-shadow: 0 0 24px rgba(123, 97, 255, 0.25);
 }

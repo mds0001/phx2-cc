@@ -210,6 +210,67 @@ export async function POST(request: NextRequest) {
         }
       }
 
+
+      // ── Ivanti Neurons Inventory API ─────────────────────────
+      case "ivanti_neurons": {
+        const { auth_url, client_id, client_secret, base_url, dataset } = config;
+        if (!auth_url)      return result(false, "No Auth URL configured");
+        if (!client_id)     return result(false, "No Client ID configured");
+        if (!client_secret) return result(false, "No Client Secret configured");
+        if (!base_url)      return result(false, "No Base URL configured");
+
+        // Step 1: obtain token
+        const tokenBody = new URLSearchParams({
+          grant_type:    "client_credentials",
+          client_id,
+          client_secret,
+        });
+
+        let token: string;
+        try {
+          const tokenRes = await fetch(auth_url, {
+            method:  "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body:    tokenBody.toString(),
+            signal:  AbortSignal.timeout(12_000),
+          });
+
+          if (!tokenRes.ok) {
+            const txt = await tokenRes.text().catch(() => "");
+            return result(false, `Token request failed — HTTP ${tokenRes.status}: ${txt.slice(0, 200)}`);
+          }
+
+          const tokenData = await tokenRes.json().catch(() => ({})) as { access_token?: string; expires_in?: number };
+          if (!tokenData.access_token) return result(false, "Token endpoint responded but returned no access_token");
+          token = tokenData.access_token;
+        } catch (e) {
+          return result(false, `Auth URL unreachable: ${e instanceof Error ? e.message : String(e)}`);
+        }
+
+        // Step 2: hit the inventory endpoint ($top=1 to keep it cheap)
+        const ds = dataset || "devices";
+        const inventoryUrl = `${base_url.replace(/\/$/, "")}/${ds}?$top=1`;
+
+        try {
+          const invRes = await fetch(inventoryUrl, {
+            method:  "GET",
+            headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+            signal:  AbortSignal.timeout(12_000),
+          });
+
+          if (invRes.ok) {
+            const data = await invRes.json().catch(() => ({})) as { value?: unknown[]; "@odata.count"?: number };
+            const count = data["@odata.count"] ?? (Array.isArray(data.value) ? data.value.length : "?");
+            return result(true, `Connected — ${count} ${ds} record(s) found`);
+          }
+
+          const body2 = await invRes.text().catch(() => "");
+          return result(false, `Inventory request failed — HTTP ${invRes.status}: ${body2.slice(0, 200)}`);
+        } catch (e) {
+          return result(false, `Base URL unreachable: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+
       default:
         return result(false, `Unknown connection type: ${type}`);
     }

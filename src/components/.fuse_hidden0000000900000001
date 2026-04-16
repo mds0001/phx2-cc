@@ -83,7 +83,7 @@ export default function DashboardClient({ profile, initialCounts, role, initialR
       .eq("action", "SUMMARY")
       .order("created_at", { ascending: false })
       .limit(10);
-    if (data) setRecentRuns(data as unknown as RecentRun[]);
+    if (data) setRecentRuns(data as RecentRun[]);
   }
 
   useEffect(() => {
@@ -380,8 +380,8 @@ export default function DashboardClient({ profile, initialCounts, role, initialR
 
                 const highlight = [
                   statMap["Rows Processed"] ? `${statMap["Rows Processed"]} rows` : null,
-                  statMap["Created"]  && statMap["Created"]  !== "0" ? `${statMap["Created"]} created`  : null,
-                  statMap["Updated"]  && statMap["Updated"]  !== "0" ? `${statMap["Updated"]} updated`  : null,
+                  statMap["Created"]  && statMap["Created"]  \!== "0" ? `${statMap["Created"]} created`  : null,
+                  statMap["Updated"]  && statMap["Updated"]  \!== "0" ? `${statMap["Updated"]} updated`  : null,
                   statMap["Skipped"]  ? `${statMap["Skipped"]} skipped`   : null,
                   statMap["Warnings"] ? `${statMap["Warnings"]} warnings` : null,
                   statMap["Errors"]   ? `${statMap["Errors"]} errors`     : null,
@@ -432,10 +432,3 @@ export default function DashboardClient({ profile, initialCounts, role, initialR
               })}
             </div>
           )}
-
-        </div>
-
-      </main>
-    </div>
-  );
-}

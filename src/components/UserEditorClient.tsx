@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import {
   ArrowLeft,
   Save,
@@ -11,13 +12,26 @@ import {
   Mail,
   Send,
   AlertCircle,
+  Upload,
+  Trash2,
+  Loader2,
 } from "lucide-react";
+import { createClient } from "@/lib/supabase-browser";
 import type { Profile, UserRole } from "@/lib/types";
 
 interface Props {
   user: Profile | null;
   isNew: boolean;
   currentUserId: string;
+}
+
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
+
+function resolveAvatarUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
+  const clean = raw.startsWith("/") ? raw.slice(1) : raw;
+  return `${SUPABASE_URL}/storage/v1/object/public/avatars/${clean}`;
 }
 
 const ROLES: { value: UserRole; label: string; desc: string }[] = [
@@ -35,8 +49,8 @@ const ROLES: { value: UserRole; label: string; desc: string }[] = [
 
 export default function UserEditorClient({ user, isNew, currentUserId }: Props) {
   const router = useRouter();
+  const supabase = createClient();
 
-  // Invite-mode fields
   const [email, setEmail] = useState(user?.email ?? "");
   const [firstName, setFirstName] = useState(user?.first_name ?? "");
   const [lastName, setLastName] = useState(user?.last_name ?? "");
@@ -46,8 +60,59 @@ export default function UserEditorClient({ user, isNew, currentUserId }: Props) 
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Avatar state (edit mode only)
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(
+    resolveAvatarUrl(user?.avatar_url)
+  );
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const [avatarDeleting, setAvatarDeleting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const isMe = !isNew && user?.id === currentUserId;
   const fullName = [user?.first_name, user?.last_name].filter(Boolean).join(" ") || (isNew ? "New User" : "User");
+  const initials = [user?.first_name?.[0], user?.last_name?.[0]].filter(Boolean).join("").toUpperCase() || "?";
+
+  async function handleAvatarUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !user) return;
+    setAvatarUploading(true);
+    try {
+      const ext = file.name.split(".").pop();
+      const path = `${user.id}/avatar.${ext}`;
+      const { error: uploadError } = await supabase.storage
+        .from("avatars")
+        .upload(path, file, { upsert: true });
+      if (uploadError) throw uploadError;
+      const { data: { publicUrl } } = supabase.storage.from("avatars").getPublicUrl(path);
+      await supabase.from("profiles").update({ avatar_url: publicUrl }).eq("id", user.id);
+      setAvatarUrl(resolveAvatarUrl(publicUrl) + "?t=" + Date.now());
+    } catch (err) {
+      alert("Avatar upload failed: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setAvatarUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function handleAvatarDelete() {
+    if (!user || !avatarUrl) return;
+    if (!confirm("Remove this user\'s avatar photo?")) return;
+    setAvatarDeleting(true);
+    try {
+      // List and remove files under the user\'s avatar folder
+      const { data: files } = await supabase.storage.from("avatars").list(user.id);
+      if (files && files.length > 0) {
+        const paths = files.map((f) => `${user.id}/${f.name}`);
+        await supabase.storage.from("avatars").remove(paths);
+      }
+      await supabase.from("profiles").update({ avatar_url: null }).eq("id", user.id);
+      setAvatarUrl(null);
+    } catch (err) {
+      alert("Failed to remove avatar: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setAvatarDeleting(false);
+    }
+  }
 
   async function handleSave() {
     setError(null);
@@ -77,15 +142,10 @@ export default function UserEditorClient({ user, isNew, currentUserId }: Props) 
           }),
         });
       }
-
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Save failed");
-
       setSaved(true);
-      setTimeout(() => {
-        router.push("/users");
-        router.refresh();
-      }, 1200);
+      setTimeout(() => { router.push("/users"); router.refresh(); }, 1200);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -97,7 +157,6 @@ export default function UserEditorClient({ user, isNew, currentUserId }: Props) 
     <div className="min-h-screen bg-gray-950 text-white">
       <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(99,102,241,0.05)_0%,_transparent_50%)] pointer-events-none" />
 
-      {/* Header */}
       <header className="sticky top-0 z-50 bg-gray-900/80 backdrop-blur-xl border-b border-gray-800">
         <div className="max-w-2xl mx-auto px-6 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -129,7 +188,7 @@ export default function UserEditorClient({ user, isNew, currentUserId }: Props) 
             {saved ? (
               <><Check className="w-4 h-4" />{isNew ? "Invited!" : "Saved!"}</>
             ) : saving ? (
-              <><Save className="w-4 h-4 animate-pulse" />{isNew ? "Sending…" : "Saving…"}</>
+              <><Save className="w-4 h-4 animate-pulse" />{isNew ? "Sending..." : "Saving..."}</>
             ) : (
               <>{isNew ? <Send className="w-4 h-4" /> : <Save className="w-4 h-4" />}{isNew ? "Send Invite" : "Save Changes"}</>
             )}
@@ -145,6 +204,70 @@ export default function UserEditorClient({ user, isNew, currentUserId }: Props) 
           </div>
         )}
 
+        {/* Avatar — edit mode only */}
+        {!isNew && (
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <Upload className="w-4 h-4 text-indigo-400" />
+              <h3 className="text-sm font-semibold text-white">Profile Photo</h3>
+            </div>
+            <div className="flex items-center gap-5">
+              <div className="w-16 h-16 rounded-full shrink-0 overflow-hidden border-2 border-gray-700 bg-indigo-600/20">
+                {avatarUrl ? (
+                  <Image
+                    src={avatarUrl}
+                    alt={fullName}
+                    width={64}
+                    height={64}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-indigo-300 font-bold text-lg">
+                    {initials}
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-col gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleAvatarUpload}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={avatarUploading || avatarDeleting}
+                  className="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-xl text-sm text-gray-300 font-medium transition-all disabled:opacity-50"
+                >
+                  {avatarUploading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Upload className="w-4 h-4" />
+                  )}
+                  {avatarUploading ? "Uploading..." : avatarUrl ? "Change Photo" : "Upload Photo"}
+                </button>
+                {avatarUrl && (
+                  <button
+                    type="button"
+                    onClick={handleAvatarDelete}
+                    disabled={avatarUploading || avatarDeleting}
+                    className="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-red-500/20 border border-gray-700 hover:border-red-500/40 rounded-xl text-sm text-gray-400 hover:text-red-400 font-medium transition-all disabled:opacity-50"
+                  >
+                    {avatarDeleting ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="w-4 h-4" />
+                    )}
+                    {avatarDeleting ? "Removing..." : "Remove Photo"}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Personal Info */}
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-5">
           <div className="flex items-center gap-2 mb-1">
@@ -152,7 +275,6 @@ export default function UserEditorClient({ user, isNew, currentUserId }: Props) 
             <h3 className="text-sm font-semibold text-white">Personal Info</h3>
           </div>
 
-          {/* Email (editable only for new users) */}
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
               <Mail className="w-3 h-3" />
@@ -168,13 +290,12 @@ export default function UserEditorClient({ user, isNew, currentUserId }: Props) 
               />
             ) : (
               <div className="flex items-center gap-3 px-4 py-3 bg-gray-800/50 border border-gray-700/50 rounded-xl">
-                <span className="text-white text-sm">{user?.email ?? "—"}</span>
+                <span className="text-white text-sm">{user?.email ?? "no email"}</span>
                 <span className="text-xs text-gray-600 ml-auto">Cannot change email here</span>
               </div>
             )}
           </div>
 
-          {/* Name row */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">First Name</label>
@@ -203,14 +324,13 @@ export default function UserEditorClient({ user, isNew, currentUserId }: Props) 
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-4">
           <div className="flex items-center gap-2">
             <Shield className="w-4 h-4 text-indigo-400" />
-            <h3 className="text-sm font-semibold text-white">Role & Permissions</h3>
+            <h3 className="text-sm font-semibold text-white">Role &amp; Permissions</h3>
             {isMe && (
               <span className="ml-auto text-xs text-yellow-400 bg-yellow-500/10 border border-yellow-500/20 px-2 py-0.5 rounded-full">
                 Editing your own role
               </span>
             )}
           </div>
-
           <div className="space-y-3">
             {ROLES.map((r) => (
               <button
@@ -227,9 +347,7 @@ export default function UserEditorClient({ user, isNew, currentUserId }: Props) 
                   <div className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
                     role === r.value ? "border-indigo-400" : "border-gray-600"
                   }`}>
-                    {role === r.value && (
-                      <div className="w-2 h-2 rounded-full bg-indigo-400" />
-                    )}
+                    {role === r.value && <div className="w-2 h-2 rounded-full bg-indigo-400" />}
                   </div>
                   <div>
                     <p className="text-sm font-semibold text-white">{r.label}</p>
@@ -246,11 +364,11 @@ export default function UserEditorClient({ user, isNew, currentUserId }: Props) 
           <h3 className="text-sm font-semibold text-white mb-4">Access Summary</h3>
           <div className="space-y-2">
             {[
-              { feature: "Scheduler",             admin: true,  sched: true  },
-              { feature: "Field Mappings",         admin: true,  sched: true  },
-              { feature: "Endpoint Connections",   admin: true,  sched: true  },
-              { feature: "Back of House",          admin: true,  sched: false },
-              { feature: "User Management",        admin: true,  sched: false },
+              { feature: "Scheduler",           admin: true,  sched: true  },
+              { feature: "Field Mappings",       admin: true,  sched: true  },
+              { feature: "Endpoint Connections", admin: true,  sched: true  },
+              { feature: "Back of House",        admin: true,  sched: false },
+              { feature: "User Management",      admin: true,  sched: false },
             ].map((row) => {
               const hasAccess = role === "administrator" ? row.admin : row.sched;
               return (
@@ -260,15 +378,13 @@ export default function UserEditorClient({ user, isNew, currentUserId }: Props) 
                     hasAccess ? "bg-emerald-500/5 border border-emerald-500/10" : "bg-gray-800/30 border border-gray-700/30"
                   }`}
                 >
-                  <span className={`text-sm ${hasAccess ? "text-white" : "text-gray-500"}`}>
-                    {row.feature}
-                  </span>
+                  <span className={`text-sm ${hasAccess ? "text-white" : "text-gray-500"}`}>{row.feature}</span>
                   <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
                     hasAccess
                       ? "text-emerald-400 bg-emerald-500/10 border border-emerald-500/20"
                       : "text-gray-600 bg-gray-700/30 border border-gray-700/30"
                   }`}>
-                    {hasAccess ? "✓ Allowed" : "✗ Denied"}
+                    {hasAccess ? "Allowed" : "Denied"}
                   </span>
                 </div>
               );

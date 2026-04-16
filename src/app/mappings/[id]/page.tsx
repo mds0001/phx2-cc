@@ -4,10 +4,13 @@ import MappingEditorClient from "@/components/MappingEditorClient";
 
 export default async function MappingEditorPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { id } = await params;
+  const sp = searchParams ? await searchParams : {};
   const supabase = await createClient();
 
   const {
@@ -32,6 +35,9 @@ export default async function MappingEditorPage({
       profile={profile}
       isNew={id === "new"}
       userId={user.id}
+      returnTo={typeof sp.returnTo === "string" ? sp.returnTo : null}
+      returnMode={typeof sp.returnMode === "string" ? sp.returnMode : null}
+      returnTaskId={typeof sp.returnTaskId === "string" ? sp.returnTaskId : null}
     />
   );
 }

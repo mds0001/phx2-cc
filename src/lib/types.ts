@@ -49,9 +49,8 @@ export interface CustomerLicense {
   created_at: string;
   updated_at: string;
 }
-export type TaskStatus = "waiting" | "active" | "completed" | "cancelled";
+export type TaskStatus = "waiting" | "active" | "completed" | "completed_with_errors" | "completed_with_warnings" | "cancelled";
 export type RecurrenceType = "one-time" | "daily" | "weekly" | "monthly";
-export type RuleType = "Contact Members" | "Data Transfer" | "Ivanti CI Sync";
 
 export interface Profile {
   id: string;
@@ -64,19 +63,27 @@ export interface Profile {
   created_at: string;
 }
 
+export type WriteMode = "upsert" | "create_only";
+
 export interface ScheduledTask {
   id: string;
   task_name: string;
   start_date_time: string;
   end_date_time: string | null;
   recurrence: RecurrenceType;
-  rule_type: RuleType;
   source_file_path: string | null;
   ivanti_url: string | null;
   status: TaskStatus;
   mapping_profile_id: string | null;
   source_connection_id: string | null;
   target_connection_id: string | null;
+  /** Ordered list of mapping profile slots for multi-BO tasks.
+   *  When non-empty, overrides the legacy mapping_profile_id field. */
+  mapping_slots?: MappingSlot[] | null;
+  /** Controls how existing records are handled.
+   *  "upsert" (default) — create new or update existing.
+   *  "create_only"      — skip the row if a record with the same key already exists. */
+  write_mode?: WriteMode;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -104,8 +111,10 @@ export type TransformType =
   | "lowercase"
   | "trim"
   | "static"
+  | "expression"
   | "concat"
-  | "ai_lookup";
+  | "ai_lookup"
+  | "ai_guess";
 
 export interface MappingRow {
   id: string;
@@ -119,6 +128,28 @@ export interface MappingRow {
   aiSourceFields?: string[];  // source field IDs to feed into the AI
   aiOutputKey?: string;       // key to extract from the AI JSON response
   aiPrompt?: string;          // optional custom system prompt / instruction
+  // AI Guess fields (transform === "ai_guess")
+  // AI infers the target field value from source context + optional constraint list.
+  aiGuessSourceFields?: string[];  // source field IDs to include as context (empty = all fields)
+  aiGuessValidValues?: string[];   // constrained valid values — AI must pick one of these
+  aiGuessPrompt?: string;          // optional extra instruction
+  aiGuessPicklistBo?: string;      // Ivanti picklist BO to query for valid values (e.g. "CIStatusCIType")
+  aiGuessPicklistField?: string;   // Field name within the picklist BO that holds the values (e.g. "ivnt_SubType")
+  // When true the proxy resolves this target field's value to an Ivanti RecID
+  // before posting, regardless of whether the field name ends in "Link".
+  isLinkField?: boolean;
+  // Explicit Ivanti business-object name to query when resolving this link field
+  // (e.g. "Location", "Employee"). Overrides the name auto-derived from the field name.
+  linkFieldBoName?: string;
+}
+
+/** A single file entry within a ZIP source — carries its path, an optional
+ *  per-file target connection override, and an optional per-file mapping
+ *  profile override (null = use the parent mapping profile). */
+export interface ZipFileEntry {
+  path: string;
+  target_connection_id?: string | null;
+  mapping_profile_id?: string | null;
 }
 
 export interface MappingProfile {
@@ -131,16 +162,39 @@ export interface MappingProfile {
   source_connection_id?: string | null;
   target_connection_id?: string | null;
   filter_expression?: string | null;
+  /** Ordered list of zip file entries (path + optional per-file target override) */
+  zip_file_order?: ZipFileEntry[] | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
 }
 
+/** A single slot in a multi-profile task — bundles a mapping profile reference
+ *  with an optional display label. Source and target connections are resolved
+ *  from the referenced mapping profile (same as single-profile tasks). */
+export interface MappingSlot {
+  id: string;
+  mapping_profile_id: string | null;
+  label?: string;
+}
+
 // ── Endpoint connections ──────────────────────────────────────
 
-export type ConnectionType = "file" | "cloud" | "smtp" | "odbc" | "portal" | "ivanti" | "dell" | "cdw";
+export type ConnectionType = "file" | "cloud" | "smtp" | "odbc" | "portal" | "ivanti" | "ivanti_neurons" | "dell" | "cdw" | "azure";
 
-export interface FileConfig   { file_path: string; file_name?: string }
+export type FileType = "xlsx" | "json" | "xml" | "csv";
+export type FileMode = "file" | "directory";
+export interface FileConfig {
+  file_type: FileType;
+  file_mode: FileMode;
+  file_path: string;        // storage path (file mode) or directory prefix (directory mode)
+  file_name?: string;       // display name of the selected file
+  output_file_name?: string; // explicit output filename (directory mode)
+  /** When true, the uploaded file is a ZIP containing multiple files to process */
+  zip_mode?: boolean;
+  /** Glob-style filter applied to entries inside the zip, e.g. "*.xlsx" */
+  zip_file_filter?: string;
+}
 export interface CloudConfig  { url: string; customer_id: string; customer_secret: string }
 export interface SmtpConfig   { server: string; port: string; login_name: string; password: string }
 export interface OdbcConfig   { server_name: string; login_name: string; password: string; port: string }
@@ -150,6 +204,14 @@ export interface IvantiConfig {
   api_key: string;
   business_object: string;
   tenant_id?: string;
+}
+
+export interface IvantiNeuronsConfig {
+  auth_url: string;       // e.g. https://<tenant>.ivanticloud.com/<tenant-id>/connect/token
+  client_id: string;      // OAuth2 App Registration Client ID
+  client_secret: string;  // OAuth2 App Registration Client Secret
+  base_url: string;       // e.g. https://<tenant>.ivanticloud.com/api/apigatewaydataservices/v1
+  dataset: string;        // "devices" | "people"
 }
 
 export interface DellConfig {
@@ -167,8 +229,16 @@ export interface CdwConfig {
   account_number?: string;    // CDW customer account number
 }
 
+export interface AzureConfig {
+  tenant_id: string;   // Azure AD Tenant ID
+  client_id: string;   // App Registration Client ID
+  client_secret: string;
+  scope: string;       // e.g. https://graph.microsoft.com/.default
+  base_url: string;    // API base URL after auth
+}
+
 export type ConnectionConfig =
-  | FileConfig | CloudConfig | SmtpConfig | OdbcConfig | PortalConfig | IvantiConfig | DellConfig | CdwConfig;
+  | FileConfig | CloudConfig | SmtpConfig | OdbcConfig | PortalConfig | IvantiConfig | IvantiNeuronsConfig | DellConfig | CdwConfig | AzureConfig;
 
 export interface EndpointConnection {
   id: string;
@@ -185,20 +255,63 @@ export interface EndpointConnection {
 export function applyMappingProfile(
   sourceRow: Record<string, unknown>,
   profile: MappingProfile,
-  aiResults?: Record<string, string>
+  aiResults?: Record<string, string>,
+  // aiGuessResults: keyed by "mappingRowId" -> guessed value string
+  aiGuessResults?: Record<string, string>
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {};
 
   for (const mapping of profile.mappings) {
-    const srcField = profile.source_fields.find(
-      (f) => f.id === mapping.sourceFieldId
-    );
+    // Rows with no real source field use the "__static__" sentinel ID,
+    // or are ai_guess transforms (value comes entirely from aiGuessResults).
+    const isStaticSentinel =
+      mapping.sourceFieldId === "__static__" || mapping.transform === "ai_guess";
+
+    // Primary lookup by ID; fall back to name match when IDs have changed
+    // (e.g. after re-importing the Excel file new UUIDs are generated).
+    let srcField = isStaticSentinel
+      ? null
+      : profile.source_fields.find((f) => f.id === mapping.sourceFieldId);
+
+    if (!srcField && !isStaticSentinel) {
+      // Name-based fallback: treat sourceFieldId as a field name and search
+      // profile.source_fields by name (handles re-imported files with new UUIDs).
+      const byName = profile.source_fields.find(
+        (f) =>
+          f.name === mapping.sourceFieldId ||
+          f.name.trim() === mapping.sourceFieldId.trim()
+      );
+      if (byName) {
+        srcField = byName;
+      } else {
+        // Last resort: the sourceFieldId might literally be a column name in the
+        // source row — build a synthetic field object so the value lookup works.
+        const rawKey = Object.keys(sourceRow).find(
+          (k) =>
+            k === mapping.sourceFieldId ||
+            k.trim() === mapping.sourceFieldId.trim()
+        );
+        if (rawKey != null) {
+          srcField = { id: rawKey, name: rawKey };
+        }
+      }
+    }
+
     const tgtField = profile.target_fields.find(
       (f) => f.id === mapping.targetFieldId
     );
-    if (!srcField || !tgtField) continue;
+    if ((!srcField && !isStaticSentinel) || !tgtField) continue;
 
-    let value: unknown = sourceRow[srcField.name];
+    // Exact lookup first; fall back to trimmed-name match in case the Excel
+    // column header had leading/trailing whitespace when the sheet was saved.
+    let value: unknown = srcField ? sourceRow[srcField.name] : undefined;
+    if (value === undefined && srcField) {
+      const trimmed = srcField.name.trim();
+      const fallbackKey = Object.keys(sourceRow).find(
+        (k) => k.trim() === trimmed
+      );
+      if (fallbackKey !== undefined) value = sourceRow[fallbackKey];
+    }
 
     switch (mapping.transform) {
       case "uppercase":
@@ -210,9 +323,32 @@ export function applyMappingProfile(
       case "trim":
         value = String(value ?? "").trim();
         break;
-      case "static":
-        value = mapping.transformValue ?? "";
+      case "static": {
+        // Works for both __static__ sentinel rows and regular rows with a fixed value.
+        // Strip surrounding double-quotes if the whole value is wrapped in them —
+        // this happens when users type "Production" instead of Production in the editor,
+        // or when values were saved with extra quotes from a previous import.
+        let sv = mapping.transformValue ?? "";
+        if (sv.length >= 2 && sv.startsWith('"') && sv.endsWith('"')) {
+          sv = sv.slice(1, -1);
+        }
+        value = sv;
         break;
+      }
+      case "expression": {
+        // Replace {FieldName} tokens with values from the source row.
+        let expr = mapping.transformValue ?? "";
+        expr = expr.replace(/\{([^}]+)\}/g, (_match, fieldName: string) => {
+          const direct = sourceRow[fieldName];
+          if (direct !== undefined) return String(direct);
+          const trimmedKey = Object.keys(sourceRow).find(
+            (k) => k.trim() === fieldName.trim()
+          );
+          return trimmedKey !== undefined ? String(sourceRow[trimmedKey] ?? "") : "";
+        });
+        value = expr;
+        break;
+      }
       case "concat": {
         const concatSrc = profile.source_fields.find(
           (f) => f.id === mapping.concatFieldId
@@ -230,11 +366,18 @@ export function applyMappingProfile(
         value = aiResults?.[key] ?? "";
         break;
       }
+      case "ai_guess": {
+        // Value comes from per-row AI guess results, keyed by mapping row ID
+        value = aiGuessResults?.[mapping.id] ?? "";
+        break;
+      }
       default:
         break; // "none" — pass through
     }
 
-    result[tgtField.name] = value;
+    // Never assign `undefined` — that would make the key disappear from JSON.stringify.
+    // Absent / empty source values become null so the field always appears in the payload.
+    result[tgtField.name] = value !== undefined ? value : null;
   }
 
   return result;

@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
-  ArrowLeft, Plug, Save, Check, Eye, EyeOff,
+  ArrowLeft, Plug, Save, Check, Eye, EyeOff, Copy,
   File, Cloud, Mail, Database, Globe,
   Upload, X, FileText, Loader2, Zap,
-  Wifi, WifiOff, FlaskConical, ShoppingCart, Package,
+  FolderOpen, Folder, ChevronRight, Home,
+  Wifi, WifiOff, FlaskConical, ShoppingCart, Package, Building2, Search,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
 import type { EndpointConnection, ConnectionType } from "@/lib/types";
@@ -18,9 +19,11 @@ const TYPE_OPTIONS: { value: ConnectionType; label: string; icon: React.ReactNod
   { value: "smtp",   label: "SMTP",    icon: <Mail     className="w-5 h-5" />, desc: "Email / SMTP server" },
   { value: "odbc",   label: "ODBC",    icon: <Database className="w-5 h-5" />, desc: "Database via ODBC" },
   { value: "portal", label: "Portal",  icon: <Globe    className="w-5 h-5" />, desc: "Web portal / API" },
-  { value: "ivanti", label: "Ivanti",  icon: <Zap          className="w-5 h-5" />, desc: "Ivanti Neurons for Service Management" },
+  { value: "ivanti", label: "Ivanti ITSM",  icon: <Zap          className="w-5 h-5" />, desc: "Ivanti Neurons for Service Management (OData REST API)" },
+  { value: "ivanti_neurons", label: "Ivanti Neurons", icon: <Search className="w-5 h-5" />, desc: "Ivanti Neurons People & Device Inventory API (OAuth2)" },
   { value: "dell",   label: "Dell",    icon: <ShoppingCart className="w-5 h-5" />, desc: "Dell Premier API — catalog, quotes & orders" },
   { value: "cdw",    label: "CDW",     icon: <Package      className="w-5 h-5" />, desc: "CDW API — PO status, orders & catalog" },
+  { value: "azure",  label: "Azure",   icon: <Building2    className="w-5 h-5" />, desc: "Azure Enterprise App — OAuth2 client credentials" },
 ];
 
 const TYPE_COLOR: Record<ConnectionType, string> = {
@@ -32,6 +35,8 @@ const TYPE_COLOR: Record<ConnectionType, string> = {
   ivanti: "bg-orange-500/10 border-orange-500/40 text-orange-400",
   dell:   "bg-blue-500/10 border-blue-500/40 text-blue-400",
   cdw:    "bg-red-500/10 border-red-500/40 text-red-400",
+  azure:  "bg-cyan-500/10 border-cyan-500/40 text-cyan-400",
+  ivanti_neurons: "bg-indigo-500/10 border-indigo-500/40 text-indigo-400",
 };
 
 const TYPE_RING: Record<ConnectionType, string> = {
@@ -43,6 +48,8 @@ const TYPE_RING: Record<ConnectionType, string> = {
   ivanti: "ring-orange-500",
   dell:   "ring-blue-500",
   cdw:    "ring-red-500",
+  azure:  "ring-cyan-500",
+  ivanti_neurons: "ring-indigo-500",
 };
 
 // ── Field helper components ──────────────────────────────────
@@ -91,7 +98,123 @@ function PasswordInput({ value, onChange, placeholder }: { value: string; onChan
   );
 }
 
-// ── File browser form ────────────────────────────────────────
+
+// ── Storage folder browser ────────────────────────────────────
+function StorageBrowser({ onSelect, onClose }: { onSelect: (path: string) => void; onClose: () => void }) {
+  const supabase = createClient();
+  const [currentPath, setCurrentPath] = useState<string>("");
+  const [items, setItems] = useState<{ name: string; id: string | null }[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  async function listFolder(prefix: string) {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase.storage.from("task_files").list(prefix || undefined, { limit: 200 });
+      if (error) throw error;
+      setItems(data ?? []);
+      setCurrentPath(prefix);
+    } catch {
+      setItems([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // load root on mount
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { listFolder(""); }, []);
+
+  const folders = items.filter((i) => i.id === null); // folders have no id
+  const breadcrumbs = currentPath ? currentPath.split("/").filter(Boolean) : [];
+
+  function navigateTo(parts: string[]) {
+    listFolder(parts.length ? parts.join("/") + "/" : "");
+  }
+
+  const displayPath = currentPath || "/";
+
+  return (
+    <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-md shadow-2xl flex flex-col" style={{ maxHeight: "70vh" }}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+          <h3 className="text-white font-semibold text-sm flex items-center gap-2">
+            <FolderOpen className="w-4 h-4 text-amber-400" />
+            Select Directory
+          </h3>
+          <button onClick={onClose} className="w-7 h-7 rounded-lg bg-gray-800 hover:bg-gray-700 flex items-center justify-center text-gray-400 hover:text-white transition-all">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {/* Breadcrumbs */}
+        <div className="flex items-center gap-1 px-5 py-2 border-b border-gray-800 flex-wrap">
+          <button onClick={() => navigateTo([])} className="text-xs text-amber-400 hover:text-amber-300 transition-colors">
+            <Home className="w-3.5 h-3.5" />
+          </button>
+          {breadcrumbs.map((seg, i) => (
+            <span key={i} className="flex items-center gap-1">
+              <ChevronRight className="w-3 h-3 text-gray-600" />
+              <button
+                onClick={() => navigateTo(breadcrumbs.slice(0, i + 1))}
+                className="text-xs text-amber-400 hover:text-amber-300 transition-colors"
+              >
+                {seg}
+              </button>
+            </span>
+          ))}
+        </div>
+
+        {/* Folder list */}
+        <div className="overflow-y-auto flex-1 px-3 py-2">
+          {loading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="w-5 h-5 text-amber-400 animate-spin" />
+            </div>
+          ) : folders.length === 0 ? (
+            <p className="text-xs text-gray-500 text-center py-8">No sub-folders here</p>
+          ) : (
+            folders.map((folder) => {
+              const fullPath = currentPath ? `${currentPath}${folder.name}/` : `${folder.name}/`;
+              return (
+                <div key={folder.name} className="flex items-center gap-2 rounded-lg hover:bg-gray-800 px-2 py-1.5 group cursor-pointer"
+                  onClick={() => listFolder(fullPath)}>
+                  <Folder className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span className="text-sm text-white flex-1 truncate">{folder.name}</span>
+                  <ChevronRight className="w-3.5 h-3.5 text-gray-600 group-hover:text-gray-400 shrink-0" />
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Footer: select current or type new subfolder */}
+        <div className="border-t border-gray-800 px-5 py-4 space-y-3">
+          <p className="text-xs text-gray-500 truncate">Selected: <span className="text-amber-400">{displayPath}</span></p>
+          <div className="flex gap-2">
+            <button
+              onClick={onClose}
+              className="flex-1 px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 text-sm font-semibold rounded-xl transition-all"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => { onSelect(currentPath); onClose(); }}
+              className="flex-1 px-4 py-2 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-sm font-semibold rounded-xl transition-all"
+            >
+              Select This Folder
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── File form ─────────────────────────────────────────────────
+const FILE_TYPES = ["xlsx", "json", "xml", "csv"] as const;
+
 function FileForm({ config, onChange }: { config: Record<string, string>; onChange: (k: string, v: string) => void }) {
   const supabase = createClient();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -99,14 +222,15 @@ function FileForm({ config, onChange }: { config: Record<string, string>; onChan
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
-  const storedPath = config.file_path ?? "";
-  const fileName = storedPath ? storedPath.split("/").pop() ?? storedPath : null;
+  const fileType = (config.file_type ?? "xlsx") as string;
+  const fileMode = (config.file_mode ?? "file") as "file" | "directory";
+  const zipMode  = config.zip_mode === "true";
+  const [showBrowser, setShowBrowser] = useState(false);
 
-  async function handleFile(file: File) {
+  async function handleFilePick(file: File) {
     setUploading(true);
     setUploadError(null);
     try {
-      const ext = file.name.split(".").pop();
       const path = `connections/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
       const { error } = await supabase.storage.from("task_files").upload(path, file, { upsert: true });
       if (error) throw error;
@@ -119,102 +243,198 @@ function FileForm({ config, onChange }: { config: Record<string, string>; onChan
     }
   }
 
-  function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (file) handleFile(file);
-  }
-
-  function handleDrop(e: React.DragEvent) {
-    e.preventDefault();
-    setDragOver(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) handleFile(file);
-  }
-
   function clearFile() {
     onChange("file_path", "");
     onChange("file_name", "");
     if (inputRef.current) inputRef.current.value = "";
   }
 
-  const displayName = config.file_name || fileName;
+  const displayName = config.file_name ?? (config.file_path ? config.file_path.split("/").pop() : null);
 
   return (
-    <Field label="File">
-      {displayName ? (
-        /* File already selected */
-        <div className="flex items-center gap-3 bg-gray-800 border border-amber-500/30 rounded-xl px-4 py-3">
-          <div className="w-9 h-9 rounded-lg bg-amber-500/10 border border-amber-500/25 flex items-center justify-center shrink-0">
-            <FileText className="w-4 h-4 text-amber-400" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm text-white font-medium truncate">{displayName}</p>
-            <p className="text-xs text-gray-500 truncate">{storedPath}</p>
-          </div>
-          <button
-            type="button"
-            onClick={clearFile}
-            className="shrink-0 text-gray-500 hover:text-red-400 transition-colors"
-            title="Remove file"
-          >
-            <X className="w-4 h-4" />
-          </button>
+    <>
+      {/* File Type */}
+      <Field label="File Type">
+        <div className="flex gap-2">
+          {FILE_TYPES.map((ft) => (
+            <button
+              key={ft}
+              type="button"
+              onClick={() => onChange("file_type", ft)}
+              className={`flex-1 px-3 py-2 rounded-xl border text-xs font-semibold uppercase tracking-wider transition-all ${
+                fileType === ft
+                  ? "bg-amber-500/20 border-amber-500/60 text-amber-300"
+                  : "bg-gray-800 border-gray-700 text-gray-400 hover:border-amber-500/40 hover:text-amber-400"
+              }`}
+            >
+              {ft}
+            </button>
+          ))}
         </div>
-      ) : (
-        /* Drop zone */
-        <label
-          className={`block cursor-pointer rounded-xl border-2 border-dashed transition-all ${
-            dragOver
-              ? "border-amber-500 bg-amber-500/10"
-              : "border-gray-600 hover:border-amber-500/50 hover:bg-gray-800/50"
+      </Field>
+
+      {/* ZIP Mode */}
+      <Field label="ZIP Mode">
+        <button
+          type="button"
+          onClick={() => {
+            onChange("zip_mode", zipMode ? "" : "true");
+            if (!zipMode) {
+              onChange("file_path", "");
+              onChange("file_name", "");
+              onChange("zip_file_filter", "*.xlsx");
+            }
+          }}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all ${
+            zipMode
+              ? "bg-amber-500/20 border-amber-500/60 text-amber-300"
+              : "bg-gray-800 border-gray-700 text-gray-400 hover:border-amber-500/40 hover:text-amber-400"
           }`}
-          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={handleDrop}
         >
-          <div className="flex flex-col items-center gap-3 px-6 py-8">
-            {uploading ? (
-              <Loader2 className="w-8 h-8 text-amber-400 animate-spin" />
-            ) : (
-              <div className="w-12 h-12 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
-                <Upload className="w-5 h-5 text-amber-400" />
-              </div>
-            )}
-            <div className="text-center">
-              <p className="text-sm font-medium text-white">
-                {uploading ? "Uploading…" : "Drop a file here or click to browse"}
-              </p>
-              <p className="text-xs text-gray-500 mt-1">Any file type supported</p>
+          <span className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center ${zipMode ? "border-amber-400 bg-amber-400" : "border-gray-500"}`}>
+            {zipMode && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+          </span>
+          {zipMode ? "ZIP mode enabled" : "Enable ZIP mode"}
+        </button>
+        {zipMode && (
+          <div className="mt-3 space-y-3">
+            <p className="text-xs text-gray-500">Upload a ZIP archive containing multiple files. Each file will be processed individually when this endpoint is used as a source.</p>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">File filter <span className="text-gray-600">(glob — which files inside the ZIP to process)</span></label>
+              <input
+                type="text"
+                value={config.zip_file_filter ?? "*.xlsx"}
+                onChange={(e) => onChange("zip_file_filter", e.target.value)}
+                placeholder="*.xlsx"
+                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+              />
             </div>
           </div>
-          <input
-            ref={inputRef}
-            type="file"
-            className="hidden"
-            onChange={handleInputChange}
-            disabled={uploading}
-          />
-        </label>
-      )}
+        )}
+      </Field>
 
-      {/* Replace button when file is set */}
-      {displayName && !uploading && (
-        <label className="flex items-center gap-2 cursor-pointer text-xs text-gray-500 hover:text-amber-400 transition-colors w-fit">
-          <Upload className="w-3.5 h-3.5" />
-          Replace file
-          <input
-            ref={inputRef}
-            type="file"
-            className="hidden"
-            onChange={handleInputChange}
-          />
-        </label>
-      )}
+      {/* Mode: specific file vs directory */}
+      <Field label="Target">
+        <div className="flex gap-2 mb-3">
+          {(["file", "directory"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => {
+                onChange("file_mode", m);
+                onChange("file_path", "");
+                onChange("file_name", "");
+                onChange("output_file_name", "");
+              }}
+              className={`flex-1 px-3 py-2 rounded-xl border text-xs font-semibold transition-all ${
+                fileMode === m
+                  ? "bg-amber-500/20 border-amber-500/60 text-amber-300"
+                  : "bg-gray-800 border-gray-700 text-gray-400 hover:border-amber-500/40 hover:text-amber-400"
+              }`}
+            >
+              {m === "file" ? "Specific File" : "Directory"}
+            </button>
+          ))}
+        </div>
 
-      {uploadError && (
-        <p className="text-xs text-red-400">{uploadError}</p>
+        {fileMode === "file" ? (
+          /* ── Specific file: upload / drop zone ── */
+          <>
+            {displayName ? (
+              <div className="flex items-center gap-3 bg-gray-800 border border-amber-500/30 rounded-xl px-4 py-3">
+                <div className="w-9 h-9 rounded-lg bg-amber-500/10 border border-amber-500/25 flex items-center justify-center shrink-0">
+                  <FileText className="w-4 h-4 text-amber-400" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-white font-medium truncate">{displayName}</p>
+                  <p className="text-xs text-gray-500 truncate">{config.file_path}</p>
+                </div>
+                <button type="button" onClick={clearFile} className="shrink-0 text-gray-500 hover:text-red-400 transition-colors" title="Remove file">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <label
+                className={`block cursor-pointer rounded-xl border-2 border-dashed transition-all ${
+                  dragOver ? "border-amber-500 bg-amber-500/10" : "border-gray-600 hover:border-amber-500/50 hover:bg-gray-800/50"
+                }`}
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(e) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files?.[0]; if (f) handleFilePick(f); }}
+              >
+                <div className="flex flex-col items-center gap-3 px-6 py-8">
+                  {uploading ? (
+                    <Loader2 className="w-8 h-8 text-amber-400 animate-spin" />
+                  ) : (
+                    <div className="w-12 h-12 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
+                      <Upload className="w-5 h-5 text-amber-400" />
+                    </div>
+                  )}
+                  <div className="text-center">
+                    <p className="text-sm font-medium text-white">{uploading ? "Uploading…" : "Drop a file here or click to browse"}</p>
+                    <p className="text-xs text-gray-500 mt-1">{zipMode ? ".zip archive" : `.${fileType} file`}</p>
+                  </div>
+                </div>
+                <input ref={inputRef} type="file" className="hidden" accept={zipMode ? ".zip" : `.${fileType}`}
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFilePick(f); }}
+                  disabled={uploading} />
+              </label>
+            )}
+            {displayName && !uploading && (
+              <label className="flex items-center gap-2 cursor-pointer text-xs text-gray-500 hover:text-amber-400 transition-colors w-fit mt-2">
+                <Upload className="w-3.5 h-3.5" />
+                Replace file
+                <input ref={inputRef} type="file" className="hidden" accept={zipMode ? ".zip" : `.${fileType}`}
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFilePick(f); }} />
+              </label>
+            )}
+          </>
+        ) : (
+          /* ── Directory mode ── */
+          <div className="space-y-3">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Directory path</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={config.file_path ?? ""}
+                  onChange={(e) => onChange("file_path", e.target.value)}
+                  placeholder="e.g. exports/reports/"
+                  className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowBrowser(true)}
+                  className="px-3 py-2.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-amber-400 rounded-xl transition-all shrink-0"
+                  title="Browse storage folders"
+                >
+                  <FolderOpen className="w-4 h-4" />
+                </button>
+              </div>
+              <p className="text-xs text-gray-600 mt-1">Storage folder where files will be written</p>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">File name <span className="text-gray-600">(optional — leave blank to auto-generate)</span></label>
+              <input
+                type="text"
+                value={config.output_file_name ?? ""}
+                onChange={(e) => onChange("output_file_name", e.target.value)}
+                placeholder={`e.g. my_export.${fileType}`}
+                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+              />
+            </div>
+          </div>
+        )}
+      </Field>
+
+      {uploadError && <p className="text-xs text-red-400">{uploadError}</p>}
+      {showBrowser && (
+        <StorageBrowser
+          onSelect={(p) => onChange("file_path", p)}
+          onClose={() => setShowBrowser(false)}
+        />
       )}
-    </Field>
+    </>
   );
 }
 
@@ -291,6 +511,63 @@ function PortalForm({ config, onChange }: { config: Record<string, string>; onCh
       </Field>
       <Field label="Password">
         <PasswordInput value={config.password ?? ""} onChange={(v) => onChange("password", v)} />
+      </Field>
+    </>
+  );
+}
+
+function AzureForm({ config, onChange }: { config: Record<string, string>; onChange: (k: string, v: string) => void }) {
+  return (
+    <>
+      <div className="flex items-center gap-2 px-4 py-3 bg-cyan-500/10 border border-cyan-500/20 rounded-xl">
+        <Building2 className="w-4 h-4 text-cyan-400 shrink-0" />
+        <p className="text-xs text-cyan-300">Azure Enterprise App — OAuth2 client credentials flow (application permissions)</p>
+      </div>
+
+      <Field label="Tenant ID">
+        <TextInput
+          value={config.tenant_id ?? ""}
+          onChange={(v) => onChange("tenant_id", v)}
+          placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+        />
+        <p className="text-xs text-gray-500 mt-1">Found in Azure Portal under Azure Active Directory &rarr; Overview</p>
+      </Field>
+
+      <Field label="Client ID (Application ID)">
+        <TextInput
+          value={config.client_id ?? ""}
+          onChange={(v) => onChange("client_id", v)}
+          placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+        />
+        <p className="text-xs text-gray-500 mt-1">App Registration &rarr; Overview &rarr; Application (client) ID</p>
+      </Field>
+
+      <Field label="Client Secret">
+        <PasswordInput
+          value={config.client_secret ?? ""}
+          onChange={(v) => onChange("client_secret", v)}
+          placeholder="App Registration secret value"
+        />
+        <p className="text-xs text-gray-500 mt-1">App Registration &rarr; Certificates &amp; secrets &rarr; New client secret</p>
+      </Field>
+
+      <Field label="Scope">
+        <TextInput
+          value={config.scope ?? ""}
+          onChange={(v) => onChange("scope", v)}
+          placeholder="https://graph.microsoft.com/.default"
+        />
+        <p className="text-xs text-gray-500 mt-1">The resource URI followed by <span className="font-mono text-gray-400">/.default</span> for application permissions</p>
+      </Field>
+
+      <Field label="Base URL">
+        <TextInput
+          value={config.base_url ?? ""}
+          onChange={(v) => onChange("base_url", v)}
+          placeholder="https://graph.microsoft.com/v1.0"
+          type="url"
+        />
+        <p className="text-xs text-gray-500 mt-1">The API base URL requests will be sent to after authentication</p>
       </Field>
     </>
   );
@@ -478,6 +755,79 @@ function CdwForm({ config, onChange }: { config: Record<string, string>; onChang
   );
 }
 
+function IvantiNeuronsForm({ config, onChange }: { config: Record<string, string>; onChange: (k: string, v: string) => void }) {
+  return (
+    <>
+      <div className="flex items-center gap-2 px-4 py-3 bg-indigo-500/10 border border-indigo-500/20 rounded-xl">
+        <Search className="w-4 h-4 text-indigo-400 shrink-0" />
+        <p className="text-xs text-indigo-300">
+          Ivanti Neurons People &amp; Device Inventory API — OAuth2 client credentials. Requires an App Registration in your Neurons console (<span className="font-mono">Admin → App Registrations</span>).
+        </p>
+      </div>
+
+      <Field label="Auth URL">
+        <TextInput
+          value={config.auth_url ?? ""}
+          onChange={(v) => onChange("auth_url", v)}
+          placeholder="https://<tenant>.ivanticloud.com/<tenant-id>/connect/token"
+          type="url"
+        />
+        <p className="text-xs text-gray-500 mt-1">Token endpoint copied from your App Registration in the Neurons console</p>
+      </Field>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Field label="Client ID">
+          <TextInput
+            value={config.client_id ?? ""}
+            onChange={(v) => onChange("client_id", v)}
+            placeholder="App Registration Client ID"
+          />
+        </Field>
+        <Field label="Client Secret">
+          <PasswordInput
+            value={config.client_secret ?? ""}
+            onChange={(v) => onChange("client_secret", v)}
+            placeholder="App Registration Client Secret"
+          />
+        </Field>
+      </div>
+
+      <Field label="Tenant Base URL">
+        <TextInput
+          value={config.base_url ?? ""}
+          onChange={(v) => onChange("base_url", v)}
+          placeholder="https://<tenant>.ivanticloud.com"
+          type="url"
+        />
+        <p className="text-xs text-gray-500 mt-1">Your Ivanti Neurons tenant root URL — the API path is added automatically</p>
+      </Field>
+
+      <Field label="Dataset">
+        <div className="flex gap-2">
+          {(["devices", "people"] as const).map((ds) => (
+            <button
+              key={ds}
+              type="button"
+              onClick={() => onChange("dataset", ds)}
+              className={`flex-1 px-3 py-2 rounded-xl border text-xs font-semibold capitalize transition-all ${
+                (config.dataset ?? "devices") === ds
+                  ? "bg-indigo-500/20 border-indigo-500/60 text-indigo-300"
+                  : "bg-gray-800 border-gray-700 text-gray-400 hover:border-indigo-500/40 hover:text-indigo-400"
+              }`}
+            >
+              {ds}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-gray-500 mt-1">
+          <span className="font-mono">/devices</span> — reconciled hardware endpoints &nbsp;|&nbsp;
+          <span className="font-mono">/people</span> — user inventory
+        </p>
+      </Field>
+    </>
+  );
+}
+
 // ── Main editor ───────────────────────────────────────────────
 export default function ConnectionEditorClient({
   connection,
@@ -494,7 +844,7 @@ export default function ConnectionEditorClient({
   const [name, setName] = useState(connection?.name ?? "");
   const [type, setType] = useState<ConnectionType>(connection?.type ?? "file");
   const [config, setConfig] = useState<Record<string, string>>(
-    (connection?.config as Record<string, string>) ?? {}
+    (connection?.config as unknown as Record<string, string>) ?? {}
   );
 
   const [saving, setSaving] = useState(false);
@@ -519,6 +869,8 @@ export default function ConnectionEditorClient({
       t === "ivanti" ? { business_object: "CI__Computers", api_key: "251E668B0B42478EB3DA9D6E8446CA0B" } :
       t === "dell"   ? { base_url: "https://apigtwb2c.us.dell.com", scope: "oob" } :
       t === "cdw"    ? { base_url: "https://portal.apiconnect.cdw.com" } :
+      t === "azure"  ? { scope: "https://graph.microsoft.com/.default", base_url: "https://graph.microsoft.com/v1.0" } :
+      t === "ivanti_neurons" ? { dataset: "devices" } :
       {}
     );
   }
@@ -546,17 +898,24 @@ export default function ConnectionEditorClient({
     setSaving(true);
     setSaveError(null);
     try {
-      const payload = { name: name.trim(), type, config, created_by: userId };
       if (isNew) {
+        const payload = { name: name.trim(), type, config, created_by: userId };
         const { data, error } = await supabase
           .from("endpoint_connections").insert(payload).select("id").single();
         if (error) throw error;
         setSaved(true);
         setTimeout(() => router.replace(`/connections/${data.id}`), 800);
       } else {
-        const { error } = await supabase
-          .from("endpoint_connections").update(payload).eq("id", connection!.id);
+        const updatePayload = { name: name.trim(), type, config };
+        const { data: updated, error } = await supabase
+          .from("endpoint_connections")
+          .update(updatePayload)
+          .eq("id", connection!.id)
+          .select("id, name")
+          .single();
         if (error) throw error;
+        if (!updated) throw new Error("Save failed: no rows updated — check RLS or connection ID.");
+        router.refresh();
         setSaved(true);
         setTimeout(() => setSaved(false), 2500);
       }
@@ -590,31 +949,16 @@ export default function ConnectionEditorClient({
             </button>
             <span className="text-gray-700">|</span>
             <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-lg bg-teal-600 flex items-center justify-center">
+              <div className="w-7 h-7 rounded-lg bg-cyan-500 flex items-center justify-center">
                 <Plug className="w-3.5 h-3.5 text-white" />
               </div>
               <span className="font-semibold text-white">
                 {isNew ? "New Connection" : "Edit Connection"}
               </span>
             </div>
-            <div className="hidden sm:flex items-center gap-1.5">
-              <span className="text-gray-600">/</span>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Connection name…"
-                className="bg-transparent border-b border-transparent hover:border-gray-600 focus:border-teal-500 px-1 py-0.5 text-white text-sm font-medium placeholder-gray-600 focus:outline-none transition-colors min-w-[160px] max-w-[300px]"
-              />
-            </div>
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            {saveError && (
-              <span className="text-red-400 text-xs max-w-xs truncate" title={saveError}>
-                {saveError}
-              </span>
-            )}
             <button
               type="button"
               onClick={handleTest}
@@ -632,7 +976,7 @@ export default function ConnectionEditorClient({
               className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all shadow-lg ${
                 saved
                   ? "bg-emerald-600 text-white shadow-emerald-600/20"
-                  : "bg-teal-600 hover:bg-teal-500 disabled:opacity-60 text-white shadow-teal-600/20"
+                  : "bg-cyan-500 hover:bg-cyan-500 disabled:opacity-60 text-white shadow-cyan-500/20"
               }`}
             >
               {saved ? <Check className="w-4 h-4" /> : <Save className="w-4 h-4" />}
@@ -641,6 +985,26 @@ export default function ConnectionEditorClient({
           </div>
         </div>
       </header>
+
+      {saveError && (
+        <div className="max-w-2xl mx-auto w-full px-6 pt-6">
+          <div className="flex items-start gap-3 px-4 py-3 rounded-xl border bg-red-500/10 border-red-500/25 text-red-300 text-sm">
+            <span className="mt-0.5 shrink-0">⚠</span>
+            <span className="flex-1">{saveError}</span>
+            <button
+              type="button"
+              onClick={() => navigator.clipboard.writeText(saveError)}
+              title="Copy to clipboard"
+              className="shrink-0 text-red-400 hover:text-red-200 transition-colors"
+            ><Copy className="w-3.5 h-3.5" /></button>
+            <button
+              type="button"
+              onClick={() => setSaveError(null)}
+              className="shrink-0 text-red-400 hover:text-red-200 transition-colors"
+            >✕</button>
+          </div>
+        </div>
+      )}
 
       <main className="max-w-2xl mx-auto px-6 py-8 flex flex-col gap-8">
 
@@ -677,6 +1041,18 @@ export default function ConnectionEditorClient({
             {selectedMeta.label} Configuration
           </h2>
 
+          {/* Connection Name */}
+          <div className="flex flex-col gap-2">
+            <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Connection Name</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Ivanti Production"
+              className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent text-sm"
+            />
+          </div>
+
           {/* Test result banner */}
           {testResult && (
             <div className={`flex items-start gap-3 px-4 py-3 rounded-xl border text-sm ${
@@ -694,14 +1070,16 @@ export default function ConnectionEditorClient({
             </div>
           )}
 
-          {type === "file"   && <FileForm   config={config} onChange={setConfigField} />}
-          {type === "cloud"  && <CloudForm  config={config} onChange={setConfigField} />}
-          {type === "smtp"   && <SmtpForm   config={config} onChange={setConfigField} />}
-          {type === "odbc"   && <OdbcForm   config={config} onChange={setConfigField} />}
-          {type === "portal" && <PortalForm config={config} onChange={setConfigField} />}
-          {type === "ivanti" && <IvantiForm config={config} onChange={setConfigField} />}
-          {type === "dell"   && <DellForm   config={config} onChange={setConfigField} />}
-          {type === "cdw"    && <CdwForm    config={config} onChange={setConfigField} />}
+          {type === "file"          && <FileForm          config={config} onChange={setConfigField} />}
+          {type === "cloud"         && <CloudForm         config={config} onChange={setConfigField} />}
+          {type === "smtp"          && <SmtpForm          config={config} onChange={setConfigField} />}
+          {type === "odbc"          && <OdbcForm          config={config} onChange={setConfigField} />}
+          {type === "portal"        && <PortalForm        config={config} onChange={setConfigField} />}
+          {type === "ivanti"        && <IvantiForm        config={config} onChange={setConfigField} />}
+          {type === "ivanti_neurons" && <IvantiNeuronsForm config={config} onChange={setConfigField} />}
+          {type === "dell"          && <DellForm          config={config} onChange={setConfigField} />}
+          {type === "cdw"           && <CdwForm           config={config} onChange={setConfigField} />}
+          {type === "azure"         && <AzureForm         config={config} onChange={setConfigField} />}
         </section>
 
         {/* Save footer */}
@@ -715,15 +1093,15 @@ export default function ConnectionEditorClient({
           </button>
           <button
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || testing}
             className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all shadow-lg ${
               saved
                 ? "bg-emerald-600 text-white shadow-emerald-600/20"
-                : "bg-teal-600 hover:bg-teal-500 disabled:opacity-60 text-white shadow-teal-600/20"
+                : "bg-cyan-500 hover:bg-cyan-400 disabled:opacity-60 text-white shadow-cyan-500/20"
             }`}
           >
             {saved ? <Check className="w-4 h-4" /> : <Save className="w-4 h-4" />}
-            {saved ? "Saved!" : saving ? "Saving…" : "Save Connection"}
+            {saved ? "Saved\!" : saving ? "Saving\u2026" : "Save Connection"}
           </button>
         </div>
       </main>

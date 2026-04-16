@@ -9,6 +9,7 @@ import {
   GitMerge,
   Trash2,
   Edit2,
+  Copy,
   Zap,
   Calendar,
 } from "lucide-react";
@@ -22,6 +23,37 @@ export default function MappingsListClient({ profiles: initial }: Props) {
   const router = useRouter();
   const supabase = createClient();
   const [profiles, setProfiles] = useState(initial);
+  const [duplicating, setDuplicating] = useState<string | null>(null);
+
+  async function handleDuplicate(p: MappingProfile) {
+    const newName = prompt("Name for the duplicate profile:", `${p.name} (copy)`);
+    if (!newName?.trim()) return;
+    setDuplicating(p.id);
+    try {
+      const { data, error } = await supabase
+        .from("mapping_profiles")
+        .insert({
+          name: newName.trim(),
+          description: p.description,
+          source_fields: p.source_fields,
+          target_fields: p.target_fields,
+          mappings: p.mappings,
+          source_connection_id: p.source_connection_id,
+          target_connection_id: p.target_connection_id,
+          filter_expression: p.filter_expression,
+          created_by: p.created_by,
+        })
+        .select("*")
+        .single();
+      if (error) throw error;
+      setProfiles((prev) => [data as MappingProfile, ...prev]);
+      router.push(`/mappings/${data.id}`);
+    } catch (err) {
+      alert("Duplicate failed: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setDuplicating(null);
+    }
+  }
 
   async function handleDelete(id: string, name: string) {
     if (!confirm(`Delete mapping profile "${name}"?`)) return;
@@ -112,12 +144,22 @@ export default function MappingsListClient({ profiles: initial }: Props) {
                       <button
                         onClick={() => router.push(`/mappings/${p.id}`)}
                         className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-gray-700 flex items-center justify-center text-gray-400 hover:text-white transition-all"
+                        title="Edit"
                       >
                         <Edit2 className="w-3.5 h-3.5" />
                       </button>
                       <button
+                        onClick={() => handleDuplicate(p)}
+                        disabled={duplicating === p.id}
+                        className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-indigo-500/20 flex items-center justify-center text-gray-400 hover:text-indigo-400 transition-all disabled:opacity-50"
+                        title="Duplicate"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                      </button>
+                      <button
                         onClick={() => handleDelete(p.id, p.name)}
                         className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-red-500/20 flex items-center justify-center text-gray-400 hover:text-red-400 transition-all"
+                        title="Delete"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
