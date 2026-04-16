@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase-server";
 import type { IvantiConfig } from "@/lib/types";
 
-// ── Types ────────────────────────────────────────────────────────────
+// Types
 export interface AutoMapRequest {
   connectionId: string;
   boName: string;
@@ -24,7 +24,7 @@ export interface AutoMapResponse {
   unmappedTarget: string[];
 }
 
-// ── Fetch BO field list from Ivanti $metadata ──────────────────────
+// Fetch BO field list from Ivanti $metadata
 async function fetchBoFields(
   base: string,
   boName: string,
@@ -57,7 +57,7 @@ async function fetchBoFields(
   return [];
 }
 
-// ── POST /api/auto-map ───────────────────────────────────────
+// POST /api/auto-map
 export async function POST(req: Request) {
   try {
     const body = await req.json() as AutoMapRequest;
@@ -93,54 +93,38 @@ export async function POST(req: Request) {
         .map(col => col + ": " + JSON.stringify(row[col] ?? ""))
         .join(", ");
       return "Row " + (i + 1) + ": { " + preview + " }";
-    }).join("
-");
+    }).join("\n");
 
-    const prompt = "You are a data mapping expert. A user has an Excel file they want to import into a business system (Ivanti).
-
-" +
-      "SOURCE FILE COLUMNS (" + sourceColumns.length + " total):
-" +
-      sourceColumns.join(", ") + "
-
-" +
-      "SAMPLE DATA (first few rows):
-" +
-      samplePreview + "
-
-" +
-      "TARGET SYSTEM FIELDS for BO "" + boName + "" (" + targetFields.length + " total):
-" +
-      targetFields.join(", ") + "
-
-" +
-      "Your job: suggest the best mapping from each source column to a target field.
-
-" +
-      "Rules:
-" +
-      "- Match by semantic meaning, not just exact name (e.g. AssetName -> Name, AssignedUser -> Owner)
-" +
-      "- Only suggest a target field if you are reasonably confident
-" +
-      "- Each target field can only be used once
-" +
-      "- Use confidence: high (obvious match), medium (likely match), low (possible match)
-" +
-      "- If no good target match exists for a source column, omit it
-
-" +
-      "Respond with ONLY valid JSON in this exact format:
-" +
-      "{
-" +
-      "  \"suggestions\": [
-" +
-      "    { \"sourceField\": \"SourceColumnName\", \"targetField\": \"TargetFieldName\", \"confidence\": \"high\", \"reason\": \"Brief reason\" }
-" +
-      "  ]
-" +
-      "}";
+    const prompt =
+      "You are a data mapping expert. A user has an Excel file they want to import into a business system (Ivanti)." +
+      "\n\n" +
+      "SOURCE FILE COLUMNS (" + sourceColumns.length + " total):" +
+      "\n" +
+      sourceColumns.join(", ") +
+      "\n\n" +
+      "SAMPLE DATA (first few rows):" +
+      "\n" +
+      samplePreview +
+      "\n\n" +
+      "TARGET SYSTEM FIELDS for BO \"" + boName + "\" (" + targetFields.length + " total):" +
+      "\n" +
+      targetFields.join(", ") +
+      "\n\n" +
+      "Your job: suggest the best mapping from each source column to a target field." +
+      "\n\n" +
+      "Rules:" +
+      "\n" +
+      "- Match by semantic meaning, not just exact name (e.g. AssetName -> Name, AssignedUser -> Owner)" +
+      "\n" +
+      "- Only suggest a target field if you are reasonably confident" +
+      "\n" +
+      "- Each target field can only be used once" +
+      "\n" +
+      "- Use confidence: high (obvious), medium (likely), low (possible)" +
+      "\n" +
+      "- If no good target match exists for a source column, omit it" +
+      "\n\n" +
+      "Respond with ONLY valid JSON: { \"suggestions\": [ { \"sourceField\": \"ColName\", \"targetField\": \"FieldName\", \"confidence\": \"high\", \"reason\": \"why\" } ] }";
 
     const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
