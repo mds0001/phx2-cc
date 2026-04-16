@@ -231,7 +231,7 @@ export default function DashboardClient({ profile, initialCounts, role, initialR
       <main className="max-w-7xl mx-auto px-6 py-8 space-y-8">
         <div>
           <h2 className="text-3xl font-bold text-white">Welcome back, {profile?.first_name || "User"} 👋</h2>
-          <p className="text-gray-400 mt-1">Your intelligent data flow, at a glance.</p>
+          <p className="text-gray-400 mt-1">Your intelligent data flow, at once.</p>
         </div>
 
         {/* ── Task Status Cards ── */}
