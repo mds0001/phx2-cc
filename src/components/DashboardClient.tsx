@@ -25,6 +25,7 @@ import {
   History,
 } from "lucide-react";
 import type { Profile, UserRole } from "@/lib/types";
+import CustomerSwitcher, { type CustomerOption } from "@/components/CustomerSwitcher";
 
 interface Counts {
   active: number;
@@ -50,9 +51,11 @@ interface Props {
   initialCounts: Counts;
   role: UserRole;
   initialRecentRuns?: RecentRun[];
+  customers?: CustomerOption[];
+  activeCustomerId?: string | null;
 }
 
-export default function DashboardClient({ profile, initialCounts, role, initialRecentRuns = [] }: Props) {
+export default function DashboardClient({ profile, initialCounts, role, initialRecentRuns = [], customers = [], activeCustomerId = null }: Props) {
   const isAdmin = role === "administrator";
   const isBasic = role === "basic";
   const router = useRouter();
@@ -183,6 +186,9 @@ export default function DashboardClient({ profile, initialCounts, role, initialR
             <span className="font-bold lg-gradient-text text-lg">LuminaGrid</span>
           </div>
           <div className="flex items-center gap-3">
+            {isAdmin && customers.length > 0 && (
+              <CustomerSwitcher customers={customers} activeCustomerId={activeCustomerId} />
+            )}
             <button
               onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
               className="w-9 h-9 rounded-xl bg-gray-800 hover:bg-gray-700 flex items-center justify-center text-gray-400 hover:text-white transition-all"
@@ -330,21 +336,7 @@ export default function DashboardClient({ profile, initialCounts, role, initialR
               </button>
             )}
 
-            {isAdmin && (
-              <button
-                onClick={() => router.push("/users")}
-                className="bg-[#1E2937] hover:bg-slate-800 border border-slate-700/50 hover:border-violet-500/40 rounded-2xl p-5 text-left transition-all duration-200 group shadow-lg"
-              >
-                <div className="w-10 h-10 rounded-xl bg-violet-500/10 border border-violet-500/20 flex items-center justify-center mb-3 group-hover:bg-violet-500/20 transition-colors">
-                  <Shield className="w-5 h-5 text-violet-400" />
-                </div>
-                <h4 className="text-white font-semibold">User Management</h4>
-                <p className="text-gray-400 text-sm mt-1">Invite, edit, and manage user roles.</p>
-                <div className="mt-3 flex items-center gap-1 text-violet-400 text-sm font-medium">
-                  Open <span className="group-hover:translate-x-1 transition-transform">&#8594;</span>
-                </div>
-              </button>
-            )}
+
 
           </div>
         </div>}

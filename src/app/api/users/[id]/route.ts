@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient as createServerClient } from "@/lib/supabase-server";
 import { createAdminClient } from "@/lib/supabase-admin";
 
-// PATCH — update profile (name, role)
+// PATCH — update profile (name, role, customer_id)
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -23,13 +23,14 @@ export async function PATCH(
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // Prevent the last administrator from demoting themselves
     const body = await req.json() as {
       first_name?: string;
       last_name?: string;
       role?: "administrator" | "schedule_administrator" | "basic";
+      customer_id?: string | null;
     };
 
+    // Prevent the last administrator from demoting themselves
     if (body.role && body.role !== "administrator" && id === user.id) {
       const { count } = await supabase
         .from("profiles")
@@ -49,9 +50,17 @@ export async function PATCH(
     if (body.role       !== undefined) {
       patch.role      = body.role;
       patch.user_type = body.role === "administrator" ? "admin" : body.role === "basic" ? "basic" : "user";
+      // Clear customer scope when role is not schedule_administrator
+      if (body.role !== "schedule_administrator") patch.customer_id = null;
+    }
+    // Persist customer scope for schedule_administrators
+    if (body.customer_id !== undefined) {
+      patch.customer_id = body.role === "schedule_administrator" ? body.customer_id : null;
     }
 
-    const { error } = await supabase
+    // Use admin client to bypass RLS for profile updates
+    const adminClient = createAdminClient();
+    const { error } = await adminClient
       .from("profiles")
       .update(patch)
       .eq("id", id);

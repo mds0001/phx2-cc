@@ -109,11 +109,16 @@ const DEFAULT_POLL = 30;
 
 // ─── Types ───────────────────────────────────────────────────
 
+import CustomerSwitcher, { type CustomerOption } from "@/components/CustomerSwitcher";
+
 interface Props {
   profile: Profile | null;
   initialTasks: ScheduledTask[];
   userId: string;
   isReadOnly?: boolean;
+  isAdmin?: boolean;
+  customers?: CustomerOption[];
+  activeCustomerId?: string | null;
 }
 
 interface FormState {
@@ -123,6 +128,7 @@ interface FormState {
   mappingProfileId: string | null;
   mappingSlots: MappingSlot[];
   writeMode: "upsert" | "create_only";
+  customerId: string | null;
 }
 
 const EMPTY_FORM: FormState = {
@@ -132,6 +138,7 @@ const EMPTY_FORM: FormState = {
   mappingProfileId: null,
   mappingSlots: [{ id: "slot-new-0", mapping_profile_id: null }],
   writeMode: "upsert",
+  customerId: null,
 };
 
 // ─── Component ───────────────────────────────────────────────
@@ -141,11 +148,13 @@ export default function SchedulerClient({
   initialTasks,
   userId,
   isReadOnly = false,
+  isAdmin = false,
+  customers = [],
+  activeCustomerId = null,
 }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const supabase = createClient();
-  const isAdmin = profile?.user_type === "admin";
   const canControlPoll =
     profile?.role === "administrator" || profile?.role === "schedule_administrator";
 
@@ -1983,6 +1992,7 @@ export default function SchedulerClient({
         status: "waiting",
         write_mode: form.writeMode ?? "upsert",
         created_by: userId,
+        customer_id: form.customerId ?? null,
       });
 
       if (error) throw error;
@@ -2040,6 +2050,7 @@ export default function SchedulerClient({
         ? (task.mapping_slots as MappingSlot[])
         : [{ id: "slot-edit-0", mapping_profile_id: task.mapping_profile_id ?? null }],
       writeMode: (task.write_mode ?? "upsert") as "upsert" | "create_only",
+      customerId: task.customer_id ?? null,
     });
   }
 
@@ -2064,6 +2075,7 @@ export default function SchedulerClient({
           target_connection_id: null,
           status: "waiting",
           write_mode: editForm.writeMode ?? "upsert",
+          customer_id: editForm.customerId ?? null,
         })
         .eq("id", editTask.id);
 
@@ -2109,6 +2121,11 @@ export default function SchedulerClient({
               <span className="font-semibold text-white">Task Scheduler</span>
             </div>
           </div>
+
+          <div className="flex items-center gap-3">
+            {customers.length > 0 && (
+              <CustomerSwitcher customers={customers} activeCustomerId={activeCustomerId} />
+            )}
 
           {/* Polling control — visible to administrator and schedule_administrator roles */}
           {canControlPoll && (
@@ -2163,6 +2180,7 @@ export default function SchedulerClient({
             </div>
           </div>
           )}
+          </div>
         </div>
       </header>
 
@@ -2350,6 +2368,27 @@ export default function SchedulerClient({
                     <option value="create_only">Create only — skip if exists</option>
                   </select>
                 </div>
+
+                {/* Customer — admin only */}
+                {isAdmin && customers.length > 0 && (
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                      Customer
+                    </label>
+                    <select
+                      value={form.customerId ?? ""}
+                      onChange={(e) => setForm((p) => ({ ...p, customerId: e.target.value || null }))}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    >
+                      <option value="">— No customer (shared) —</option>
+                      {customers.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}{c.company ? ` — ${c.company}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
 
                 {/* Start Date & Time */}
                 <div>
@@ -3065,6 +3104,27 @@ export default function SchedulerClient({
                     <option value="create_only">Create only — skip if exists</option>
                   </select>
                 </div>
+
+                {/* Customer — admin only */}
+                {isAdmin && customers.length > 0 && (
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                      Customer
+                    </label>
+                    <select
+                      value={editForm.customerId ?? ""}
+                      onChange={(e) => setEditForm((p) => ({ ...p, customerId: e.target.value || null }))}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <option value="">— No customer (shared) —</option>
+                      {customers.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}{c.company ? ` — ${c.company}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
 
 {/* Mapping Profiles — multi-slot */}
                 <div className="md:col-span-2">

@@ -19,10 +19,13 @@ import {
 import { createClient } from "@/lib/supabase-browser";
 import type { Profile, UserRole } from "@/lib/types";
 
+interface CustomerOption { id: string; name: string; company: string | null; }
+
 interface Props {
   user: Profile | null;
   isNew: boolean;
   currentUserId: string;
+  customers?: CustomerOption[];
 }
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
@@ -52,7 +55,7 @@ const ROLES: { value: UserRole; label: string; desc: string }[] = [
   },
 ];
 
-export default function UserEditorClient({ user, isNew, currentUserId }: Props) {
+export default function UserEditorClient({ user, isNew, currentUserId, customers = [] }: Props) {
   const router = useRouter();
   const supabase = createClient();
 
@@ -60,6 +63,7 @@ export default function UserEditorClient({ user, isNew, currentUserId }: Props) 
   const [firstName, setFirstName] = useState(user?.first_name ?? "");
   const [lastName, setLastName] = useState(user?.last_name ?? "");
   const [role, setRole] = useState<UserRole>(user?.role ?? "schedule_administrator");
+  const [scopedCustomerId, setScopedCustomerId] = useState<string | null>(user?.customer_id ?? null);
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -134,6 +138,7 @@ export default function UserEditorClient({ user, isNew, currentUserId }: Props) 
             first_name: firstName.trim() || undefined,
             last_name: lastName.trim() || undefined,
             role,
+            customer_id: role === "schedule_administrator" ? (scopedCustomerId ?? null) : null,
           }),
         });
       } else {
@@ -144,13 +149,14 @@ export default function UserEditorClient({ user, isNew, currentUserId }: Props) 
             first_name: firstName.trim() || null,
             last_name: lastName.trim() || null,
             role,
+            customer_id: role === "schedule_administrator" ? (scopedCustomerId ?? null) : null,
           }),
         });
       }
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Save failed");
       setSaved(true);
-      setTimeout(() => { router.push("/users"); router.refresh(); }, 1200);
+      setTimeout(() => { router.push("/boh/users"); router.refresh(); }, 1200);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -166,7 +172,7 @@ export default function UserEditorClient({ user, isNew, currentUserId }: Props) 
         <div className="max-w-2xl mx-auto px-6 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <button
-              onClick={() => router.push("/users")}
+              onClick={() => router.push("/boh/users")}
               className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors text-sm"
             >
               <ArrowLeft className="w-4 h-4" />
@@ -367,6 +373,30 @@ export default function UserEditorClient({ user, isNew, currentUserId }: Props) 
         {/* Permission matrix */}
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
           <h3 className="text-sm font-semibold text-white mb-4">Access Summary</h3>
+          {/* Customer scope for schedule_administrator */}
+          {role === "schedule_administrator" && (
+            <div className="flex flex-col gap-2">
+              <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                Assigned Customer
+              </label>
+              <select
+                value={scopedCustomerId ?? ""}
+                onChange={(e) => setScopedCustomerId(e.target.value || null)}
+                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="">— Unassigned (no access) —</option>
+                {customers.map((cu) => (
+                  <option key={cu.id} value={cu.id}>
+                    {cu.name}{cu.company ? ` — ${cu.company}` : ""}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500">
+                Schedule Administrators can only see objects belonging to their assigned customer.
+              </p>
+            </div>
+          )}
+
           <div className="space-y-2">
             {[
               { feature: "Scheduler",           admin: "write", sched: "write", basic: "read"  },

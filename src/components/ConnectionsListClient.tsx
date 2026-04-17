@@ -45,7 +45,9 @@ function configSummary(conn: EndpointConnection): string {
   }
 }
 
-export default function ConnectionsListClient({ connections: initial, isReadOnly = false }: { connections: EndpointConnection[]; isReadOnly?: boolean }) {
+import CustomerSwitcher, { type CustomerOption } from "@/components/CustomerSwitcher";
+
+export default function ConnectionsListClient({ connections: initial, isReadOnly = false, customers = [], activeCustomerId = null }: { connections: EndpointConnection[]; isReadOnly?: boolean; customers?: CustomerOption[]; activeCustomerId?: string | null }) {
   const router = useRouter();
   const supabase = createClient();
   const [connections, setConnections] = useState(initial);
@@ -103,15 +105,20 @@ export default function ConnectionsListClient({ connections: initial, isReadOnly
               )}
             </div>
           </div>
-          {!isReadOnly && (
-            <button
-              onClick={() => router.push("/connections/new")}
-              className="flex items-center gap-2 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-white rounded-xl text-sm font-semibold transition-all shadow-lg shadow-cyan-500/20"
-            >
-              <Plus className="w-4 h-4" />
-              New Connection
-            </button>
-          )}
+          <div className="flex items-center gap-3">
+            {customers.length > 0 && (
+              <CustomerSwitcher customers={customers} activeCustomerId={activeCustomerId} />
+            )}
+            {!isReadOnly && (
+              <button
+                onClick={() => router.push("/connections/new")}
+                className="flex items-center gap-2 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-white rounded-xl text-sm font-semibold transition-all shadow-lg shadow-cyan-500/20"
+              >
+                <Plus className="w-4 h-4" />
+                New Connection
+              </button>
+            )}
+          </div>
         </div>
       </header>
 

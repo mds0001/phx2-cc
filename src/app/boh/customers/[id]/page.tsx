@@ -41,10 +41,17 @@ export default async function CustomerEditorPage({
     licenses = l ?? [];
   }
 
+  // Fetch all license types for the picker
+  const { data: licenseTypes } = await supabase
+    .from("license_types")
+    .select("*")
+    .order("name");
+
   return (
     <CustomerEditorClient
       customer={customer}
       licenses={licenses}
+      licenseTypes={licenseTypes ?? []}
       isNew={isNew}
       userId={user.id}
     />

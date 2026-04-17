@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
 import type { EndpointConnection, ConnectionType } from "@/lib/types";
+import type { CustomerOption } from "@/components/CustomerSwitcher";
 
 // ── Type metadata ────────────────────────────────────────────
 const TYPE_OPTIONS: { value: ConnectionType; label: string; icon: React.ReactNode; desc: string }[] = [
@@ -837,11 +838,18 @@ export default function ConnectionEditorClient({
   isNew,
   userId,
   isReadOnly = false,
+  isAdmin = false,
+  customers = [],
+  scopedCustomerId = null,
 }: {
   connection: EndpointConnection | null;
   isNew: boolean;
   userId: string;
   isReadOnly?: boolean;
+  isAdmin?: boolean;
+  customers?: CustomerOption[];
+  /** When set, this user is a schedule_administrator scoped to one customer. */
+  scopedCustomerId?: string | null;
 }) {
   const router = useRouter();
   const supabase = createClient();
@@ -850,6 +858,9 @@ export default function ConnectionEditorClient({
   const [type, setType] = useState<ConnectionType>(connection?.type ?? "file");
   const [config, setConfig] = useState<Record<string, string>>(
     (connection?.config as unknown as Record<string, string>) ?? {}
+  );
+  const [customerId, setCustomerId] = useState<string | null>(
+    scopedCustomerId ?? connection?.customer_id ?? null
   );
 
   const [saving, setSaving] = useState(false);
@@ -904,14 +915,14 @@ export default function ConnectionEditorClient({
     setSaveError(null);
     try {
       if (isNew) {
-        const payload = { name: name.trim(), type, config, created_by: userId };
+        const payload = { name: name.trim(), type, config, created_by: userId, customer_id: customerId ?? null };
         const { data, error } = await supabase
           .from("endpoint_connections").insert(payload).select("id").single();
         if (error) throw error;
         setSaved(true);
         setTimeout(() => router.replace(`/connections/${data.id}`), 800);
       } else {
-        const updatePayload = { name: name.trim(), type, config };
+        const updatePayload = { name: name.trim(), type, config, customer_id: customerId ?? null };
         const { data: updated, error } = await supabase
           .from("endpoint_connections")
           .update(updatePayload)
@@ -920,9 +931,8 @@ export default function ConnectionEditorClient({
           .single();
         if (error) throw error;
         if (!updated) throw new Error("Save failed: no rows updated — check RLS or connection ID.");
-        router.refresh();
         setSaved(true);
-        setTimeout(() => setSaved(false), 2500);
+        setTimeout(() => window.location.reload(), 800);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message
@@ -933,7 +943,7 @@ export default function ConnectionEditorClient({
     } finally {
       setSaving(false);
     }
-  }, [name, type, config, userId, isNew, connection, supabase, router]);
+  }, [name, type, config, customerId, userId, isNew, connection, supabase, router]);
 
   const selectedMeta = TYPE_OPTIONS.find((t) => t.value === type)!;
 
@@ -1064,6 +1074,33 @@ export default function ConnectionEditorClient({
               className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent text-sm"
             />
           </div>
+
+          {/* Customer Assignment */}
+          {scopedCustomerId ? (
+            // Schedule administrators are locked to their assigned customer
+            <div className="flex flex-col gap-2">
+              <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Customer</label>
+              <div className="w-full bg-gray-800/50 border border-gray-700 rounded-xl px-4 py-3 text-gray-400 text-sm">
+                {customers.find((c) => c.id === scopedCustomerId)?.name ?? "Assigned customer"}
+              </div>
+            </div>
+          ) : isAdmin && customers.length > 0 ? (
+            <div className="flex flex-col gap-2">
+              <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Customer</label>
+              <select
+                value={customerId ?? ""}
+                onChange={(e) => setCustomerId(e.target.value || null)}
+                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent text-sm"
+              >
+                <option value="">— No customer (shared) —</option>
+                {customers.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}{c.company ? ` — ${c.company}` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
 
           {/* Test result banner */}
           {testResult && (

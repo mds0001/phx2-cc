@@ -46,9 +46,34 @@ export interface CustomerLicense {
   status: LicenseStatus;
   renewal_type: RenewalType;
   notes: string | null;
+  license_type_id: string | null;
+  max_executions: number | null;
+  executions_used: number;
   created_at: string;
   updated_at: string;
 }
+
+export type LicenseTypeKind = "one_time" | "subscription" | "by_endpoint";
+
+export interface LicenseType {
+  id: string;
+  name: string;
+  description: string | null;
+  type: LicenseTypeKind;
+  price_cents: number;
+  renewal_notification_days: number;
+  /** ConnectionType value — set only when type = "by_endpoint" */
+  endpoint_type: string | null;
+  /** Default execution block — set only when type = "one_time" */
+  default_executions: number | null;
+  /** Subscription validity window — only when type = "subscription" */
+  start_date: string | null;
+  end_date: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export type TaskStatus = "waiting" | "active" | "completed" | "completed_with_errors" | "completed_with_warnings" | "cancelled";
 export type RecurrenceType = "one-time" | "daily" | "weekly" | "monthly";
 
@@ -60,6 +85,8 @@ export interface Profile {
   user_type: UserType;
   role: UserRole;
   avatar_url: string | null;
+  /** For schedule_administrator: scopes the user to one customer. Null = unscoped. */
+  customer_id: string | null;
   created_at: string;
 }
 
@@ -84,6 +111,7 @@ export interface ScheduledTask {
    *  "upsert" (default) — create new or update existing.
    *  "create_only"      — skip the row if a record with the same key already exists. */
   write_mode?: WriteMode;
+  customer_id?: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -172,6 +200,7 @@ export interface MappingProfile {
   filter_expression?: string | null;
   /** Ordered list of zip file entries (path + optional per-file target override) */
   zip_file_order?: ZipFileEntry[] | null;
+  customer_id?: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;

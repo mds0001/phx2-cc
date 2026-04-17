@@ -14,13 +14,16 @@ import {
   Calendar,
 } from "lucide-react";
 import type { MappingProfile } from "@/lib/types";
+import CustomerSwitcher, { type CustomerOption } from "@/components/CustomerSwitcher";
 
 interface Props {
   profiles: MappingProfile[];
   isReadOnly?: boolean;
+  customers?: CustomerOption[];
+  activeCustomerId?: string | null;
 }
 
-export default function MappingsListClient({ profiles: initial, isReadOnly = false }: Props) {
+export default function MappingsListClient({ profiles: initial, isReadOnly = false, customers = [], activeCustomerId = null }: Props) {
   const router = useRouter();
   const supabase = createClient();
   const [profiles, setProfiles] = useState(initial);
@@ -86,15 +89,20 @@ export default function MappingsListClient({ profiles: initial, isReadOnly = fal
             </div>
           </div>
 
-          {!isReadOnly && (
-            <button
-              onClick={() => router.push("/mappings/new")}
-              className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-all shadow-lg shadow-indigo-600/20"
-            >
-              <Plus className="w-4 h-4" />
-              New Profile
-            </button>
-          )}
+          <div className="flex items-center gap-3">
+            {customers.length > 0 && (
+              <CustomerSwitcher customers={customers} activeCustomerId={activeCustomerId} />
+            )}
+            {!isReadOnly && (
+              <button
+                onClick={() => router.push("/mappings/new")}
+                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-all shadow-lg shadow-indigo-600/20"
+              >
+                <Plus className="w-4 h-4" />
+                New Profile
+              </button>
+            )}
+          </div>
         </div>
       </header>
 

@@ -4,14 +4,8 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import {
-  Plus,
-  Search,
-  Trash2,
-  Edit2,
-  Shield,
-  CalendarClock,
-  User,
-  Eye,
+  Plus, Search, Trash2, Edit2, Shield, CalendarClock,
+  User, Eye, ArrowLeft, Users, Activity, Key, UserCog,
 } from "lucide-react";
 import type { Profile, UserRole } from "@/lib/types";
 
@@ -24,9 +18,12 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
   return `${SUPABASE_URL}/storage/v1/object/public/avatars/${clean}`;
 }
 
+interface CustomerOption { id: string; name: string; company: string | null; }
+
 interface Props {
   users: Profile[];
   currentUserId: string;
+  customers?: CustomerOption[];
 }
 
 const ROLE_META: Record<UserRole, { label: string; color: string; bg: string; border: string }> = {
@@ -50,7 +47,7 @@ const ROLE_META: Record<UserRole, { label: string; color: string; bg: string; bo
   },
 };
 
-export default function UsersListClient({ users, currentUserId }: Props) {
+export default function UsersListClient({ users, currentUserId, customers = [] }: Props) {
   const router = useRouter();
   const [search, setSearch] = useState("");
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -121,17 +118,26 @@ export default function UsersListClient({ users, currentUserId }: Props) {
             )}
           </div>
           <p className="text-sm text-gray-400 truncate mt-0.5">{user.email ?? "no email"}</p>
-          <div className="mt-2">
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
             <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold ${meta.bg} ${meta.border} border ${meta.color}`}>
               <Shield className="w-3 h-3" />
               {meta.label}
             </span>
+            {user.role === "schedule_administrator" && (
+              user.customer_id
+                ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
+                    {customers.find((cu) => cu.id === user.customer_id)?.name ?? "Unknown customer"}
+                  </span>
+                : <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs bg-yellow-500/10 border border-yellow-500/20 text-yellow-400">
+                    No customer assigned
+                  </span>
+            )}
           </div>
         </div>
 
         <div className="flex items-center gap-1 shrink-0">
           <button
-            onClick={() => router.push(`/users/${user.id}`)}
+            onClick={() => router.push(`/boh/users/${user.id}`)}
             className="w-8 h-8 rounded-xl bg-gray-800 hover:bg-indigo-500/20 border border-gray-700 hover:border-indigo-500/40 flex items-center justify-center text-gray-400 hover:text-indigo-400 transition-all"
             title="Edit user"
           >
@@ -162,22 +168,48 @@ export default function UsersListClient({ users, currentUserId }: Props) {
 
       <header className="sticky top-0 z-50 bg-gray-900/80 backdrop-blur-xl border-b border-gray-800">
         <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-4">
             <button
               onClick={() => router.push("/dashboard")}
-              className="text-gray-400 hover:text-white text-sm transition-colors"
+              className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors text-sm"
             >
+              <ArrowLeft className="w-4 h-4" />
               Dashboard
             </button>
             <span className="text-gray-700">|</span>
-            <div className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center">
-              <User className="w-3.5 h-3.5 text-white" />
-            </div>
-            <span className="font-semibold text-white">User Management</span>
+            <nav className="flex items-center gap-1">
+              <button
+                onClick={() => router.push("/boh/customers")}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-all"
+              >
+                <Users className="w-3.5 h-3.5" />
+                Customers
+              </button>
+              <button
+                onClick={() => router.push("/boh/health")}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-all"
+              >
+                <Activity className="w-3.5 h-3.5" />
+                Health
+              </button>
+              <button
+                onClick={() => router.push("/boh/license-types")}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-all"
+              >
+                <Key className="w-3.5 h-3.5" />
+                License Types
+              </button>
+              <button
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-indigo-600/20 text-indigo-300 border border-indigo-500/30"
+              >
+                <UserCog className="w-3.5 h-3.5" />
+                Users
+              </button>
+            </nav>
           </div>
 
           <button
-            onClick={() => router.push("/users/new")}
+            onClick={() => router.push("/boh/users/new")}
             className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-xl text-sm font-semibold text-white transition-all shadow-lg shadow-indigo-600/20"
           >
             <Plus className="w-4 h-4" />

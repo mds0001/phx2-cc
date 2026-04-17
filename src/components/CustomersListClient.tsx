@@ -3,8 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Plus, Users, Trash2, Edit2, ArrowLeft,
-  AlertTriangle, CreditCard, Key, Clock,
+  Plus, Users, Trash2, Edit2, ArrowLeft, Activity, Key, UserCog,
+  AlertTriangle, CreditCard, Clock,
   CheckCircle2, XCircle, RefreshCw, Search,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
@@ -98,18 +98,41 @@ export default function CustomersListClient({
               Dashboard
             </button>
             <span className="text-gray-700">|</span>
-            <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center">
-                <Users className="w-3.5 h-3.5 text-white" />
-              </div>
-              <span className="font-semibold text-white">Customers</span>
-              {attentionCount > 0 && (
-                <span className="flex items-center gap-1 px-2 py-0.5 bg-yellow-500/15 border border-yellow-500/30 text-yellow-400 rounded-full text-xs font-semibold">
-                  <AlertTriangle className="w-3 h-3" />
-                  {attentionCount} need attention
-                </span>
-              )}
-            </div>
+            <nav className="flex items-center gap-1">
+              <button
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-indigo-600/20 text-indigo-300 border border-indigo-500/30"
+              >
+                <Users className="w-3.5 h-3.5" />
+                Customers
+              </button>
+              <button
+                onClick={() => router.push("/boh/health")}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-all"
+              >
+                <Activity className="w-3.5 h-3.5" />
+                Health
+              </button>
+              <button
+                onClick={() => router.push("/boh/license-types")}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-all"
+              >
+                <Key className="w-3.5 h-3.5" />
+                License Types
+              </button>
+              <button
+                onClick={() => router.push("/boh/users")}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-all"
+              >
+                <UserCog className="w-3.5 h-3.5" />
+                Users
+              </button>
+            </nav>
+            {attentionCount > 0 && (
+              <span className="flex items-center gap-1 px-2 py-0.5 bg-yellow-500/15 border border-yellow-500/30 text-yellow-400 rounded-full text-xs font-semibold">
+                <AlertTriangle className="w-3 h-3" />
+                {attentionCount} need attention
+              </span>
+            )}
           </div>
 
           <div className="flex items-center gap-3">

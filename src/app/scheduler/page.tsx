@@ -3,6 +3,9 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
 import SchedulerClient from "@/components/SchedulerClient";
 import { isReadOnly } from "@/lib/permissions";
+import { resolveCustomerFilter } from "@/lib/customer-context";
+
+export const dynamic = 'force-dynamic';
 
 export default async function SchedulerPage() {
   const supabase = await createClient();
@@ -13,16 +16,21 @@ export default async function SchedulerPage() {
 
   if (!user) redirect("/login");
 
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("*")
-    .eq("id", user.id)
-    .single();
+  const { data: profile } = await supabase.from("profiles").select("*").eq("id", user.id).single();
 
-  const { data: tasks } = await supabase
-    .from("scheduled_tasks")
-    .select("*")
-    .order("created_at", { ascending: false });
+  // Fetch customers for the switcher (non-basic users only)
+  const role = (profile as { role?: string } | null)?.role;
+  const isAdmin = role === "administrator";
+  const activeCustomerId = await resolveCustomerFilter(role, (profile as { customer_id?: string | null } | null)?.customer_id);
+  const { data: customers } = role !== "basic"
+    ? await supabase.from("customers").select("id, name, company").order("name")
+    : { data: [] };
+
+  // Fetch tasks scoped to active customer (or all if none selected)
+  let tasksQuery = supabase.from("scheduled_tasks").select("*").order("created_at", { ascending: false });
+  if (activeCustomerId) tasksQuery = tasksQuery.eq("customer_id", activeCustomerId);
+
+  const { data: tasks } = await tasksQuery;
 
   return (
     <Suspense>
@@ -30,7 +38,10 @@ export default async function SchedulerPage() {
         profile={profile}
         initialTasks={tasks ?? []}
         userId={user.id}
-        isReadOnly={isReadOnly((profile as { role?: string } | null)?.role)}
+        isReadOnly={isReadOnly(role)}
+        isAdmin={isAdmin}
+        customers={customers ?? []}
+        activeCustomerId={activeCustomerId}
       />
     </Suspense>
   );

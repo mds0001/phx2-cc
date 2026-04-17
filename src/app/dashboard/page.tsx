@@ -1,6 +1,9 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
 import DashboardClient from "@/components/DashboardClient";
+import { cookies } from "next/headers";
+
+export const dynamic = 'force-dynamic';
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -25,12 +28,22 @@ export default async function DashboardPage() {
   const isAdmin = role === "administrator";
   const isBasic = role === "basic";
 
+  // Active customer for the switcher (admin only)
+  const cookieStore = await cookies();
+  const activeCustomerId = cookieStore.get("active_customer_id")?.value ?? null;
+
   // BOH attention: only admins have access to the customers table
-  const { data: customers } = isAdmin
-    ? await supabase
-        .from("customers")
-        .select("payment_status, alert_days_before, customer_licenses(status, expiry_date, renewal_type)")
-    : { data: [] };
+  const [bohCustomersResult, switcherCustomersResult] = isAdmin
+    ? await Promise.all([
+        supabase
+          .from("customers")
+          .select("payment_status, alert_days_before, customer_licenses(status, expiry_date, renewal_type)"),
+        supabase.from("customers").select("id, name, company").order("name"),
+      ])
+    : [{ data: [] }, { data: [] }];
+
+  const customers = bohCustomersResult.data;
+  const switcherCustomers = switcherCustomersResult.data ?? [];
 
   let bohAttention = 0;
   const today = Date.now();
@@ -78,6 +91,8 @@ export default async function DashboardPage() {
       initialCounts={counts}
       role={role as import("@/lib/types").UserRole}
       initialRecentRuns={(recentSummaryLogs ?? []) as unknown as import("@/components/DashboardClient").RecentRun[]}
+      customers={switcherCustomers as { id: string; name: string; company: string | null }[]}
+      activeCustomerId={activeCustomerId}
     />
   );
 }

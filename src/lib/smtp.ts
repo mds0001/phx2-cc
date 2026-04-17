@@ -95,7 +95,7 @@ async function sendCommand(
   cmd: string,
   expectedCode: string
 ): Promise<string> {
-  await new Promise<void>((res) => socket.write(cmd + "\r\n", res));
+  await new Promise<void>((res, rej) => { socket.write(cmd + "\r\n", (err) => { if (err) rej(err); else res(); }); });
   const resp = await readResponse(socket);
   expectCode(resp, expectedCode);
   return resp;
@@ -161,7 +161,7 @@ export async function sendSmtpEmail(opts: SmtpSendOptions): Promise<void> {
     const message = buildMessage(opts);
     // Dot-stuffing: per RFC 5321, any line beginning with "." must have an extra "." prepended
     const stuffed = message.replace(/^\./gm, "..");
-    await new Promise<void>((res) => socket.write(stuffed + "\r\n.\r\n", res));
+    await new Promise<void>((res, rej) => { socket.write(stuffed + "\r\n.\r\n", (err) => { if (err) rej(err); else res(); }); });
     const dataResp = await readResponse(socket);
     expectCode(dataResp, "250");
 

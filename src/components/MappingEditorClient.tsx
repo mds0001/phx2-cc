@@ -34,6 +34,7 @@ import {
 import { createClient } from "@/lib/supabase-browser";
 import { validateFilterExpression } from "@/lib/filterExpression";
 import { listZipFiles } from "@/lib/zip";
+import type { CustomerOption } from "@/components/CustomerSwitcher";
 import type {
   MappingProfile,
   ZipFileEntry,
@@ -127,10 +128,13 @@ interface Props {
   returnMode?: string | null;
   returnTaskId?: string | null;
   isReadOnly?: boolean;
+  isAdmin?: boolean;
+  customers?: CustomerOption[];
+  scopedCustomerId?: string | null;
 }
 
 // ── Component ──────────────────────────────────────────────────
-export default function MappingEditorClient({ profile, isNew, userId, returnTo, returnMode, returnTaskId, isReadOnly = false }: Props) {
+export default function MappingEditorClient({ profile, isNew, userId, returnTo, returnMode, returnTaskId, isReadOnly = false, isAdmin = false, customers = [], scopedCustomerId = null }: Props) {
   const router = useRouter();
   const supabase = createClient();
 
@@ -169,6 +173,9 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
   const [filterRules, setFilterRules] = useState<FilterRule[]>([]);
   const [connections, setConnections] = useState<EndpointConnection[]>([]);
   const [allProfiles, setAllProfiles] = useState<{ id: string; name: string }[]>([]);
+  const [customerId, setCustomerId] = useState<string | null>(
+    scopedCustomerId ?? profile?.customer_id ?? null
+  );
 
   // ── Zip File Order ───────────────────────────────────────────
   const [zipFileOrder, setZipFileOrder] = useState<ZipFileEntry[]>(
@@ -644,6 +651,7 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
         filter_expression: filterExpression.trim() || null,
         zip_file_order: zipFileOrder,
         created_by: userId,
+        customer_id: customerId ?? null,
       };
 
       if (isNew) {
@@ -685,7 +693,7 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
   }, [
     name, description, sourceFields, targetFields, mappings,
     sourceConnectionId, targetConnectionId, filterExpression, zipFileOrder,
-    userId, isNew, profile, supabase, router, targetBusinessObject,
+    userId, isNew, profile, supabase, router, targetBusinessObject, customerId,
   ]);
 
   // ── AI Guess: loading state for "Fetch from Ivanti" ─────────────────────────
@@ -925,6 +933,30 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
                 className="bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-gray-600"
               />
             </div>
+            {scopedCustomerId ? (
+              <div className="flex flex-col gap-1.5 md:col-span-2">
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Customer</label>
+                <div className="bg-gray-800/50 border border-gray-700 rounded-xl px-4 py-3 text-gray-400 text-sm">
+                  {customers.find((c) => c.id === scopedCustomerId)?.name ?? "Assigned customer"}
+                </div>
+              </div>
+            ) : isAdmin && customers.length > 0 ? (
+              <div className="flex flex-col gap-1.5 md:col-span-2">
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Customer</label>
+                <select
+                  value={customerId ?? ""}
+                  onChange={(e) => setCustomerId(e.target.value || null)}
+                  className="bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="">— No customer (shared) —</option>
+                  {customers.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}{c.company ? ` — ${c.company}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -2722,25 +2754,6 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
                     </div>
                   </div>
 
-                  <p className="text-xs text-gray-500">
-                    {autoMapSuggestions.length - autoMapSkipped.size} of {autoMapSuggestions.length} mappings will be applied.
-                  </p>
-
-                  <div className="flex items-center justify-between">
-                    <button
-                      onClick={() => { setAutoMapStep(2); setAutoMapError(null); }}
-                      className="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium rounded-xl transition-all"
-                    >
-                      <ArrowLeft className="w-4 h-4" /> Back
-                    </button>
-                    <button
-                      onClick={applyAutoMap}
-                      disabled={autoMapSuggestions.length === autoMapSkipped.size}
-                      className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-sm font-medium rounded-xl transition-all"
-                    >
-                      <Check className="w-4 h-4" /> Apply Mapping
-                    </button>
-                  </div>
                 </div>
               )}
 

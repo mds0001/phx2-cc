@@ -20,11 +20,12 @@ export async function POST(req: NextRequest) {
     }
 
     // Parse body
-    const { email, first_name, last_name, role } = await req.json() as {
+    const { email, first_name, last_name, role, customer_id } = await req.json() as {
       email: string;
       first_name?: string;
       last_name?: string;
       role: "administrator" | "schedule_administrator" | "basic";
+      customer_id?: string | null;
     };
 
     if (!email || !role) {
@@ -55,6 +56,7 @@ export async function POST(req: NextRequest) {
         last_name: last_name ?? null,
         role,
         user_type: role === "administrator" ? "admin" : role === "basic" ? "basic" : "user",
+        customer_id: role === "schedule_administrator" ? (customer_id ?? null) : null,
       }, { onConflict: "id" });
     }
 
