@@ -183,7 +183,7 @@ export default function DashboardClient({ profile, initialCounts, role, initialR
             <div className="w-8 h-8 rounded-xl flex items-center justify-center lg-glow-cyan" style={{ background: "linear-gradient(135deg, #00F5FF 0%, #7B61FF 100%)" }}>
               <Zap className="w-4 h-4 text-white" strokeWidth={2.5} />
             </div>
-            <span className="font-bold lg-gradient-text text-lg">LuminaGrid</span>
+            <span className="font-bold lg-gradient-text text-lg">Threads by Cloud Weavr</span>
           </div>
           <div className="flex items-center gap-3">
             {isAdmin && customers.length > 0 && (

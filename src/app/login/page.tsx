@@ -70,8 +70,8 @@ export default function LoginPage() {
             style={{ background: "linear-gradient(135deg, #00F5FF 0%, #7B61FF 100%)" }}>
             <Zap className="w-8 h-8 text-white" strokeWidth={2.5} />
           </div>
-          <h1 className="text-3xl font-bold text-white tracking-tight lg-gradient-text">LuminaGrid</h1>
-          <p className="text-slate-400 mt-1.5 text-sm">Intelligent data flow, anywhere to anywhere.</p>
+          <h1 className="text-3xl font-bold text-white tracking-tight lg-gradient-text">Threads by Cloud Weavr</h1>
+          <p className="text-slate-400 mt-1.5 text-sm">Weaves your cloud data.</p>
         </div>
 
         {/* Card */}
@@ -160,7 +160,7 @@ export default function LoginPage() {
         </div>
 
         <p className="text-center text-slate-600 text-xs mt-6">
-          LuminaGrid &copy; {new Date().getFullYear()} &mdash; Connect. Transform. Deliver.
+          Threads by Cloud Weavr &copy; {new Date().getFullYear()} &mdash; Weaves your cloud data.
         </p>
       </div>
     </div>

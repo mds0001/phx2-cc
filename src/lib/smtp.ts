@@ -32,7 +32,7 @@ function buildMessage(opts: SmtpSendOptions): string {
 
   const headers = [
     `Date: ${date}`,
-    `From: LuminaGrid <${from}>`,
+    `From: Threads by Cloud Weavr <${from}>`,
     `To: ${opts.to.join(", ")}`,
     `Subject: ${opts.subject}`,
     `MIME-Version: 1.0`,

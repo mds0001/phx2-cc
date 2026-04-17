@@ -3,8 +3,8 @@ import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 
 export const metadata: Metadata = {
-  title: "LuminaGrid — Intelligent Data Flow",
-  description: "Intelligent data flow, anywhere to anywhere. Connect, transform, and deliver data between any source and destination.",
+  title: "Threads by Cloud Weavr — Weaves your cloud data",
+  description: "Threads by Cloud Weavr weaves your cloud data. Connect, transform, and deliver data between any source and destination.",
 };
 
 export default function RootLayout({
