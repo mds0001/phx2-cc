@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
       email: string;
       first_name?: string;
       last_name?: string;
-      role: "administrator" | "schedule_administrator";
+      role: "administrator" | "schedule_administrator" | "basic";
     };
 
     if (!email || !role) {
@@ -54,7 +54,7 @@ export async function POST(req: NextRequest) {
         first_name: first_name ?? null,
         last_name: last_name ?? null,
         role,
-        user_type: role === "administrator" ? "admin" : "user",
+        user_type: role === "administrator" ? "admin" : role === "basic" ? "basic" : "user",
       }, { onConflict: "id" });
     }
 

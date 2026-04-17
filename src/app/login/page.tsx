@@ -38,7 +38,13 @@ export default function LoginPage() {
           options: { data: { first_name: firstName, last_name: lastName } },
         });
         if (error) throw error;
-        setMessage("Account created! Check your email to confirm before signing in.");
+        // Notify administrators of the new signup (fire-and-forget — don't block the UI)
+        fetch("/api/users/notify-signup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, first_name: firstName || undefined, last_name: lastName || undefined }),
+        }).catch(() => {/* ignore — email failure should not affect signup */});
+        setMessage("Account created! Check your email to confirm before signing in. An administrator will review your access.");
         setMode("login");
       }
     } catch (err: unknown) {

@@ -45,7 +45,7 @@ function configSummary(conn: EndpointConnection): string {
   }
 }
 
-export default function ConnectionsListClient({ connections: initial }: { connections: EndpointConnection[] }) {
+export default function ConnectionsListClient({ connections: initial, isReadOnly = false }: { connections: EndpointConnection[]; isReadOnly?: boolean }) {
   const router = useRouter();
   const supabase = createClient();
   const [connections, setConnections] = useState(initial);
@@ -103,13 +103,15 @@ export default function ConnectionsListClient({ connections: initial }: { connec
               )}
             </div>
           </div>
-          <button
-            onClick={() => router.push("/connections/new")}
-            className="flex items-center gap-2 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-white rounded-xl text-sm font-semibold transition-all shadow-lg shadow-cyan-500/20"
-          >
-            <Plus className="w-4 h-4" />
-            New Connection
-          </button>
+          {!isReadOnly && (
+            <button
+              onClick={() => router.push("/connections/new")}
+              className="flex items-center gap-2 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-white rounded-xl text-sm font-semibold transition-all shadow-lg shadow-cyan-500/20"
+            >
+              <Plus className="w-4 h-4" />
+              New Connection
+            </button>
+          )}
         </div>
       </header>
 
@@ -121,13 +123,15 @@ export default function ConnectionsListClient({ connections: initial }: { connec
             </div>
             <p className="text-gray-400 text-lg font-medium">No connections yet</p>
             <p className="text-gray-600 text-sm">Create your first endpoint connection to get started.</p>
-            <button
-              onClick={() => router.push("/connections/new")}
-              className="mt-2 flex items-center gap-2 px-5 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-white rounded-xl text-sm font-semibold transition-all"
-            >
-              <Plus className="w-4 h-4" />
-              New Connection
-            </button>
+            {!isReadOnly && (
+              <button
+                onClick={() => router.push("/connections/new")}
+                className="mt-2 flex items-center gap-2 px-5 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-white rounded-xl text-sm font-semibold transition-all"
+              >
+                <Plus className="w-4 h-4" />
+                New Connection
+              </button>
+            )}
           </div>
         ) : (
           grouped.map(({ type, items }) => {
@@ -175,21 +179,25 @@ export default function ConnectionsListClient({ connections: initial }: { connec
 
                       {/* Actions */}
                       <div className="flex items-center gap-2 pt-1 border-t border-gray-800">
-                        <button
-                          onClick={() => router.push(`/connections/${conn.id}`)}
-                          className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg text-xs font-medium transition-all"
-                        >
-                          <Edit2 className="w-3 h-3" />
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => handleDelete(conn.id)}
-                          disabled={deleting === conn.id}
-                          className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                          Delete
-                        </button>
+                        {!isReadOnly && (
+                          <>
+                            <button
+                              onClick={() => router.push(`/connections/${conn.id}`)}
+                              className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg text-xs font-medium transition-all"
+                            >
+                              <Edit2 className="w-3 h-3" />
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => handleDelete(conn.id)}
+                              disabled={deleting === conn.id}
+                              className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              Delete
+                            </button>
+                          </>
+                        )}
                         <span className="ml-auto text-xs text-gray-600">
                           {new Date(conn.updated_at).toLocaleDateString()}
                         </span>

@@ -473,6 +473,9 @@ function SmtpForm({ config, onChange }: { config: Record<string, string>; onChan
       <Field label="Password">
         <PasswordInput value={config.password ?? ""} onChange={(v) => onChange("password", v)} />
       </Field>
+      <Field label="From Address (optional)">
+        <TextInput value={config.from_address ?? ""} onChange={(v) => onChange("from_address", v)} placeholder="noreply@example.com — defaults to Login Name if blank" />
+      </Field>
     </>
   );
 }
@@ -833,10 +836,12 @@ export default function ConnectionEditorClient({
   connection,
   isNew,
   userId,
+  isReadOnly = false,
 }: {
   connection: EndpointConnection | null;
   isNew: boolean;
   userId: string;
+  isReadOnly?: boolean;
 }) {
   const router = useRouter();
   const supabase = createClient();
@@ -970,18 +975,25 @@ export default function ConnectionEditorClient({
                 : <FlaskConical className="w-4 h-4" />}
               {testing ? "Testing…" : "Test"}
             </button>
-            <button
-              onClick={handleSave}
-              disabled={saving || testing}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all shadow-lg ${
-                saved
-                  ? "bg-emerald-600 text-white shadow-emerald-600/20"
-                  : "bg-cyan-500 hover:bg-cyan-500 disabled:opacity-60 text-white shadow-cyan-500/20"
-              }`}
-            >
-              {saved ? <Check className="w-4 h-4" /> : <Save className="w-4 h-4" />}
-              {saved ? "Saved!" : saving ? "Saving…" : "Save"}
-            </button>
+            {!isReadOnly && (
+              <button
+                onClick={handleSave}
+                disabled={saving || testing}
+                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all shadow-lg ${
+                  saved
+                    ? "bg-emerald-600 text-white shadow-emerald-600/20"
+                    : "bg-cyan-500 hover:bg-cyan-500 disabled:opacity-60 text-white shadow-cyan-500/20"
+                }`}
+              >
+                {saved ? <Check className="w-4 h-4" /> : <Save className="w-4 h-4" />}
+                {saved ? "Saved!" : saving ? "Saving…" : "Save"}
+              </button>
+            )}
+            {isReadOnly && (
+              <span className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-amber-500/10 border border-amber-500/20 text-amber-400">
+                Read Only
+              </span>
+            )}
           </div>
         </div>
       </header>

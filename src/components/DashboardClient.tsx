@@ -54,6 +54,7 @@ interface Props {
 
 export default function DashboardClient({ profile, initialCounts, role, initialRecentRuns = [] }: Props) {
   const isAdmin = role === "administrator";
+  const isBasic = role === "basic";
   const router = useRouter();
   const supabase = createClient();
   const { theme, setTheme } = useTheme();
@@ -204,8 +205,8 @@ export default function DashboardClient({ profile, initialCounts, role, initialR
               <div className="hidden sm:block">
                 <p className="text-sm font-medium text-white leading-none">{fullName}</p>
                 <p className="text-xs text-gray-400 mt-0.5">{profile?.email}</p>
-                <p className={"text-xs font-medium mt-0.5 " + (isAdmin ? "text-violet-400" : "text-teal-400")}>
-                  {isAdmin ? "Administrator" : "Schedule Administrator"}
+                <p className={"text-xs font-medium mt-0.5 " + (isAdmin ? "text-violet-400" : role === "basic" ? "text-amber-400" : "text-teal-400")}>
+                  {isAdmin ? "Administrator" : role === "basic" ? "Basic" : "Schedule Administrator"}
                 </p>
               </div>
             </div>
@@ -251,7 +252,7 @@ export default function DashboardClient({ profile, initialCounts, role, initialR
         </div>
 
         {/* ── Quick Actions ── */}
-        <div className="space-y-4">
+        {!isBasic && <div className="space-y-4">
           <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest">Quick Actions</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
 
@@ -346,10 +347,10 @@ export default function DashboardClient({ profile, initialCounts, role, initialR
             )}
 
           </div>
-        </div>
+        </div>}
 
         {/* ── Recent Runs ── */}
-        <div className="space-y-4">
+        {!isBasic && <div className="space-y-4">
           <div className="flex items-center gap-2">
             <History className="w-4 h-4 text-gray-500" />
             <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest">Recent Runs</h3>
@@ -433,7 +434,7 @@ export default function DashboardClient({ profile, initialCounts, role, initialR
             </div>
           )}
 
-        </div>
+        </div>}
 
       </main>
     </div>

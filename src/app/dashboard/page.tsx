@@ -21,10 +21,16 @@ export default async function DashboardPage() {
     .from("scheduled_tasks")
     .select("status");
 
-  // BOH attention: customers with payment issues or licenses expiring soon
-  const { data: customers } = await supabase
-    .from("customers")
-    .select("payment_status, alert_days_before, customer_licenses(status, expiry_date, renewal_type)");
+  const role = (profile as { role?: string } | null)?.role ?? "schedule_administrator";
+  const isAdmin = role === "administrator";
+  const isBasic = role === "basic";
+
+  // BOH attention: only admins have access to the customers table
+  const { data: customers } = isAdmin
+    ? await supabase
+        .from("customers")
+        .select("payment_status, alert_days_before, customer_licenses(status, expiry_date, renewal_type)")
+    : { data: [] };
 
   let bohAttention = 0;
   const today = Date.now();
@@ -56,14 +62,15 @@ export default async function DashboardPage() {
   };
 
   // Fetch the 10 most recent SUMMARY log entries so the dashboard can show "Recent Runs"
-  const { data: recentSummaryLogs } = await supabase
-    .from("task_logs")
-    .select("id, task_id, details, created_at, scheduled_tasks(task_name, status)")
-    .eq("action", "SUMMARY")
-    .order("created_at", { ascending: false })
-    .limit(10);
-
-  const role = (profile as { role?: string } | null)?.role ?? "schedule_administrator";
+  // Skip for basic users — they only see the summary counts
+  const { data: recentSummaryLogs } = isBasic
+    ? { data: [] }
+    : await supabase
+        .from("task_logs")
+        .select("id, task_id, details, created_at, scheduled_tasks(task_name, status)")
+        .eq("action", "SUMMARY")
+        .order("created_at", { ascending: false })
+        .limit(10);
 
   return (
     <DashboardClient

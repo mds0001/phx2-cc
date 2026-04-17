@@ -113,6 +113,7 @@ interface Props {
   profile: Profile | null;
   initialTasks: ScheduledTask[];
   userId: string;
+  isReadOnly?: boolean;
 }
 
 interface FormState {
@@ -139,6 +140,7 @@ export default function SchedulerClient({
   profile,
   initialTasks,
   userId,
+  isReadOnly = false,
 }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -2166,7 +2168,7 @@ export default function SchedulerClient({
 
       <main className="max-w-7xl mx-auto px-6 py-10 space-y-10">
         {/* ── Create Task Form ── */}
-        <section>
+        {!isReadOnly && <section>
           <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
             <Plus className="w-5 h-5 text-indigo-400" />
             Create New Task
@@ -2404,7 +2406,7 @@ export default function SchedulerClient({
               </div>
             </form>
           </div>
-        </section>
+        </section>}
 
         {/* ── Task List ── */}
         <section>
@@ -2468,52 +2470,56 @@ export default function SchedulerClient({
 
                       {/* Actions */}
                       <div className="flex items-center gap-2 shrink-0 flex-wrap">
-                        <button
-                          onClick={() => openEdit(task)}
-                          className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg text-xs font-medium transition-all"
-                        >
-                          <Edit2 className="w-3 h-3" />
-                          Edit
-                        </button>
-
-                        <button
-                          onClick={() => executeTask(task)}
-                          disabled={isRunning}
-                          className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 text-emerald-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
-                        >
-                          {isRunning ? (
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                          ) : (
-                            <Play className="w-3 h-3" />
-                          )}
-                          {isRunning ? "Running…" : "Run Now"}
-                        </button>
-
-                        {(() => {
-                          const isCancelling = cancellingTasks.has(task.id);
-                          return (
+                        {!isReadOnly && (
+                          <>
                             <button
-                              onClick={() => cancelTask(task.id)}
-                              disabled={task.status === "cancelled" || !isRunning || isCancelling}
-                              className={`flex items-center gap-1.5 px-3 py-1.5 border rounded-lg text-xs font-medium transition-all disabled:opacity-40 ${
-                                isCancelling
-                                  ? "bg-orange-500/20 border-orange-500/40 text-orange-300 cursor-not-allowed"
-                                  : "bg-red-500/10 hover:bg-red-500/20 border-red-500/25 text-red-400"
-                              }`}
-                              title={
-                                isCancelling ? "Cancelling — finishing current row…"
-                                : task.status === "cancelled" ? "Already cancelled"
-                                : !isRunning ? "Task is not running"
-                                : "Cancel task"
-                              }
+                              onClick={() => openEdit(task)}
+                              className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg text-xs font-medium transition-all"
                             >
-                              {isCancelling
-                                ? <Loader2 className="w-3 h-3 animate-spin" />
-                                : <X className="w-3 h-3" />}
-                              {isCancelling ? "Cancelling…" : "Cancel"}
+                              <Edit2 className="w-3 h-3" />
+                              Edit
                             </button>
-                          );
-                        })()}
+
+                            <button
+                              onClick={() => executeTask(task)}
+                              disabled={isRunning}
+                              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 text-emerald-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
+                            >
+                              {isRunning ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <Play className="w-3 h-3" />
+                              )}
+                              {isRunning ? "Running…" : "Run Now"}
+                            </button>
+
+                            {(() => {
+                              const isCancelling = cancellingTasks.has(task.id);
+                              return (
+                                <button
+                                  onClick={() => cancelTask(task.id)}
+                                  disabled={task.status === "cancelled" || !isRunning || isCancelling}
+                                  className={`flex items-center gap-1.5 px-3 py-1.5 border rounded-lg text-xs font-medium transition-all disabled:opacity-40 ${
+                                    isCancelling
+                                      ? "bg-orange-500/20 border-orange-500/40 text-orange-300 cursor-not-allowed"
+                                      : "bg-red-500/10 hover:bg-red-500/20 border-red-500/25 text-red-400"
+                                  }`}
+                                  title={
+                                    isCancelling ? "Cancelling — finishing current row…"
+                                    : task.status === "cancelled" ? "Already cancelled"
+                                    : !isRunning ? "Task is not running"
+                                    : "Cancel task"
+                                  }
+                                >
+                                  {isCancelling
+                                    ? <Loader2 className="w-3 h-3 animate-spin" />
+                                    : <X className="w-3 h-3" />}
+                                  {isCancelling ? "Cancelling…" : "Cancel"}
+                                </button>
+                              );
+                            })()}
+                          </>
+                        )}
 
                         <button
                           onClick={() => toggleLogs(task.id)}
@@ -2532,13 +2538,15 @@ export default function SchedulerClient({
                           )}
                         </button>
 
-                        <button
-                          onClick={() => deleteTask(task.id)}
-                          className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-400 rounded-lg text-xs font-medium transition-all"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                          Delete
-                        </button>
+                        {!isReadOnly && (
+                          <button
+                            onClick={() => deleteTask(task.id)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-400 rounded-lg text-xs font-medium transition-all"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            Delete
+                          </button>
+                        )}
                       </div>
                     </div>
 

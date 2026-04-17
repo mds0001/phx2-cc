@@ -1,5 +1,5 @@
-export type UserType = "admin" | "user";
-export type UserRole = "administrator" | "schedule_administrator";
+export type UserType = "admin" | "user" | "basic";
+export type UserRole = "administrator" | "schedule_administrator" | "basic";
 
 // ── Back of House ─────────────────────────────────────────────
 
@@ -204,7 +204,7 @@ export interface FileConfig {
   zip_file_filter?: string;
 }
 export interface CloudConfig  { url: string; customer_id: string; customer_secret: string }
-export interface SmtpConfig   { server: string; port: string; login_name: string; password: string }
+export interface SmtpConfig   { server: string; port: string; login_name: string; password: string; from_address?: string }
 export interface OdbcConfig   { server_name: string; login_name: string; password: string; port: string }
 export interface PortalConfig { url: string; login_name: string; password: string }
 export interface IvantiConfig {

@@ -17,9 +17,10 @@ import type { MappingProfile } from "@/lib/types";
 
 interface Props {
   profiles: MappingProfile[];
+  isReadOnly?: boolean;
 }
 
-export default function MappingsListClient({ profiles: initial }: Props) {
+export default function MappingsListClient({ profiles: initial, isReadOnly = false }: Props) {
   const router = useRouter();
   const supabase = createClient();
   const [profiles, setProfiles] = useState(initial);
@@ -85,13 +86,15 @@ export default function MappingsListClient({ profiles: initial }: Props) {
             </div>
           </div>
 
-          <button
-            onClick={() => router.push("/mappings/new")}
-            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-all shadow-lg shadow-indigo-600/20"
-          >
-            <Plus className="w-4 h-4" />
-            New Profile
-          </button>
+          {!isReadOnly && (
+            <button
+              onClick={() => router.push("/mappings/new")}
+              className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-all shadow-lg shadow-indigo-600/20"
+            >
+              <Plus className="w-4 h-4" />
+              New Profile
+            </button>
+          )}
         </div>
       </header>
 
@@ -115,13 +118,15 @@ export default function MappingsListClient({ profiles: initial }: Props) {
               Create a profile to visually map source fields (Excel / API) to
               your target destination fields.
             </p>
-            <button
-              onClick={() => router.push("/mappings/new")}
-              className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition-all"
-            >
-              <Plus className="w-4 h-4" />
-              Create First Profile
-            </button>
+            {!isReadOnly && (
+              <button
+                onClick={() => router.push("/mappings/new")}
+                className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition-all"
+              >
+                <Plus className="w-4 h-4" />
+                Create First Profile
+              </button>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -140,30 +145,32 @@ export default function MappingsListClient({ profiles: initial }: Props) {
                     <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center group-hover:bg-indigo-500/20 transition-colors">
                       <GitMerge className="w-5 h-5 text-indigo-400" />
                     </div>
-                    <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        onClick={() => router.push(`/mappings/${p.id}`)}
-                        className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-gray-700 flex items-center justify-center text-gray-400 hover:text-white transition-all"
-                        title="Edit"
-                      >
-                        <Edit2 className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => handleDuplicate(p)}
-                        disabled={duplicating === p.id}
-                        className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-indigo-500/20 flex items-center justify-center text-gray-400 hover:text-indigo-400 transition-all disabled:opacity-50"
-                        title="Duplicate"
-                      >
-                        <Copy className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => handleDelete(p.id, p.name)}
-                        className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-red-500/20 flex items-center justify-center text-gray-400 hover:text-red-400 transition-all"
-                        title="Delete"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
+                    {!isReadOnly && (
+                      <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          onClick={() => router.push(`/mappings/${p.id}`)}
+                          className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-gray-700 flex items-center justify-center text-gray-400 hover:text-white transition-all"
+                          title="Edit"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDuplicate(p)}
+                          disabled={duplicating === p.id}
+                          className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-indigo-500/20 flex items-center justify-center text-gray-400 hover:text-indigo-400 transition-all disabled:opacity-50"
+                          title="Duplicate"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(p.id, p.name)}
+                          className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-red-500/20 flex items-center justify-center text-gray-400 hover:text-red-400 transition-all"
+                          title="Delete"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   <h3 className="text-white font-semibold mb-1 truncate">

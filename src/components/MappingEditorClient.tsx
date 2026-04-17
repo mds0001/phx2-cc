@@ -126,10 +126,11 @@ interface Props {
   returnTo?: string | null;
   returnMode?: string | null;
   returnTaskId?: string | null;
+  isReadOnly?: boolean;
 }
 
 // ── Component ──────────────────────────────────────────────────
-export default function MappingEditorClient({ profile, isNew, userId, returnTo, returnMode, returnTaskId }: Props) {
+export default function MappingEditorClient({ profile, isNew, userId, returnTo, returnMode, returnTaskId, isReadOnly = false }: Props) {
   const router = useRouter();
   const supabase = createClient();
 
@@ -824,31 +825,40 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
 
           {/* Header actions */}
           <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={() => { setAutoMapOpen(true); setAutoMapStep(1); setAutoMapError(null); }}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/30 text-violet-300"
-            >
-              <BrainCircuit className="w-4 h-4" />
-              Auto Map
-            </button>
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all shadow-lg ${
-                saved
-                  ? "bg-emerald-600 text-white shadow-emerald-600/20"
-                  : "bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white shadow-indigo-600/20"
-              }`}
-            >
-              {saved ? (
-                <Check className="w-4 h-4" />
-              ) : saving ? (
-                <Save className="w-4 h-4 animate-pulse" />
-              ) : (
-                <Save className="w-4 h-4" />
-              )}
-              {saved ? "Saved!" : saving ? "Saving…" : "Save"}
-            </button>
+            {!isReadOnly && (
+              <>
+                <button
+                  onClick={() => { setAutoMapOpen(true); setAutoMapStep(1); setAutoMapError(null); }}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/30 text-violet-300"
+                >
+                  <BrainCircuit className="w-4 h-4" />
+                  Auto Map
+                </button>
+                <button
+                  onClick={handleSave}
+                  disabled={saving}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all shadow-lg ${
+                    saved
+                      ? "bg-emerald-600 text-white shadow-emerald-600/20"
+                      : "bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white shadow-indigo-600/20"
+                  }`}
+                >
+                  {saved ? (
+                    <Check className="w-4 h-4" />
+                  ) : saving ? (
+                    <Save className="w-4 h-4 animate-pulse" />
+                  ) : (
+                    <Save className="w-4 h-4" />
+                  )}
+                  {saved ? "Saved!" : saving ? "Saving…" : "Save"}
+                </button>
+              </>
+            )}
+            {isReadOnly && (
+              <span className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-amber-500/10 border border-amber-500/20 text-amber-400">
+                Read Only
+              </span>
+            )}
           </div>
         </div>
       </header>

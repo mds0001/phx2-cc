@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
 import SchedulerClient from "@/components/SchedulerClient";
+import { isReadOnly } from "@/lib/permissions";
 
 export default async function SchedulerPage() {
   const supabase = await createClient();
@@ -29,6 +30,7 @@ export default async function SchedulerPage() {
         profile={profile}
         initialTasks={tasks ?? []}
         userId={user.id}
+        isReadOnly={isReadOnly((profile as { role?: string } | null)?.role)}
       />
     </Suspense>
   );

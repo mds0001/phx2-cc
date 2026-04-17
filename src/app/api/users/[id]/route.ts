@@ -27,7 +27,7 @@ export async function PATCH(
     const body = await req.json() as {
       first_name?: string;
       last_name?: string;
-      role?: "administrator" | "schedule_administrator";
+      role?: "administrator" | "schedule_administrator" | "basic";
     };
 
     if (body.role && body.role !== "administrator" && id === user.id) {
@@ -48,7 +48,7 @@ export async function PATCH(
     if (body.last_name  !== undefined) patch.last_name  = body.last_name;
     if (body.role       !== undefined) {
       patch.role      = body.role;
-      patch.user_type = body.role === "administrator" ? "admin" : "user";
+      patch.user_type = body.role === "administrator" ? "admin" : body.role === "basic" ? "basic" : "user";
     }
 
     const { error } = await supabase

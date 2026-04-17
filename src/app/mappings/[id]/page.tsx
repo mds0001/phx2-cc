@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
 import MappingEditorClient from "@/components/MappingEditorClient";
+import { isReadOnly } from "@/lib/permissions";
 
 export default async function MappingEditorPage({
   params,
@@ -18,6 +19,12 @@ export default async function MappingEditorPage({
   } = await supabase.auth.getUser();
 
   if (!user) redirect("/login");
+
+  const { data: userProfile } = await supabase.from("profiles").select("role").eq("id", user.id).single();
+  const readOnly = isReadOnly(userProfile?.role);
+
+  // Basic users cannot create new mapping profiles
+  if (readOnly && id === "new") redirect("/mappings");
 
   let profile = null;
   if (id !== "new") {
@@ -38,6 +45,7 @@ export default async function MappingEditorPage({
       returnTo={typeof sp.returnTo === "string" ? sp.returnTo : null}
       returnMode={typeof sp.returnMode === "string" ? sp.returnMode : null}
       returnTaskId={typeof sp.returnTaskId === "string" ? sp.returnTaskId : null}
+      isReadOnly={readOnly}
     />
   );
 }

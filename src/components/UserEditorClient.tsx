@@ -45,6 +45,11 @@ const ROLES: { value: UserRole; label: string; desc: string }[] = [
     label: "Schedule Administrator",
     desc: "Access to Scheduler, Field Mappings, and Endpoint Connections. No access to Back of House.",
   },
+  {
+    value: "basic",
+    label: "Basic",
+    desc: "Read-only access to Scheduler, Field Mappings, and Endpoint Connections. Cannot create, edit, or delete anything.",
+  },
 ];
 
 export default function UserEditorClient({ user, isNew, currentUserId }: Props) {
@@ -364,27 +369,31 @@ export default function UserEditorClient({ user, isNew, currentUserId }: Props) 
           <h3 className="text-sm font-semibold text-white mb-4">Access Summary</h3>
           <div className="space-y-2">
             {[
-              { feature: "Scheduler",           admin: true,  sched: true  },
-              { feature: "Field Mappings",       admin: true,  sched: true  },
-              { feature: "Endpoint Connections", admin: true,  sched: true  },
-              { feature: "Back of House",        admin: true,  sched: false },
-              { feature: "User Management",      admin: true,  sched: false },
+              { feature: "Scheduler",           admin: "write", sched: "write", basic: "read"  },
+              { feature: "Field Mappings",       admin: "write", sched: "write", basic: "read"  },
+              { feature: "Endpoint Connections", admin: "write", sched: "write", basic: "read"  },
+              { feature: "Back of House",        admin: "write", sched: "none",  basic: "none"  },
+              { feature: "User Management",      admin: "write", sched: "none",  basic: "none"  },
             ].map((row) => {
-              const hasAccess = role === "administrator" ? row.admin : row.sched;
+              const access = role === "administrator" ? row.admin : role === "schedule_administrator" ? row.sched : row.basic;
               return (
                 <div
                   key={row.feature}
                   className={`flex items-center justify-between px-4 py-2.5 rounded-xl transition-colors ${
-                    hasAccess ? "bg-emerald-500/5 border border-emerald-500/10" : "bg-gray-800/30 border border-gray-700/30"
+                    access === "write" ? "bg-emerald-500/5 border border-emerald-500/10"
+                    : access === "read" ? "bg-blue-500/5 border border-blue-500/10"
+                    : "bg-gray-800/30 border border-gray-700/30"
                   }`}
                 >
-                  <span className={`text-sm ${hasAccess ? "text-white" : "text-gray-500"}`}>{row.feature}</span>
+                  <span className={`text-sm ${access !== "none" ? "text-white" : "text-gray-500"}`}>{row.feature}</span>
                   <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
-                    hasAccess
+                    access === "write"
                       ? "text-emerald-400 bg-emerald-500/10 border border-emerald-500/20"
+                      : access === "read"
+                      ? "text-blue-400 bg-blue-500/10 border border-blue-500/20"
                       : "text-gray-600 bg-gray-700/30 border border-gray-700/30"
                   }`}>
-                    {hasAccess ? "Allowed" : "Denied"}
+                    {access === "write" ? "Read + Write" : access === "read" ? "Read Only" : "No Access"}
                   </span>
                 </div>
               );

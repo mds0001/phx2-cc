@@ -11,6 +11,7 @@ import {
   Shield,
   CalendarClock,
   User,
+  Eye,
 } from "lucide-react";
 import type { Profile, UserRole } from "@/lib/types";
 
@@ -41,6 +42,12 @@ const ROLE_META: Record<UserRole, { label: string; color: string; bg: string; bo
     bg: "bg-cyan-500/10",
     border: "border-cyan-500/20",
   },
+  basic: {
+    label: "Basic",
+    color: "text-amber-400",
+    bg: "bg-amber-500/10",
+    border: "border-amber-500/20",
+  },
 };
 
 export default function UsersListClient({ users, currentUserId }: Props) {
@@ -50,12 +57,13 @@ export default function UsersListClient({ users, currentUserId }: Props) {
 
   const filtered = users.filter((u) => {
     const q = search.toLowerCase();
+    const role = (u.role ?? "basic") as UserRole;
     return (
       !q ||
       u.first_name?.toLowerCase().includes(q) ||
       u.last_name?.toLowerCase().includes(q) ||
       u.email?.toLowerCase().includes(q) ||
-      ROLE_META[u.role ?? "schedule_administrator"].label.toLowerCase().includes(q)
+      ROLE_META[role].label.toLowerCase().includes(q)
     );
   });
 
@@ -76,9 +84,10 @@ export default function UsersListClient({ users, currentUserId }: Props) {
 
   const admins = filtered.filter((u) => u.role === "administrator");
   const schedAdmins = filtered.filter((u) => u.role === "schedule_administrator");
+  const basicUsers = filtered.filter((u) => !u.role || u.role === "basic");
 
   function UserCard({ user }: { user: Profile }) {
-    const meta = ROLE_META[user.role ?? "schedule_administrator"];
+    const meta = ROLE_META[(user.role ?? "basic") as UserRole];
     const fullName = [user.first_name, user.last_name].filter(Boolean).join(" ") || "no name";
     const initials =
       [user.first_name?.[0], user.last_name?.[0]].filter(Boolean).join("").toUpperCase() || "?";
@@ -189,11 +198,12 @@ export default function UsersListClient({ users, currentUserId }: Props) {
           />
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {[
             { label: "Total Users", value: users.length, icon: User, color: "text-indigo-400", bg: "bg-indigo-500/10", border: "border-indigo-500/20" },
             { label: "Administrators", value: users.filter(u => u.role === "administrator").length, icon: Shield, color: "text-indigo-400", bg: "bg-indigo-500/10", border: "border-indigo-500/20" },
             { label: "Schedule Admins", value: users.filter(u => u.role === "schedule_administrator").length, icon: CalendarClock, color: "text-cyan-400", bg: "bg-cyan-500/10", border: "border-cyan-500/20" },
+            { label: "Basic", value: users.filter(u => !u.role || u.role === "basic").length, icon: Eye, color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/20" },
           ].map((s) => {
             const Icon = s.icon;
             return (
@@ -228,6 +238,18 @@ export default function UsersListClient({ users, currentUserId }: Props) {
             </h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {schedAdmins.map((u) => <UserCard key={u.id} user={u} />)}
+            </div>
+          </section>
+        )}
+
+        {basicUsers.length > 0 && (
+          <section className="space-y-3">
+            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest flex items-center gap-2">
+              <Eye className="w-3.5 h-3.5 text-amber-400" />
+              {"Basic — Pending Role Assignment (" + basicUsers.length + ")"}
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {basicUsers.map((u) => <UserCard key={u.id} user={u} />)}
             </div>
           </section>
         )}
