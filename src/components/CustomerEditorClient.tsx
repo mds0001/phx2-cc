@@ -532,9 +532,14 @@ export default function CustomerEditorClient({ customer, licenses: initialLicens
                             </span>
                           )}
                         </div>
-                        {lt?.description && (
-                          <p className="text-xs text-gray-500 mt-0.5 truncate">{lt.description}</p>
-                        )}
+                        <div className="flex items-center gap-2 flex-wrap mt-0.5">
+                          {lt?.description && (
+                            <p className="text-xs text-gray-500 truncate">{lt.description}</p>
+                          )}
+                          {lt && (
+                            <span className="text-xs font-semibold text-indigo-300 shrink-0">{formatPrice(lt.price_cents)}</span>
+                          )}
+                        </div>
                       </div>
                       <span className={`shrink-0 px-2.5 py-0.5 rounded-lg border text-xs font-semibold ${statusMeta.bg} ${statusMeta.color}`}>
                         {statusMeta.label}
