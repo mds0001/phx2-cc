@@ -62,9 +62,9 @@ export async function POST(req: NextRequest) {
     }
 
     const displayName = [first_name, last_name].filter(Boolean).join(" ") || email;
-    const subject = `New User Registration — Threads by Cloud Weavr`;
+    const subject = `New User Registration — Threads by Cloud Weaver`;
     const text = [
-      `A new user has registered on Threads by Cloud Weavr and is awaiting role assignment.`,
+      `A new user has registered on Threads by Cloud Weaver and is awaiting role assignment.`,
       ``,
       `Name:   ${displayName}`,
       `Email:  ${email}`,
@@ -72,7 +72,7 @@ export async function POST(req: NextRequest) {
       ``,
       `Please log in to User Management to review and assign an appropriate role.`,
       ``,
-      `— Threads by Cloud Weavr`,
+      `— Threads by Cloud Weaver`,
     ].join("\n");
 
     const html = `
@@ -80,7 +80,7 @@ export async function POST(req: NextRequest) {
 <html>
 <body style="font-family:sans-serif;color:#1e293b;background:#f8fafc;margin:0;padding:32px">
   <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:12px;border:1px solid #e2e8f0;padding:32px">
-    <div style="font-size:22px;font-weight:700;color:#6366f1;margin-bottom:8px">Threads by Cloud Weavr</div>
+    <div style="font-size:22px;font-weight:700;color:#6366f1;margin-bottom:8px">Threads by Cloud Weaver</div>
     <h2 style="font-size:16px;font-weight:600;margin:0 0 20px">New User Registration</h2>
     <p style="margin:0 0 16px;font-size:14px;color:#475569">
       A new user has registered and is awaiting role assignment.
@@ -102,7 +102,7 @@ export async function POST(req: NextRequest) {
       </tr>
     </table>
     <a href="https://cloudweavr.com/login" style="display:inline-block;margin-top:8px;padding:10px 20px;background:linear-gradient(135deg,#00c8ff 0%,#7B61FF 100%);color:#fff;font-size:14px;font-weight:600;text-decoration:none;border-radius:8px">
-      Open Threads by Cloud Weavr →
+      Open Threads by Cloud Weaver →
     </a>
   </div>
 </body>
@@ -114,7 +114,7 @@ export async function POST(req: NextRequest) {
     if (resendApiKey) {
       await sendViaResend({
         apiKey: resendApiKey,
-        from: "Threads by Cloud Weavr <onboarding@resend.dev>",
+        from: "Threads by Cloud Weaver <onboarding@resend.dev>",
         to: adminEmails,
         subject,
         html,
@@ -141,7 +141,7 @@ export async function POST(req: NextRequest) {
       if (isResend) {
         await sendViaResend({
           apiKey: smtpConfig.password,
-          from: `Threads by Cloud Weavr <${fromAddress}>`,
+          from: `Threads by Cloud Weaver <${fromAddress}>`,
           to: adminEmails,
           subject,
           html,

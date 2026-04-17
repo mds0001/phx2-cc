@@ -32,7 +32,7 @@ function buildMessage(opts: SmtpSendOptions): string {
 
   const headers = [
     `Date: ${date}`,
-    `From: Threads by Cloud Weavr <${from}>`,
+    `From: Threads by Cloud Weaver <${from}>`,
     `To: ${opts.to.join(", ")}`,
     `Subject: ${opts.subject}`,
     `MIME-Version: 1.0`,
