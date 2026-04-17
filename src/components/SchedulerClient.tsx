@@ -950,10 +950,17 @@ export default function SchedulerClient({
                 .map((m) => fileMappingProfile?.target_fields.find((f) => f.id === m.targetFieldId)?.name)
                 .filter((n): n is string => !!n);
               const fileLinkFieldBoNames: Record<string, string> = {};
+              const fileLinkFieldLookupFields: Record<string, string> = {};
               for (const m of fileLinkMappings) {
                 const fieldName = fileMappingProfile?.target_fields.find((f) => f.id === m.targetFieldId)?.name;
                 if (fieldName && m.linkFieldBoName) fileLinkFieldBoNames[fieldName] = m.linkFieldBoName;
+                if (fieldName && m.linkFieldLookupField) fileLinkFieldLookupFields[fieldName] = m.linkFieldLookupField;
               }
+              // Build composite upsert key from mapping rows marked isKey.
+              const fileUpsertKeys = (fileMappingProfile?.mappings ?? [])
+                .filter((m) => m.isKey)
+                .map((m) => fileMappingProfile?.target_fields.find((f) => f.id === m.targetFieldId)?.name)
+                .filter((n): n is string => !!n);
               const skipIfExists = (task.write_mode ?? "upsert") === "create_only";
               let proxyBody: Record<string, unknown> = {
                 ivantiUrl: effectiveUrl,
@@ -963,6 +970,8 @@ export default function SchedulerClient({
                 tenantId: effectiveTenantId,
                 ...(fileLinkFieldNames.length > 0 && { linkFieldNames: fileLinkFieldNames }),
                 ...(Object.keys(fileLinkFieldBoNames).length > 0 && { linkFieldBoNames: fileLinkFieldBoNames }),
+                ...(Object.keys(fileLinkFieldLookupFields).length > 0 && { linkFieldLookupFields: fileLinkFieldLookupFields }),
+                ...(fileUpsertKeys.length > 0 && { upsertKeys: fileUpsertKeys }),
                 ...(skipIfExists && { skipIfExists: true }),
               };
               if (resolvedConnType === "dell") {
@@ -1274,10 +1283,17 @@ export default function SchedulerClient({
                   .map((m) => mappingProfile?.target_fields.find((f) => f.id === m.targetFieldId)?.name)
                   .filter((n): n is string => !!n);
                 const linkFieldBoNames: Record<string, string> = {};
+                const linkFieldLookupFields: Record<string, string> = {};
                 for (const m of linkMappings) {
                   const fieldName = mappingProfile?.target_fields.find((f) => f.id === m.targetFieldId)?.name;
                   if (fieldName && m.linkFieldBoName) linkFieldBoNames[fieldName] = m.linkFieldBoName;
+                  if (fieldName && m.linkFieldLookupField) linkFieldLookupFields[fieldName] = m.linkFieldLookupField;
                 }
+                // Build composite upsert key from mapping rows marked isKey.
+                const upsertKeys = (mappingProfile?.mappings ?? [])
+                  .filter((m) => m.isKey)
+                  .map((m) => mappingProfile?.target_fields.find((f) => f.id === m.targetFieldId)?.name)
+                  .filter((n): n is string => !!n);
                 let proxyBody: Record<string, unknown> = {
                   ivantiUrl: tgtRaw?.url,
                   data: payload,
@@ -1286,6 +1302,8 @@ export default function SchedulerClient({
                   tenantId: tgtRaw?.tenant_id,
                   ...(linkFieldNames.length > 0 && { linkFieldNames }),
                   ...(Object.keys(linkFieldBoNames).length > 0 && { linkFieldBoNames }),
+                  ...(Object.keys(linkFieldLookupFields).length > 0 && { linkFieldLookupFields }),
+                  ...(upsertKeys.length > 0 && { upsertKeys }),
                 };
                 if (targetConnType === "dell") {
                   proxyRoute = "/api/dell-proxy";

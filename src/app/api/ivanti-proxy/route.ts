@@ -6,6 +6,10 @@ const FALLBACK_API_KEY = "251E668B0B42478EB3DA9D6E8446CA0B";
 // Avoids a $top=0 probe on every row — probe runs once per BO per process lifetime.
 const boNameCache = new Map<string, string>();
 
+// Module-level cache for link-field resolution: maps "${boName}::${displayValue}" -> RecID.
+// null = lookup was attempted but failed (so we skip retrying on every row).
+const linkFieldCache = new Map<string, string | null>();
+
 // Escape a string value for use inside an OData $filter single-quoted literal.
 function odataEscape(val: string): string {
   return val.replace(/'/g, "''");
@@ -64,7 +68,8 @@ async function resolveLinkFields(
   tenantId?: string,
   businessObject = "CI__Computers",
   linkFieldNames: string[] = [],
-  linkFieldBoNames: Record<string, string> = {}
+  linkFieldBoNames: Record<string, string> = {},
+  linkFieldLookupFields: Record<string, string> = {}
 ): Promise<{ resolved: Record<string, unknown>; log: ResolvedField[] }> {
   const result: Record<string, unknown> = { ...payload };
   const log: ResolvedField[] = [];
@@ -73,15 +78,37 @@ async function resolveLinkFields(
   for (const [key, value] of Object.entries(payload)) {
     // Process fields that are either auto-detected _Link fields or explicitly
     // marked as link fields by the user via the mapping editor.
-    const isAutoLink = key.endsWith("Link");
     const isExplicitLink = linkFieldNames.includes(key);
+    // Auto-detect "Link"-suffix fields ONLY when the caller has NOT provided an
+    // explicit list. When an explicit list is present, trust it completely —
+    // don't add extra lookups for fields the user intentionally left unchecked.
+    const isAutoLink = linkFieldNames.length === 0 && key.endsWith("Link");
     if (!isAutoLink && !isExplicitLink) continue;
     if (typeof value !== "string" || !value.trim()) continue;
 
     // Use the explicit BO name supplied by the user in the mapping editor, or
     // fall back to auto-deriving it from the field name.
     const boName = linkFieldBoNames[key] ?? boNameFromLinkField(key);
+    console.log(`[ivanti-proxy] resolveLink field="${key}" explicit boName="${linkFieldBoNames[key]}" derived="${boNameFromLinkField(key)}" using="${boName}"`);
     if (!boName) continue;
+
+    // ── Module-level cache check ─────────────────────────────
+    // Avoids repeating expensive multi-variant lookups for the same (boName, value)
+    // pair across rows.  null in the cache means "previously tried and failed".
+    const lfCacheKey = `${boName}::${value}`;
+    if (linkFieldCache.has(lfCacheKey)) {
+      const cached = linkFieldCache.get(lfCacheKey)!;
+      if (cached) {
+        delete result[key];
+        result[`${key}_RecID`] = cached;
+        log.push({ field: key, value, recId: cached });
+        console.log(`[ivanti-proxy] ${key}="${value}" -> ${key}_RecID="${cached}" (cache hit)`);
+      } else {
+        log.push({ field: key, value, error: "Cached: lookup previously failed — skipping retry" });
+        console.warn(`[ivanti-proxy] ${key}="${value}": skipping (cached failure)`);
+      }
+      continue;
+    }
 
     const headers: Record<string, string> = {
       Authorization: `rest_api_key=${apiKey}`,
@@ -98,21 +125,42 @@ async function resolveLinkFields(
     // Also try with the '#' separator that Ivanti uses for namespaced BOs
     // (e.g. admin UI shows "Manufacturer#", API path may be "manufacturer%23s").
     const boLower = boName.toLowerCase();
-    const boVariants = [
-      `${boLower}s`,                     // manufacturers
-      `${boName}s`,                      // Manufacturers
-      `${boLower}%23s`,                  // manufacturer%23s  (# encoded)
-      `${boName}%23s`,                   // Manufacturer%23s
-      boName,                            // Manufacturer      (no plural, legacy)
-      `${boName}%23`,                    // Manufacturer%23
-      `frs_${boName}`,                   // frs_Manufacturer
-      `frs_${boLower}`,                  // frs_manufacturer
-      `frs_offering_${boName}`,          // frs_offering_Employee  (Ivanti Neurons common pattern)
-      `frs_offering_${boLower}`,         // frs_offering_employee
-      `frs_offering_${boLower}s`,        // frs_offering_employees
-      `CI_${boName}`,                    // CI_Manufacturer
-    ];
-    const lookupFields = [boName, "Name", "LoginName", "DisplayName", "FullName", "Email", "PrimaryEmail", "EmailAddress"];
+    // When the caller explicitly told us the BO name (via linkFieldBoNames), trust it and
+    // use a focused variant list. The exhaustive 12-variant list only runs when we have to
+    // guess the BO name from the field name alone.
+    const hasExplicitBoName = !!linkFieldBoNames[key];
+    const boVariants = hasExplicitBoName
+      ? [
+          `frs_offering_${boName}`,   // most common pattern for Ivanti Neurons picklist BOs
+          `frs_offering_${boLower}`,
+          boName,                     // exact name as given
+          `${boName}s`,               // pluralized
+          `${boLower}s`,
+          `frs_${boLower}`,
+        ]
+      : [
+          `${boLower}s`,
+          `${boName}s`,
+          `${boLower}%23s`,
+          `${boName}%23s`,
+          boName,
+          `${boName}%23`,
+          `frs_${boName}`,
+          `frs_${boLower}`,
+          `frs_offering_${boName}`,
+          `frs_offering_${boLower}`,
+          `frs_offering_${boLower}s`,
+          `CI_${boName}`,
+        ];
+    // When the user explicitly specified a lookup field in the mapping editor, use ONLY
+    // that field — no guessing, no fallback list. This is the fastest and most accurate path.
+    // Otherwise fall back to the per-BO focused list (explicit BO name) or the broad list.
+    const explicitLookupField = linkFieldLookupFields[key];
+    const lookupFields = explicitLookupField
+      ? [explicitLookupField]
+      : hasExplicitBoName
+        ? [boName, "Name", "DisplayName"]
+        : [boName, "Name", "LoginName", "DisplayName", "FullName", "Email", "PrimaryEmail", "EmailAddress"];
 
     directSearch:
     for (const boVariant of boVariants) {
@@ -170,11 +218,13 @@ async function resolveLinkFields(
     if (recId) {
       // Ivanti (Neurons) resolves link fields via a flat _RecID companion field.
       // Remove the display-value string and set the RecID field instead.
+      linkFieldCache.set(lfCacheKey, recId);
       delete result[key];
       result[`${key}_RecID`] = recId;
       log.push({ field: key, value, recId });
-      console.log(`[ivanti-proxy] ${key}="${value}" -> ${key}_RecID="${recId}"`);
+      console.log(`[ivanti-proxy] ${key}="${value}" -> ${key}_RecID="${recId}" (cached)`);
     } else {
+      linkFieldCache.set(lfCacheKey, null); // cache failure — skip on subsequent rows
       log.push({ field: key, value, error: lastError || "Unknown lookup failure" });
       console.warn(`[ivanti-proxy] Could not resolve ${key}="${value}": ${lastError}`);
     }
@@ -247,7 +297,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ existing });
     }
 
-    const { ivantiUrl, data, apiKey, businessObject, tenantId, linkFieldNames, linkFieldBoNames, upsertKey, skipIfExists } = body as {
+    const { ivantiUrl, data, apiKey, businessObject, tenantId, linkFieldNames, linkFieldBoNames, linkFieldLookupFields, upsertKey, upsertKeys, skipIfExists } = body as {
       ivantiUrl: string;
       data: Record<string, unknown>;
       apiKey?: string;
@@ -255,7 +305,13 @@ export async function POST(request: NextRequest) {
       tenantId?: string;
       linkFieldNames?: string[];
       linkFieldBoNames?: Record<string, string>;
+      /** Per-field explicit lookup field name: when set, the proxy uses only this field
+       *  to match the display value in the linked BO (e.g. { ivnt_VendorLink: "Name" }). */
+      linkFieldLookupFields?: Record<string, string>;
       upsertKey?: string;
+      /** Composite upsert key — one or more target field names that together identify
+       *  a unique record. Takes precedence over the legacy upsertKey (single field). */
+      upsertKeys?: string[];
       /** When true: if a record with the same key already exists, return a skipped response
        *  instead of PATCHing it. */
       skipIfExists?: boolean;
@@ -295,7 +351,7 @@ export async function POST(request: NextRequest) {
 
     // Resolve any _Link fields (display name -> RecID) before posting
     const { resolved: resolvedData, log: resolveLog } = await resolveLinkFields(
-      dateConvertedData, ivantiUrl, resolvedKey, tenantId, effectiveObject, linkFieldNames ?? [], linkFieldBoNames ?? {}
+      dateConvertedData, ivantiUrl, resolvedKey, tenantId, effectiveObject, linkFieldNames ?? [], linkFieldBoNames ?? {}, linkFieldLookupFields ?? {}
     );
 
     const base = ivantiUrl.replace(/\/$/, "");
@@ -331,15 +387,29 @@ export async function POST(request: NextRequest) {
     }
     const endpoint = `${base}/api/odata/businessobject/${resolvedBoName}`;
 
-    // ── Upsert: check for an existing record by upsertKey (default "Name") ────
-    const keyField = upsertKey ?? "Name";
-    const keyValue = resolvedData[keyField];
+    // ── Upsert: check for an existing record by key field(s) ─────────────────
+    // upsertKeys (array) takes precedence over the legacy upsertKey (single field).
+    // Falls back to "Name" when neither is supplied.
+    const keyFields: string[] = (upsertKeys && upsertKeys.length > 0)
+      ? upsertKeys
+      : [upsertKey ?? "Name"];
+
+    // Build the OData $filter — compound AND for multiple key fields.
+    const filterParts = keyFields
+      .map((f) => {
+        const v = resolvedData[f];
+        if (v === null || v === undefined || v === "") return null;
+        const escaped = String(v).replace(/'/g, "''");
+        return `${f} eq '${escaped}'`;
+      })
+      .filter((p): p is string => p !== null);
+
     let existingRecId: string | null = null;
 
-    if (keyValue && typeof keyValue === "string") {
+    if (filterParts.length > 0) {
       try {
-        const escaped = keyValue.replace(/'/g, "''");
-        const lookupUrl = `${endpoint}?$filter=${keyField} eq '${escaped}'&$select=RecId&$top=1`;
+        const filter = filterParts.join(" and ");
+        const lookupUrl = `${endpoint}?$filter=${encodeURIComponent(filter)}&$select=RecId&$top=1`;
         console.log("[ivanti-proxy] Upsert lookup:", lookupUrl);
         const lookupRes = await fetch(lookupUrl, { method: "GET", headers });
         if (lookupRes.ok) {
@@ -357,12 +427,12 @@ export async function POST(request: NextRequest) {
 
     // ── Skip if exists (create_only mode) ────────────────────────────────────
     if (skipIfExists && existingRecId) {
-      const keyVal = String(resolvedData[upsertKey ?? "Name"] ?? "");
-      console.log(`[ivanti-proxy] Skipping existing record (${upsertKey ?? "Name"}="${keyVal}", RecId=${existingRecId})`);
+      const keyDesc = keyFields.map((f) => `${f}="${resolvedData[f] ?? ""}"`).join(", ");
+      console.log(`[ivanti-proxy] Skipping existing record (${keyDesc}, RecId=${existingRecId})`);
       return NextResponse.json({
         status:  200,
         skipped: true,
-        reason:  `Record already exists (${upsertKey ?? "Name"}="${keyVal}")`,
+        reason:  `Record already exists (${keyDesc})`,
         upsert:  { method: "SKIP", existingRecId },
       });
     }
@@ -398,7 +468,7 @@ export async function POST(request: NextRequest) {
     // is not in CI.Computer's list even though it exists in the global picklist).
     if (response.status === 400 && typeof responseBody === "object" && responseBody !== null) {
       const messages: string[] = (responseBody as { message?: string[] }).message ?? [];
-      const invalidFieldRx = /UndefinedValidatedValue: '[^']+' is not in the validation list of validated field [^.]+\.([^\s;,]+)/g;
+      const invalidFieldRx = /UndefinedValidatedValue: '[^']+' is not in the validation list of validated field [^.]+\.([^\s;,.]+)/g;
       const invalidFields = new Set<string>();
       for (const msg of messages) {
         let m: RegExpExecArray | null;

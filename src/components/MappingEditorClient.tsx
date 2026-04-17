@@ -1578,8 +1578,19 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
                               <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-500 pointer-events-none" />
                             </div>
 
-                            {/* Link Field toggle */}
+                            {/* Key Field + Link Field toggles */}
                             <div className="flex items-center gap-2 flex-wrap mt-1">
+                              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={!!mapping.isKey}
+                                  onChange={(e) => updateMapping(mapping.id, { isKey: e.target.checked })}
+                                  className="w-3 h-3 rounded accent-amber-500 cursor-pointer"
+                                />
+                                <span className={`text-xs ${mapping.isKey ? "text-amber-400 font-medium" : "text-gray-500"}`}>
+                                  Key Field
+                                </span>
+                              </label>
                               <label className="flex items-center gap-1.5 cursor-pointer select-none">
                                 <input
                                   type="checkbox"
@@ -1592,13 +1603,22 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
                                 </span>
                               </label>
                               {mapping.isLinkField && (
-                                <input
-                                  type="text"
-                                  value={mapping.linkFieldBoName ?? ""}
-                                  onChange={(e) => updateMapping(mapping.id, { linkFieldBoName: e.target.value || undefined })}
-                                  placeholder="BO name (e.g. Location)"
-                                  className="flex-1 min-w-[120px] bg-gray-800 border border-indigo-500/30 rounded px-2 py-0.5 text-xs text-indigo-300 placeholder-indigo-500/40 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                                />
+                                <>
+                                  <input
+                                    type="text"
+                                    value={mapping.linkFieldBoName ?? ""}
+                                    onChange={(e) => updateMapping(mapping.id, { linkFieldBoName: e.target.value || undefined })}
+                                    placeholder="BO name (e.g. Vendor)"
+                                    className="flex-1 min-w-[120px] bg-gray-800 border border-indigo-500/30 rounded px-2 py-0.5 text-xs text-indigo-300 placeholder-indigo-500/40 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                  />
+                                  <input
+                                    type="text"
+                                    value={mapping.linkFieldLookupField ?? ""}
+                                    onChange={(e) => updateMapping(mapping.id, { linkFieldLookupField: e.target.value || undefined })}
+                                    placeholder="Lookup field (e.g. Name)"
+                                    className="flex-1 min-w-[120px] bg-gray-800 border border-indigo-500/30 rounded px-2 py-0.5 text-xs text-indigo-300 placeholder-indigo-500/40 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                  />
+                                </>
                               )}
                             </div>
                           </div>
@@ -2089,6 +2109,17 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
                           <label className="flex items-center gap-1.5 cursor-pointer select-none">
                             <input
                               type="checkbox"
+                              checked={!!mapping.isKey}
+                              onChange={(e) => updateMapping(mapping.id, { isKey: e.target.checked })}
+                              className="w-3 h-3 rounded accent-amber-500 cursor-pointer"
+                            />
+                            <span className={`text-xs ${mapping.isKey ? "text-amber-400 font-medium" : "text-gray-500"}`}>
+                              Key Field
+                            </span>
+                          </label>
+                          <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
                               checked={!!mapping.isLinkField}
                               onChange={(e) => updateMapping(mapping.id, { isLinkField: e.target.checked })}
                               className="w-3 h-3 rounded accent-indigo-500 cursor-pointer"
@@ -2098,13 +2129,22 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
                             </span>
                           </label>
                           {mapping.isLinkField && (
-                            <input
-                              type="text"
-                              value={mapping.linkFieldBoName ?? ""}
-                              onChange={(e) => updateMapping(mapping.id, { linkFieldBoName: e.target.value || undefined })}
-                              placeholder="BO name (e.g. Location)"
-                              className="flex-1 min-w-[120px] bg-gray-800 border border-indigo-500/30 rounded px-2 py-0.5 text-xs text-indigo-300 placeholder-indigo-500/40 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                            />
+                            <>
+                              <input
+                                type="text"
+                                value={mapping.linkFieldBoName ?? ""}
+                                onChange={(e) => updateMapping(mapping.id, { linkFieldBoName: e.target.value || undefined })}
+                                placeholder="BO name (e.g. Vendor)"
+                                className="flex-1 min-w-[120px] bg-gray-800 border border-indigo-500/30 rounded px-2 py-0.5 text-xs text-indigo-300 placeholder-indigo-500/40 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                              />
+                              <input
+                                type="text"
+                                value={mapping.linkFieldLookupField ?? ""}
+                                onChange={(e) => updateMapping(mapping.id, { linkFieldLookupField: e.target.value || undefined })}
+                                placeholder="Lookup field (e.g. Name)"
+                                className="flex-1 min-w-[120px] bg-gray-800 border border-indigo-500/30 rounded px-2 py-0.5 text-xs text-indigo-300 placeholder-indigo-500/40 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                              />
+                            </>
                           )}
                         </div>
                       </div>

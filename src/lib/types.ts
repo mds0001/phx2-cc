@@ -141,6 +141,13 @@ export interface MappingRow {
   // Explicit Ivanti business-object name to query when resolving this link field
   // (e.g. "Location", "Employee"). Overrides the name auto-derived from the field name.
   linkFieldBoName?: string;
+  // The field within the linked BO that holds the display value to match against
+  // (e.g. "Name", "ivnt_SubType"). When set, only this field is tried — no guessing.
+  linkFieldLookupField?: string;
+  /** When true this target field is part of the composite upsert key.
+   *  The proxy uses all key fields together to look up an existing record
+   *  before deciding to POST (create) or PATCH (update). */
+  isKey?: boolean;
 }
 
 /** A single file entry within a ZIP source — carries its path, an optional
