@@ -61,20 +61,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, notified: 0 });
     }
 
-    // Look up the first configured SMTP endpoint connection
-    const { data: smtpConnections } = await admin
-      .from("endpoint_connections")
-      .select("config")
-      .eq("type", "smtp")
-      .limit(1);
-
-    const smtpConfig = (smtpConnections?.[0]?.config ?? null) as SmtpConfig | null;
-
-    if (!smtpConfig?.server) {
-      console.warn("[notify-signup] No SMTP connection configured — skipping email notification");
-      return NextResponse.json({ success: true, notified: 0, warning: "No SMTP connection configured" });
-    }
-
     const displayName = [first_name, last_name].filter(Boolean).join(" ") || email;
     const subject = `New User Registration — LuminaGrid`;
     const text = [
@@ -115,38 +101,65 @@ export async function POST(req: NextRequest) {
         </td>
       </tr>
     </table>
-    <p style="font-size:13px;color:#94a3b8;margin:0">
-      Log in to <strong>User Management</strong> to assign an appropriate role.
-    </p>
+    <a href="https://phx2-cc.vercel.app/login" style="display:inline-block;margin-top:8px;padding:10px 20px;background:linear-gradient(135deg,#00c8ff 0%,#7B61FF 100%);color:#fff;font-size:14px;font-weight:600;text-decoration:none;border-radius:8px">
+      Open LuminaGrid →
+    </a>
   </div>
 </body>
 </html>`;
 
-    const isResend = smtpConfig.server.toLowerCase().includes("resend.com");
-    const fromAddress = smtpConfig.from_address || smtpConfig.login_name;
+    // Prefer RESEND_API_KEY env var; fall back to SMTP connection config
+    const resendApiKey = process.env.RESEND_API_KEY;
 
-    if (isResend) {
-      // Use Resend's HTTP API — more reliable than raw SMTP for Resend accounts
+    if (resendApiKey) {
       await sendViaResend({
-        apiKey: smtpConfig.password,  // Resend uses the API key as the SMTP password
-        from: `LuminaGrid <${fromAddress}>`,
+        apiKey: resendApiKey,
+        from: "LuminaGrid <onboarding@resend.dev>",
         to: adminEmails,
         subject,
         html,
         text,
       });
     } else {
-      await sendSmtpEmail({
-        server: smtpConfig.server,
-        port: parseInt(smtpConfig.port, 10) || 587,
-        login_name: smtpConfig.login_name,
-        password: smtpConfig.password,
-        from: fromAddress,
-        to: adminEmails,
-        subject,
-        text,
-        html,
-      });
+      // Fall back to SMTP connection config
+      const { data: smtpConnections } = await admin
+        .from("endpoint_connections")
+        .select("config")
+        .eq("type", "smtp")
+        .limit(1);
+
+      const smtpConfig = (smtpConnections?.[0]?.config ?? null) as SmtpConfig | null;
+
+      if (!smtpConfig?.server) {
+        console.warn("[notify-signup] No RESEND_API_KEY or SMTP connection configured — skipping");
+        return NextResponse.json({ success: true, notified: 0, warning: "No email service configured" });
+      }
+
+      const isResend = smtpConfig.server.toLowerCase().includes("resend.com");
+      const fromAddress = smtpConfig.from_address || (isResend ? "onboarding@resend.dev" : smtpConfig.login_name);
+
+      if (isResend) {
+        await sendViaResend({
+          apiKey: smtpConfig.password,
+          from: `LuminaGrid <${fromAddress}>`,
+          to: adminEmails,
+          subject,
+          html,
+          text,
+        });
+      } else {
+        await sendSmtpEmail({
+          server: smtpConfig.server,
+          port: parseInt(smtpConfig.port, 10) || 587,
+          login_name: smtpConfig.login_name,
+          password: smtpConfig.password,
+          from: fromAddress,
+          to: adminEmails,
+          subject,
+          text,
+          html,
+        });
+      }
     }
 
     console.log(`[notify-signup] Notified ${adminEmails.length} admin(s) about new user: ${email}`);
