@@ -15,7 +15,6 @@ export default async function MappingsPage() {
   const role = profile?.role;
   const activeCustomerId = await resolveCustomerFilter(role, profile?.customer_id);
 
-  const role = profile?.role;
   const { data: customers } = role !== "basic"
     ? await supabase.from("customers").select("id, name, company").order("name")
     : { data: [] };
