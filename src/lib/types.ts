@@ -178,15 +178,6 @@ export interface MappingRow {
   isKey?: boolean;
 }
 
-/** A single file entry within a ZIP source — carries its path, an optional
- *  per-file target connection override, and an optional per-file mapping
- *  profile override (null = use the parent mapping profile). */
-export interface ZipFileEntry {
-  path: string;
-  target_connection_id?: string | null;
-  mapping_profile_id?: string | null;
-}
-
 export interface MappingProfile {
   id: string;
   name: string;
@@ -198,8 +189,6 @@ export interface MappingProfile {
   target_connection_id?: string | null;
   target_business_object?: string | null;
   filter_expression?: string | null;
-  /** Ordered list of zip file entries (path + optional per-file target override) */
-  zip_file_order?: ZipFileEntry[] | null;
   customer_id?: string | null;
   /** When true, this is a locked system-provided template. Admins can promote/demote;
    *  all users can clone it via "Use as Template". */
@@ -230,10 +219,6 @@ export interface FileConfig {
   file_path: string;        // storage path (file mode) or directory prefix (directory mode)
   file_name?: string;       // display name of the selected file
   output_file_name?: string; // explicit output filename (directory mode)
-  /** When true, the uploaded file is a ZIP containing multiple files to process */
-  zip_mode?: boolean;
-  /** Glob-style filter applied to entries inside the zip, e.g. "*.xlsx" */
-  zip_file_filter?: string;
 }
 export interface CloudConfig  { url: string; customer_id: string; customer_secret: string }
 export interface SmtpConfig   { server: string; port: string; login_name: string; password: string; from_address?: string }

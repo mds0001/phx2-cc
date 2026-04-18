@@ -33,11 +33,9 @@ import type {
   RecurrenceType,
   MappingProfile,
   EndpointConnection,
-  ZipFileEntry,
 } from "@/lib/types";
 import { applyMappingProfile, MappingSlot } from "@/lib/types";
 import { evaluateFilter } from "@/lib/filterExpression";
-import { extractZipFile } from "@/lib/zip";
 import { GitMerge, Plug, BookOpen, Building2 } from "lucide-react";
 
 // ─── Helpers ────────────────────────────────────────────────
@@ -473,61 +471,23 @@ export default function SchedulerClient({
             throw new Error("Source endpoint is a file type but no file_path is configured in the connection.");
           }
 
-          const fileCfg = sourceConnRawConfig as { zip_mode?: string; zip_file_filter?: string; file_name?: string } | null;
-          const isZipMode = fileCfg?.zip_mode === "true";
+          const fileCfg = sourceConnRawConfig as { file_name?: string } | null;
 
-          // Build list of { label, buffer } to process — one entry for normal mode, N for zip mode
+          // Download the source file
           const fileEntries: { label: string; buffer: ArrayBuffer; targetConnId?: string | null; mappingProfileId?: string | null }[] = [];
 
-          if (isZipMode) {
-            await supabase.from("task_logs").insert({
-              task_id: task.id,
-              action: "INFO",
-              details: `ZIP mode: downloading archive ${resolvedSourceFilePath}`,
-            });
-            const { data: zipData, error: zipErr } = await supabase.storage
-              .from("task_files")
-              .download(resolvedSourceFilePath!);
-            if (zipErr || !zipData)
-              throw new Error("Failed to download ZIP: " + zipErr?.message);
-            const zipBuffer = await zipData.arrayBuffer();
-
-            const rawOrder = mappingProfile?.zip_file_order ?? [];
-            const fileOrder: ZipFileEntry[] = rawOrder.map((e) =>
-              typeof e === "string" ? { path: e as string } : e as ZipFileEntry
-            );
-            if (fileOrder.length === 0)
-              throw new Error("ZIP mode: no file execution order defined in mapping profile. Edit the mapping profile to configure the ZIP file order.");
-
-            await supabase.from("task_logs").insert({
-              task_id: task.id,
-              action: "INFO",
-              details: `ZIP mode: processing ${fileOrder.length} file(s) in order: ${fileOrder.map((e) => e.path.split("/").pop()).join(", ")}`,
-            });
-
-            for (const zipEntry of fileOrder) {
-              const buf = await extractZipFile(zipBuffer, zipEntry.path);
-              fileEntries.push({
-                label: zipEntry.path,
-                buffer: buf,
-                targetConnId: zipEntry.target_connection_id ?? null,
-                mappingProfileId: zipEntry.mapping_profile_id ?? null,
-              });
-            }
-          } else {
-            await supabase.from("task_logs").insert({
-              task_id: task.id,
-              action: "INFO",
-              details: `Downloading file: ${resolvedSourceFilePath}`,
-            });
-            const { data: fileData, error: dlError } = await supabase.storage
-              .from("task_files")
-              .download(resolvedSourceFilePath!);
-            if (dlError || !fileData)
-              throw new Error("Failed to download file: " + dlError?.message);
-            const label = fileCfg?.file_name ?? resolvedSourceFilePath.split("/").pop() ?? "file";
-            fileEntries.push({ label, buffer: await fileData.arrayBuffer() });
-          }
+          await supabase.from("task_logs").insert({
+            task_id: task.id,
+            action: "INFO",
+            details: `Downloading file: ${resolvedSourceFilePath}`,
+          });
+          const { data: fileData, error: dlError } = await supabase.storage
+            .from("task_files")
+            .download(resolvedSourceFilePath!);
+          if (dlError || !fileData)
+            throw new Error("Failed to download file: " + dlError?.message);
+          const label = fileCfg?.file_name ?? resolvedSourceFilePath.split("/").pop() ?? "file";
+          fileEntries.push({ label, buffer: await fileData.arrayBuffer() });
 
           for (const fileEntry of fileEntries) {
           const arrayBuffer = fileEntry.buffer;

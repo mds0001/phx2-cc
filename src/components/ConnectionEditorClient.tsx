@@ -225,7 +225,6 @@ function FileForm({ config, onChange }: { config: Record<string, string>; onChan
 
   const fileType = (config.file_type ?? "xlsx") as string;
   const fileMode = (config.file_mode ?? "file") as "file" | "directory";
-  const zipMode  = config.zip_mode === "true";
   const [showBrowser, setShowBrowser] = useState(false);
 
   async function handleFilePick(file: File) {
@@ -272,46 +271,6 @@ function FileForm({ config, onChange }: { config: Record<string, string>; onChan
             </button>
           ))}
         </div>
-      </Field>
-
-      {/* ZIP Mode */}
-      <Field label="ZIP Mode">
-        <button
-          type="button"
-          onClick={() => {
-            onChange("zip_mode", zipMode ? "" : "true");
-            if (!zipMode) {
-              onChange("file_path", "");
-              onChange("file_name", "");
-              onChange("zip_file_filter", "*.xlsx");
-            }
-          }}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all ${
-            zipMode
-              ? "bg-amber-500/20 border-amber-500/60 text-amber-300"
-              : "bg-gray-800 border-gray-700 text-gray-400 hover:border-amber-500/40 hover:text-amber-400"
-          }`}
-        >
-          <span className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center ${zipMode ? "border-amber-400 bg-amber-400" : "border-gray-500"}`}>
-            {zipMode && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
-          </span>
-          {zipMode ? "ZIP mode enabled" : "Enable ZIP mode"}
-        </button>
-        {zipMode && (
-          <div className="mt-3 space-y-3">
-            <p className="text-xs text-gray-500">Upload a ZIP archive containing multiple files. Each file will be processed individually when this endpoint is used as a source.</p>
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">File filter <span className="text-gray-600">(glob — which files inside the ZIP to process)</span></label>
-              <input
-                type="text"
-                value={config.zip_file_filter ?? "*.xlsx"}
-                onChange={(e) => onChange("zip_file_filter", e.target.value)}
-                placeholder="*.xlsx"
-                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-              />
-            </div>
-          </div>
-        )}
       </Field>
 
       {/* Mode: specific file vs directory */}
@@ -373,10 +332,10 @@ function FileForm({ config, onChange }: { config: Record<string, string>; onChan
                   )}
                   <div className="text-center">
                     <p className="text-sm font-medium text-white">{uploading ? "Uploading…" : "Drop a file here or click to browse"}</p>
-                    <p className="text-xs text-gray-500 mt-1">{zipMode ? ".zip archive" : `.${fileType} file`}</p>
+                    <p className="text-xs text-gray-500 mt-1">.{fileType} file</p>
                   </div>
                 </div>
-                <input ref={inputRef} type="file" className="hidden" accept={zipMode ? ".zip" : `.${fileType}`}
+                <input ref={inputRef} type="file" className="hidden" accept={`.${fileType}`}
                   onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFilePick(f); }}
                   disabled={uploading} />
               </label>
@@ -385,7 +344,7 @@ function FileForm({ config, onChange }: { config: Record<string, string>; onChan
               <label className="flex items-center gap-2 cursor-pointer text-xs text-gray-500 hover:text-amber-400 transition-colors w-fit mt-2">
                 <Upload className="w-3.5 h-3.5" />
                 Replace file
-                <input ref={inputRef} type="file" className="hidden" accept={zipMode ? ".zip" : `.${fileType}`}
+                <input ref={inputRef} type="file" className="hidden" accept={`.${fileType}`}
                   onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFilePick(f); }} />
               </label>
             )}

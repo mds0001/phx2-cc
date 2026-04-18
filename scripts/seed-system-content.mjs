@@ -105,6 +105,11 @@ async function main() {
 
   const summary = [];
 
+  // Strip prod-specific user references that won't exist in dev
+  function sanitize(rows) {
+    return rows.map((r) => ({ ...r, created_by: null, customer_id: null }));
+  }
+
   // ── 1. Endpoint connections (must come before mapping_profiles due to FK) ─
   process.stdout.write(`  ${'endpoint_connections'.padEnd(28)}`);
   try {
@@ -113,7 +118,7 @@ async function main() {
       console.log('— (none)');
       summary.push({ table: 'endpoint_connections', count: 0 });
     } else {
-      await upsertSystemRecords(dev, 'endpoint_connections', rows);
+      await upsertSystemRecords(dev, 'endpoint_connections', sanitize(rows));
       console.log(`✓  ${rows.length} template${rows.length !== 1 ? 's' : ''}`);
       summary.push({ table: 'endpoint_connections', count: rows.length });
     }
@@ -130,7 +135,7 @@ async function main() {
       console.log('— (none)');
       summary.push({ table: 'mapping_profiles', count: 0 });
     } else {
-      await upsertSystemRecords(dev, 'mapping_profiles', rows);
+      await upsertSystemRecords(dev, 'mapping_profiles', sanitize(rows));
       console.log(`✓  ${rows.length} template${rows.length !== 1 ? 's' : ''}`);
       summary.push({ table: 'mapping_profiles', count: rows.length });
     }

@@ -27,17 +27,13 @@ import {
   RefreshCw,
   ChevronUp,
   ChevronDown as ChevronDownIcon,
-  FileArchive,
-  GripVertical,
   PenLine,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
 import { validateFilterExpression } from "@/lib/filterExpression";
-import { listZipFiles } from "@/lib/zip";
 import type { CustomerOption } from "@/components/CustomerSwitcher";
 import type {
   MappingProfile,
-  ZipFileEntry,
   FieldDef,
   MappingRow,
   TransformType,
@@ -177,12 +173,6 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
     scopedCustomerId ?? profile?.customer_id ?? null
   );
 
-  // ── Zip File Order ───────────────────────────────────────────
-  const [zipFileOrder, setZipFileOrder] = useState<ZipFileEntry[]>(
-    (profile?.zip_file_order ?? []) as ZipFileEntry[]
-  );
-  const [zipLoading, setZipLoading] = useState(false);
-  const [zipLoadError, setZipLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     supabase
@@ -252,11 +242,10 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
           }
         }
       } else if (conn.type === "file") {
-        const cfg = conn.config as { file_path?: string; file_mode?: string; zip_mode?: boolean; file_name?: string };
+        const cfg = conn.config as { file_path?: string; file_mode?: string; file_name?: string };
         if (!cfg.file_path) throw new Error("No file path configured on this connection.");
         if (cfg.file_mode === "directory") throw new Error("Directory-mode connections cannot be enumerated. Set the connection to file mode with a specific file selected.");
-        if (cfg.zip_mode) throw new Error("ZIP-mode connections cannot be enumerated from the mapping screen. Configure field mappings manually or use a non-ZIP source connection.");
-        const { data: fileData, error: dlErr } = await supabase.storage.from("task_files").download(cfg.file_path);
+const { data: fileData, error: dlErr } = await supabase.storage.from("task_files").download(cfg.file_path);
         if (dlErr || !fileData) throw new Error("Failed to download file: " + dlErr?.message);
         const buf = await fileData.arrayBuffer();
         const wb = XLSX.read(buf, { type: "array" });
@@ -529,69 +518,6 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
     setMappings((p) => p.filter((m) => m.targetFieldId !== fieldId));
   }
 
-  // ── Zip File Order helpers ───────────────────────────────────
-  async function loadZipFiles() {
-    const srcConn = connections.find((c) => c.id === sourceConnectionId);
-    if (!srcConn || srcConn.type !== "file") {
-      setZipLoadError("Source connection is not a file endpoint.");
-      return;
-    }
-    const cfg = srcConn.config as { zip_mode?: string; zip_file_filter?: string; file_path?: string };
-    if (cfg.zip_mode !== "true") {
-      setZipLoadError("Source file endpoint does not have ZIP mode enabled.");
-      return;
-    }
-    if (!cfg.file_path) {
-      setZipLoadError("No ZIP file uploaded on the source connection yet.");
-      return;
-    }
-    setZipLoading(true);
-    setZipLoadError(null);
-    try {
-      const { data, error } = await supabase.storage.from("task_files").download(cfg.file_path);
-      if (error || !data) throw new Error(error?.message ?? "Download failed");
-      const buf = await data.arrayBuffer();
-      const files = listZipFiles(buf, cfg.zip_file_filter ?? "*.xlsx");
-      // Merge: keep existing entries (preserving target overrides), append new ones, drop removed
-      const existingPaths = new Set(zipFileOrder.map((e) => e.path));
-      const incomingPaths = new Set(files);
-      const existingByPath = new Map(zipFileOrder.map((e) => [e.path, e]));
-      const merged: ZipFileEntry[] = [
-        ...zipFileOrder.filter((e) => incomingPaths.has(e.path)), // keep ordered, preserve overrides
-        ...files.filter((f) => !existingPaths.has(f)).map((f) => ({ path: f })), // append new
-      ];
-      setZipFileOrder(merged);
-    } catch (err: unknown) {
-      setZipLoadError(err instanceof Error ? err.message : "Failed to read ZIP");
-    } finally {
-      setZipLoading(false);
-    }
-  }
-
-  function moveZipFile(index: number, direction: -1 | 1) {
-    const next = [...zipFileOrder];
-    const swap = index + direction;
-    if (swap < 0 || swap >= next.length) return;
-    [next[index], next[swap]] = [next[swap], next[index]];
-    setZipFileOrder(next);
-  }
-
-  function removeZipFile(index: number) {
-    setZipFileOrder((p) => p.filter((_, i) => i !== index));
-  }
-
-  function setZipFileTarget(index: number, targetConnId: string | null) {
-    setZipFileOrder((p) =>
-      p.map((e, i) => i === index ? { ...e, target_connection_id: targetConnId || null } : e)
-    );
-  }
-
-  function setZipFileMapping(index: number, mappingProfileId: string | null) {
-    setZipFileOrder((p) =>
-      p.map((e, i) => i === index ? { ...e, mapping_profile_id: mappingProfileId || null } : e)
-    );
-  }
-
   // ── Mapping row helpers ────────────────────────────────────
   function addMapping() {
     const unmappedSrc = sourceFields.find(
@@ -649,7 +575,6 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
         target_connection_id: targetConnectionId ?? null,
         target_business_object: targetBusinessObject.trim() || null,
         filter_expression: filterExpression.trim() || null,
-        zip_file_order: zipFileOrder,
         created_by: userId,
         customer_id: customerId ?? null,
       };
@@ -692,7 +617,7 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
     }
   }, [
     name, description, sourceFields, targetFields, mappings,
-    sourceConnectionId, targetConnectionId, filterExpression, zipFileOrder,
+    sourceConnectionId, targetConnectionId, filterExpression,
     userId, isNew, profile, supabase, router, targetBusinessObject, customerId,
   ]);
 
@@ -1331,126 +1256,6 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
           </div>
           )}
         </div>
-
-        {/* ── Zip File Order ── */}
-        {(() => {
-          const srcConn = connections.find((c) => c.id === sourceConnectionId);
-          const cfg = srcConn?.config as { zip_mode?: string; zip_file_filter?: string } | undefined;
-          if (srcConn?.type !== "file" || cfg?.zip_mode !== "true") return null;
-          return (
-            <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5 flex flex-col gap-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="w-7 h-7 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
-                    <FileArchive className="w-3.5 h-3.5 text-amber-400" />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-semibold text-white">Zip File Execution Order</h3>
-                    <p className="text-xs text-gray-500">
-                      Files matching <code className="text-amber-300/80">{cfg?.zip_file_filter ?? "*.xlsx"}</code> will be processed in this order
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={loadZipFiles}
-                  disabled={zipLoading}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/25 text-amber-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${zipLoading ? "animate-spin" : ""}`} />
-                  {zipLoading ? "Loading…" : "Load from ZIP"}
-                </button>
-              </div>
-
-              {zipLoadError && (
-                <p className="text-xs text-red-400 flex items-center gap-1.5">
-                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                  {zipLoadError}
-                </p>
-              )}
-
-              {zipFileOrder.length === 0 ? (
-                <div className="flex flex-col items-center gap-2 py-6 text-center border border-dashed border-gray-700 rounded-xl">
-                  <GripVertical className="w-6 h-6 text-gray-600" />
-                  <p className="text-sm text-gray-500">No files ordered yet.</p>
-                  <p className="text-xs text-gray-600">Click &quot;Load from ZIP&quot; to read the file list from the source connection&apos;s uploaded ZIP.</p>
-                </div>
-              ) : (
-                <div className="flex flex-col gap-2">
-                  {zipFileOrder.map((entry, idx) => (
-                    <div
-                      key={entry.path}
-                      className="flex flex-col gap-2 px-3 py-2.5 bg-gray-800 border border-gray-700/60 rounded-xl group"
-                    >
-                      {/* Top row: index + path + reorder + remove */}
-                      <div className="flex items-center gap-2">
-                        <span className="w-5 h-5 rounded-md bg-gray-700 flex items-center justify-center text-xs text-gray-400 font-mono shrink-0">
-                          {idx + 1}
-                        </span>
-                        <GripVertical className="w-3.5 h-3.5 text-gray-600 shrink-0" />
-                        <span className="flex-1 text-sm text-gray-200 font-mono truncate" title={entry.path}>
-                          {entry.path}
-                        </span>
-                        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button type="button" onClick={() => moveZipFile(idx, -1)} disabled={idx === 0}
-                            className="p-1 text-gray-500 hover:text-white disabled:opacity-20 transition-colors" title="Move up">
-                            <ChevronUp className="w-3.5 h-3.5" />
-                          </button>
-                          <button type="button" onClick={() => moveZipFile(idx, 1)} disabled={idx === zipFileOrder.length - 1}
-                            className="p-1 text-gray-500 hover:text-white disabled:opacity-20 transition-colors" title="Move down">
-                            <ChevronDownIcon className="w-3.5 h-3.5" />
-                          </button>
-                          <button type="button" onClick={() => removeZipFile(idx)}
-                            className="p-1 text-gray-600 hover:text-red-400 transition-colors ml-1" title="Remove">
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                      {/* Target endpoint row */}
-                      <div className="flex items-center gap-2 pl-7">
-                        <Plug className="w-3 h-3 text-gray-500 shrink-0" />
-                        <select
-                          value={entry.target_connection_id ?? ""}
-                          onChange={(e) => setZipFileTarget(idx, e.target.value || null)}
-                          className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-2.5 py-1 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-amber-500/50 appearance-none"
-                        >
-                          <option value="">— Use profile default target —</option>
-                          {connections.map((c) => (
-                            <option key={c.id} value={c.id}>
-                              [{c.type.toUpperCase()}] {c.name}
-                            </option>
-                          ))}
-                        </select>
-                        {entry.target_connection_id && (
-                          <span className="text-xs text-amber-400 shrink-0">override</span>
-                        )}
-                      </div>
-                      {/* Mapping profile row */}
-                      <div className="flex items-center gap-2 pl-7">
-                        <GitMerge className="w-3 h-3 text-gray-500 shrink-0" />
-                        <select
-                          value={entry.mapping_profile_id ?? ""}
-                          onChange={(e) => setZipFileMapping(idx, e.target.value || null)}
-                          className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-2.5 py-1 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-purple-500/50 appearance-none"
-                        >
-                          <option value="">— Use this profile&apos;s mappings —</option>
-                          {allProfiles
-                            .filter((p) => p.id !== profile?.id)
-                            .map((p) => (
-                              <option key={p.id} value={p.id}>{p.name}</option>
-                            ))}
-                        </select>
-                        {entry.mapping_profile_id && (
-                          <span className="text-xs text-purple-400 shrink-0">override</span>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })()}
 
         {/* ── Mapping rows ── */}
         <div>
