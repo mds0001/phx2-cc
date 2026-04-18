@@ -314,7 +314,8 @@ export default function SchedulerClient({
   async function handlePromote(id: string) {
     if (!confirm("Make this a system template? It will be visible to all users and locked for non-admins.")) return;
     setPromoting(id);
-    await supabase.from("scheduled_tasks").update({ is_system: true, customer_id: null }).eq("id", id);
+    const { error } = await supabase.from("scheduled_tasks").update({ is_system: true, customer_id: null }).eq("id", id);
+    if (error) { alert("Promote failed: " + error.message); setPromoting(null); return; }
     setTasks((p) => p.map((t) => t.id === id ? { ...t, is_system: true, customer_id: null } : t));
     setPromoting(null);
   }
@@ -322,7 +323,8 @@ export default function SchedulerClient({
   async function handleDemote(id: string) {
     if (!confirm("Remove this from system templates? It will become a regular task.")) return;
     setPromoting(id);
-    await supabase.from("scheduled_tasks").update({ is_system: false }).eq("id", id);
+    const { error } = await supabase.from("scheduled_tasks").update({ is_system: false }).eq("id", id);
+    if (error) { alert("Demote failed: " + error.message); setPromoting(null); return; }
     setTasks((p) => p.map((t) => t.id === id ? { ...t, is_system: false } : t));
     setPromoting(null);
   }
