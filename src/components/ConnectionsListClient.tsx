@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Plus, Plug, Trash2, Edit2, File, Cloud, Mail, Database, Globe,
   ArrowLeft, Zap, ShoppingCart, Package, Building2, Search,
+  Lock, Copy, Shield, ShieldOff,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
 import type { EndpointConnection, ConnectionType } from "@/lib/types";
@@ -47,11 +48,29 @@ function configSummary(conn: EndpointConnection): string {
 
 import CustomerSwitcher, { type CustomerOption } from "@/components/CustomerSwitcher";
 
-export default function ConnectionsListClient({ connections: initial, isReadOnly = false, customers = [], activeCustomerId = null }: { connections: EndpointConnection[]; isReadOnly?: boolean; customers?: CustomerOption[]; activeCustomerId?: string | null }) {
+export default function ConnectionsListClient({
+  connections: initial,
+  isReadOnly = false,
+  isAdmin = false,
+  customers = [],
+  activeCustomerId = null,
+}: {
+  connections: EndpointConnection[];
+  isReadOnly?: boolean;
+  isAdmin?: boolean;
+  customers?: CustomerOption[];
+  activeCustomerId?: string | null;
+}) {
   const router = useRouter();
   const supabase = createClient();
   const [connections, setConnections] = useState(initial);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [promoting, setPromoting] = useState<string | null>(null);
+  const [showSystem, setShowSystem] = useState(false);
+
+  const visibleConnections = showSystem
+    ? connections
+    : connections.filter((c) => !c.is_system);
 
   async function handleDelete(id: string) {
     if (!confirm("Delete this connection?")) return;
@@ -61,14 +80,34 @@ export default function ConnectionsListClient({ connections: initial, isReadOnly
     setDeleting(null);
   }
 
-  // Group by type, preserving TYPE_ORDER
+  async function handlePromote(id: string) {
+    if (!confirm("Make this a system template? It will be visible to all users and locked for editing by non-admins.")) return;
+    setPromoting(id);
+    await supabase.from("endpoint_connections").update({ is_system: true, customer_id: null }).eq("id", id);
+    setConnections((p) => p.map((c) => c.id === id ? { ...c, is_system: true, customer_id: null } : c));
+    setPromoting(null);
+  }
+
+  async function handleDemote(id: string) {
+    if (!confirm("Remove this from system templates? It will become a regular connection.")) return;
+    setPromoting(id);
+    await supabase.from("endpoint_connections").update({ is_system: false }).eq("id", id);
+    setConnections((p) => p.map((c) => c.id === id ? { ...c, is_system: false } : c));
+    setPromoting(null);
+  }
+
+  function handleUseAsTemplate(id: string) {
+    router.push(`/connections/new?from=${id}`);
+  }
+
+  // Group by type, preserving TYPE_ORDER (use filtered list)
   const grouped: { type: ConnectionType; items: EndpointConnection[] }[] = TYPE_ORDER
-    .map((t) => ({ type: t, items: connections.filter((c) => c.type === t) }))
+    .map((t) => ({ type: t, items: visibleConnections.filter((c) => c.type === t) }))
     .filter((g) => g.items.length > 0);
 
   // Any types not in TYPE_ORDER (future-proof)
   const knownTypes = new Set(TYPE_ORDER);
-  const extras = connections.filter((c) => !knownTypes.has(c.type));
+  const extras = visibleConnections.filter((c) => !knownTypes.has(c.type));
   if (extras.length > 0) {
     const extraGroups = Array.from(new Set(extras.map((c) => c.type))).map((t) => ({
       type: t,
@@ -108,6 +147,19 @@ export default function ConnectionsListClient({ connections: initial, isReadOnly
           <div className="flex items-center gap-3">
             {customers.length > 0 && (
               <CustomerSwitcher customers={customers} activeCustomerId={activeCustomerId} />
+            )}
+            {!isReadOnly && (
+              <button
+                onClick={() => setShowSystem((s) => !s)}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border transition-all ${
+                  showSystem
+                    ? "bg-cyan-500/15 border-cyan-500/40 text-cyan-400"
+                    : "bg-gray-800 border-gray-700 text-gray-400 hover:text-gray-300"
+                }`}
+              >
+                <Lock className="w-3.5 h-3.5" />
+                Show Templates
+              </button>
             )}
             {!isReadOnly && (
               <button
@@ -182,28 +234,75 @@ export default function ConnectionsListClient({ connections: initial, isReadOnly
                             <p className="text-xs text-gray-500 mt-0.5 truncate">{configSummary(conn)}</p>
                           </div>
                         </div>
+                        {conn.is_system && (
+                          <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-cyan-500/10 border border-cyan-500/25 text-cyan-400 text-xs font-medium shrink-0">
+                            <Lock className="w-3 h-3" />
+                            System
+                          </div>
+                        )}
                       </div>
 
                       {/* Actions */}
-                      <div className="flex items-center gap-2 pt-1 border-t border-gray-800">
-                        {!isReadOnly && (
+                      <div className="flex items-center gap-2 pt-1 border-t border-gray-800 flex-wrap">
+                        {conn.is_system ? (
                           <>
                             <button
-                              onClick={() => router.push(`/connections/${conn.id}`)}
-                              className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg text-xs font-medium transition-all"
+                              onClick={() => handleUseAsTemplate(conn.id)}
+                              className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/25 text-cyan-400 rounded-lg text-xs font-medium transition-all"
                             >
-                              <Edit2 className="w-3 h-3" />
-                              Edit
+                              <Copy className="w-3 h-3" />
+                              Use as Template
                             </button>
-                            <button
-                              onClick={() => handleDelete(conn.id)}
-                              disabled={deleting === conn.id}
-                              className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                              Delete
-                            </button>
+                            {isAdmin && (
+                              <>
+                                <button
+                                  onClick={() => router.push(`/connections/${conn.id}`)}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg text-xs font-medium transition-all"
+                                >
+                                  <Edit2 className="w-3 h-3" />
+                                  Edit
+                                </button>
+                                <button
+                                  onClick={() => handleDemote(conn.id)}
+                                  disabled={promoting === conn.id}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
+                                >
+                                  <ShieldOff className="w-3 h-3" />
+                                  Remove from System
+                                </button>
+                              </>
+                            )}
                           </>
+                        ) : (
+                          !isReadOnly && (
+                            <>
+                              <button
+                                onClick={() => router.push(`/connections/${conn.id}`)}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg text-xs font-medium transition-all"
+                              >
+                                <Edit2 className="w-3 h-3" />
+                                Edit
+                              </button>
+                              <button
+                                onClick={() => handleDelete(conn.id)}
+                                disabled={deleting === conn.id}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                                Delete
+                              </button>
+                              {isAdmin && (
+                                <button
+                                  onClick={() => handlePromote(conn.id)}
+                                  disabled={promoting === conn.id}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-cyan-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
+                                >
+                                  <Shield className="w-3 h-3" />
+                                  Make System
+                                </button>
+                              )}
+                            </>
+                          )
                         )}
                         <span className="ml-auto text-xs text-gray-600">
                           {new Date(conn.updated_at).toLocaleDateString()}

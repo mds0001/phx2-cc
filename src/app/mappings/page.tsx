@@ -13,6 +13,7 @@ export default async function MappingsPage() {
 
   const { data: profile } = await supabase.from("profiles").select("role, customer_id").eq("id", user.id).single();
   const role = profile?.role;
+  const isAdmin = role === "administrator";
   const activeCustomerId = await resolveCustomerFilter(role, profile?.customer_id);
 
   const { data: customers } = role !== "basic"
@@ -21,9 +22,10 @@ export default async function MappingsPage() {
 
   let query = supabase
     .from("mapping_profiles")
-    .select("id, name, description, created_at, updated_at, source_fields, target_fields, mappings, created_by, customer_id")
+    .select("id, name, description, created_at, updated_at, source_fields, target_fields, mappings, created_by, customer_id, is_system")
     .order("updated_at", { ascending: false });
-  if (activeCustomerId) query = query.eq("customer_id", activeCustomerId);
+  // Scoped users see their customer's records + all system records
+  if (activeCustomerId) query = query.or(`customer_id.eq.${activeCustomerId},is_system.eq.true`);
 
   const { data: profiles } = await query;
 
@@ -31,6 +33,7 @@ export default async function MappingsPage() {
     <MappingsListClient
       profiles={profiles ?? []}
       isReadOnly={isReadOnly(role)}
+      isAdmin={isAdmin}
       customers={customers ?? []}
       activeCustomerId={activeCustomerId}
     />

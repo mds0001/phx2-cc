@@ -14,6 +14,7 @@ export default async function ConnectionsPage() {
   const { data: profile } = await supabase.from("profiles").select("role, customer_id").eq("id", user.id).single();
 
   const role = profile?.role;
+  const isAdmin = role === "administrator";
   const activeCustomerId = await resolveCustomerFilter(role, profile?.customer_id);
 
   const { data: customers } = role !== "basic"
@@ -24,7 +25,8 @@ export default async function ConnectionsPage() {
     .from("endpoint_connections")
     .select("*")
     .order("updated_at", { ascending: false });
-  if (activeCustomerId) query = query.eq("customer_id", activeCustomerId);
+  // Scoped users see their customer's records + all system records
+  if (activeCustomerId) query = query.or(`customer_id.eq.${activeCustomerId},is_system.eq.true`);
 
   const { data: connections } = await query;
 
@@ -32,6 +34,7 @@ export default async function ConnectionsPage() {
     <ConnectionsListClient
       connections={connections ?? []}
       isReadOnly={isReadOnly(role)}
+      isAdmin={isAdmin}
       customers={customers ?? []}
       activeCustomerId={activeCustomerId}
     />

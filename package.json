@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "seed": "node scripts/seed-dev.mjs",
+    "seed:fresh": "node scripts/seed-dev.mjs --fresh",
+    "seed:reset": "node scripts/reset-dev.mjs",
+    "seed:system": "node scripts/seed-system-content.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.5.2",

@@ -12,9 +12,14 @@ yarn-debug.log*
 yarn-error.log*
 .env
 .env.local
+.env.seed
 .env.development.local
 .env.test.local
 .env.production.local
 .vercel
 *.tsbuildinfo
 next-env.d.ts
+
+# Plaintext key files — never commit
+*.txt
+start dev.bat

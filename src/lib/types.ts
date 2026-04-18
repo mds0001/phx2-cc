@@ -201,6 +201,9 @@ export interface MappingProfile {
   /** Ordered list of zip file entries (path + optional per-file target override) */
   zip_file_order?: ZipFileEntry[] | null;
   customer_id?: string | null;
+  /** When true, this is a locked system-provided template. Admins can promote/demote;
+   *  all users can clone it via "Use as Template". */
+  is_system?: boolean;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -282,6 +285,10 @@ export interface EndpointConnection {
   name: string;
   type: ConnectionType;
   config: ConnectionConfig;
+  customer_id?: string | null;
+  /** When true, this is a locked system-provided template. Admins can promote/demote;
+   *  all users can clone it via "Use as Template". */
+  is_system?: boolean;
   created_by: string | null;
   created_at: string;
   updated_at: string;

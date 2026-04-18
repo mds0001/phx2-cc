@@ -5,9 +5,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-npm run dev      # Start dev server (Next.js, http://localhost:3000)
-npm run build    # Production build
-npm run lint     # ESLint via next lint
+npm run dev          # Start dev server (Next.js, http://localhost:3000)
+npm run build        # Production build
+npm run lint         # ESLint via next lint
+npm run seed         # Copy production data → dev Supabase (skips existing rows)
+npm run seed:fresh   # Wipe dev tables first, then copy production data
+npm run seed:reset   # Wipe dev completely, create single admin@dev.local admin user
+npm run seed:system  # Sync all system templates (is_system=true) from prod → dev
 ```
 
 No test suite is configured — there is no test runner or test files in this project.
