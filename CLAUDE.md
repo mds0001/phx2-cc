@@ -74,3 +74,13 @@ When a task runs in `SchedulerClient`, it reads Excel source data, applies the m
 - Icons from `lucide-react`
 - Tailwind CSS for all styling
 - No UI component library — all components are hand-rolled
+
+## File Writing Rules
+
+- ALWAYS use the Write or Edit tools to create and modify files — never use bash heredocs or echo commands to write file content
+- Never truncate file content with placeholders like `// ... rest of file` or `// existing code`
+- When editing a file, read it first, then make targeted edits with the Edit tool
+
+## Shell Command Formatting
+
+- When providing shell commands (PowerShell, bash, etc.) for the user to copy and paste, always end the code block with a trailing newline after the last command so that it executes when pasted into a terminal
