@@ -36,7 +36,7 @@ import type {
 } from "@/lib/types";
 import { applyMappingProfile, MappingSlot } from "@/lib/types";
 import { evaluateFilter } from "@/lib/filterExpression";
-import { GitMerge, Plug, BookOpen, Building2 } from "lucide-react";
+import { GitMerge, Plug, BookOpen, Building2, Lock, Shield, ShieldOff } from "lucide-react";
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -231,6 +231,7 @@ export default function SchedulerClient({
   const [cancellingTasks, setCancellingTasks] = useState<Set<string>>(new Set());
   const [mappingProfiles, setMappingProfiles] = useState<MappingProfile[]>([]);
   const [endpointConnections, setEndpointConnections] = useState<EndpointConnection[]>([]);
+  const [promoting, setPromoting] = useState<string | null>(null);
 
   // Fetch log counts for the initial task list on mount (tasks are SSR'd, counts are not)
   useEffect(() => {
@@ -291,10 +292,9 @@ export default function SchedulerClient({
 
   // ── Fetch tasks ──────────────────────────────────────────
   const fetchTasks = useCallback(async () => {
-    const { data } = await supabase
-      .from("scheduled_tasks")
-      .select("*")
-      .order("created_at", { ascending: false });
+    let q = supabase.from("scheduled_tasks").select("*").order("created_at", { ascending: false });
+    if (activeCustomerId) q = q.or(`customer_id.eq.${activeCustomerId},is_system.eq.true`);
+    const { data } = await q;
     if (data) setTasks(data);
 
     // Fetch log counts for all tasks
@@ -308,7 +308,50 @@ export default function SchedulerClient({
       }
       setLogCounts(tally);
     }
-  }, [supabase]);
+  }, [supabase, activeCustomerId]);
+
+  // ── System template promote / demote / clone ──────────────
+  async function handlePromote(id: string) {
+    if (!confirm("Make this a system template? It will be visible to all users and locked for non-admins.")) return;
+    setPromoting(id);
+    await supabase.from("scheduled_tasks").update({ is_system: true, customer_id: null }).eq("id", id);
+    setTasks((p) => p.map((t) => t.id === id ? { ...t, is_system: true, customer_id: null } : t));
+    setPromoting(null);
+  }
+
+  async function handleDemote(id: string) {
+    if (!confirm("Remove this from system templates? It will become a regular task.")) return;
+    setPromoting(id);
+    await supabase.from("scheduled_tasks").update({ is_system: false }).eq("id", id);
+    setTasks((p) => p.map((t) => t.id === id ? { ...t, is_system: false } : t));
+    setPromoting(null);
+  }
+
+  async function handleUseAsTemplate(task: ScheduledTask) {
+    const newName = prompt("Name for your new task:", task.task_name);
+    if (!newName?.trim()) return;
+    const newSlots = (task.mapping_slots ?? []).map((s) => ({ ...s, id: crypto.randomUUID() }));
+    const { data, error } = await supabase
+      .from("scheduled_tasks")
+      .insert({
+        task_name: newName.trim(),
+        start_date_time: new Date().toISOString(),
+        end_date_time: null,
+        recurrence: task.recurrence,
+        status: "waiting",
+        mapping_profile_id: task.mapping_profile_id,
+        mapping_slots: newSlots.length ? newSlots : null,
+        source_connection_id: task.source_connection_id,
+        target_connection_id: task.target_connection_id,
+        write_mode: task.write_mode ?? "upsert",
+        is_system: false,
+        customer_id: null,
+      })
+      .select("*")
+      .single();
+    if (error) { alert("Clone failed: " + error.message); return; }
+    setTasks((p) => [data as ScheduledTask, ...p]);
+  }
 
   // ── Fetch helper with retry (handles transient "Failed to fetch" errors) ──
   async function fetchWithRetry(url: string, options: RequestInit, retries = 2, delayMs = 1000): Promise<Response> {
@@ -2456,6 +2499,12 @@ export default function SchedulerClient({
                           <p className="text-white font-medium truncate">
                             {task.task_name}
                           </p>
+                          {task.is_system && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-cyan-500/10 border border-cyan-500/25 text-cyan-400 text-[10px] font-medium shrink-0">
+                              <Lock className="w-2.5 h-2.5" />
+                              System
+                            </span>
+                          )}
                           {task.customer_id && (() => {
                             const cust = customers.find((c) => c.id === task.customer_id);
                             return cust ? (
@@ -2480,55 +2529,103 @@ export default function SchedulerClient({
 
                       {/* Actions */}
                       <div className="flex items-center gap-2 shrink-0 flex-wrap">
-                        {!isReadOnly && (
+                        {task.is_system ? (
                           <>
-                            <button
-                              onClick={() => openEdit(task)}
-                              className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg text-xs font-medium transition-all"
-                            >
-                              <Edit2 className="w-3 h-3" />
-                              Edit
-                            </button>
-
-                            <button
-                              onClick={() => executeTask(task)}
-                              disabled={isRunning}
-                              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 text-emerald-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
-                            >
-                              {isRunning ? (
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                              ) : (
-                                <Play className="w-3 h-3" />
-                              )}
-                              {isRunning ? "Running…" : "Run Now"}
-                            </button>
-
-                            {(() => {
-                              const isCancelling = cancellingTasks.has(task.id);
-                              return (
+                            {/* Use as Template — available to all non-read-only users */}
+                            {!isReadOnly && (
+                              <button
+                                onClick={() => handleUseAsTemplate(task)}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/25 text-cyan-400 rounded-lg text-xs font-medium transition-all"
+                              >
+                                <Copy className="w-3 h-3" />
+                                Use as Template
+                              </button>
+                            )}
+                            {/* Admin-only: edit + demote */}
+                            {isAdmin && (
+                              <>
                                 <button
-                                  onClick={() => cancelTask(task.id)}
-                                  disabled={task.status === "cancelled" || !isRunning || isCancelling}
-                                  className={`flex items-center gap-1.5 px-3 py-1.5 border rounded-lg text-xs font-medium transition-all disabled:opacity-40 ${
-                                    isCancelling
-                                      ? "bg-orange-500/20 border-orange-500/40 text-orange-300 cursor-not-allowed"
-                                      : "bg-red-500/10 hover:bg-red-500/20 border-red-500/25 text-red-400"
-                                  }`}
-                                  title={
-                                    isCancelling ? "Cancelling — finishing current row…"
-                                    : task.status === "cancelled" ? "Already cancelled"
-                                    : !isRunning ? "Task is not running"
-                                    : "Cancel task"
-                                  }
+                                  onClick={() => openEdit(task)}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg text-xs font-medium transition-all"
                                 >
-                                  {isCancelling
-                                    ? <Loader2 className="w-3 h-3 animate-spin" />
-                                    : <X className="w-3 h-3" />}
-                                  {isCancelling ? "Cancelling…" : "Cancel"}
+                                  <Edit2 className="w-3 h-3" />
+                                  Edit
                                 </button>
-                              );
-                            })()}
+                                <button
+                                  onClick={() => handleDemote(task.id)}
+                                  disabled={promoting === task.id}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-gray-300 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
+                                  title="Remove from System"
+                                >
+                                  <ShieldOff className="w-3 h-3" />
+                                  Demote
+                                </button>
+                              </>
+                            )}
                           </>
+                        ) : (
+                          !isReadOnly && (
+                            <>
+                              <button
+                                onClick={() => openEdit(task)}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg text-xs font-medium transition-all"
+                              >
+                                <Edit2 className="w-3 h-3" />
+                                Edit
+                              </button>
+
+                              <button
+                                onClick={() => executeTask(task)}
+                                disabled={isRunning}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 text-emerald-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
+                              >
+                                {isRunning ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Play className="w-3 h-3" />
+                                )}
+                                {isRunning ? "Running…" : "Run Now"}
+                              </button>
+
+                              {(() => {
+                                const isCancelling = cancellingTasks.has(task.id);
+                                return (
+                                  <button
+                                    onClick={() => cancelTask(task.id)}
+                                    disabled={task.status === "cancelled" || !isRunning || isCancelling}
+                                    className={`flex items-center gap-1.5 px-3 py-1.5 border rounded-lg text-xs font-medium transition-all disabled:opacity-40 ${
+                                      isCancelling
+                                        ? "bg-orange-500/20 border-orange-500/40 text-orange-300 cursor-not-allowed"
+                                        : "bg-red-500/10 hover:bg-red-500/20 border-red-500/25 text-red-400"
+                                    }`}
+                                    title={
+                                      isCancelling ? "Cancelling — finishing current row…"
+                                      : task.status === "cancelled" ? "Already cancelled"
+                                      : !isRunning ? "Task is not running"
+                                      : "Cancel task"
+                                    }
+                                  >
+                                    {isCancelling
+                                      ? <Loader2 className="w-3 h-3 animate-spin" />
+                                      : <X className="w-3 h-3" />}
+                                    {isCancelling ? "Cancelling…" : "Cancel"}
+                                  </button>
+                                );
+                              })()}
+
+                              {isAdmin && (
+                                <button
+                                  onClick={() => handlePromote(task.id)}
+                                  disabled={promoting === task.id}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-cyan-500/10 border border-gray-700 hover:border-cyan-500/25 text-gray-400 hover:text-cyan-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
+                                  title="Make System Template"
+                                >
+                                  <Shield className="w-3 h-3" />
+                                  Make System
+                                </button>
+                              )}
+                            </>
+                          )
                         )}
 
                         <button
@@ -2548,7 +2645,7 @@ export default function SchedulerClient({
                           )}
                         </button>
 
-                        {!isReadOnly && (
+                        {!isReadOnly && !task.is_system && (
                           <button
                             onClick={() => deleteTask(task.id)}
                             className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-400 rounded-lg text-xs font-medium transition-all"

@@ -10,7 +10,8 @@
     "seed": "node scripts/seed-dev.mjs",
     "seed:fresh": "node scripts/seed-dev.mjs --fresh",
     "seed:reset": "node scripts/reset-dev.mjs",
-    "seed:system": "node scripts/seed-system-content.mjs"
+    "seed:system": "node scripts/seed-system-content.mjs",
+    "import:xml": "node scripts/import-xml-templates.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.5.2",

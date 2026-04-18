@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   ArrowLeft, Plug, Save, Check, Eye, EyeOff, Copy,
   File, Cloud, Mail, Database, Globe,
-  Upload, X, FileText, Loader2, Zap,
+  Upload, X, FileText, Loader2, Zap, Download,
   FolderOpen, Folder, ChevronRight, Home,
   Wifi, WifiOff, FlaskConical, ShoppingCart, Package, Building2, Search,
 } from "lucide-react";
@@ -249,6 +249,18 @@ function FileForm({ config, onChange }: { config: Record<string, string>; onChan
     if (inputRef.current) inputRef.current.value = "";
   }
 
+  async function handleDownload() {
+    if (!config.file_path) return;
+    const { data, error } = await supabase.storage.from("task_files").download(config.file_path);
+    if (error || !data) { alert("Download failed: " + error?.message); return; }
+    const url = URL.createObjectURL(data);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = config.file_name ?? config.file_path.split("/").pop() ?? "file";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   const displayName = config.file_name ?? (config.file_path ? config.file_path.split("/").pop() : null);
 
   return (
@@ -341,12 +353,22 @@ function FileForm({ config, onChange }: { config: Record<string, string>; onChan
               </label>
             )}
             {displayName && !uploading && (
-              <label className="flex items-center gap-2 cursor-pointer text-xs text-gray-500 hover:text-amber-400 transition-colors w-fit mt-2">
-                <Upload className="w-3.5 h-3.5" />
-                Replace file
-                <input ref={inputRef} type="file" className="hidden" accept={`.${fileType}`}
-                  onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFilePick(f); }} />
-              </label>
+              <div className="flex items-center gap-4 mt-2">
+                <label className="flex items-center gap-2 cursor-pointer text-xs text-gray-500 hover:text-amber-400 transition-colors w-fit">
+                  <Upload className="w-3.5 h-3.5" />
+                  Replace file
+                  <input ref={inputRef} type="file" className="hidden" accept={`.${fileType}`}
+                    onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFilePick(f); }} />
+                </label>
+                <button
+                  type="button"
+                  onClick={handleDownload}
+                  className="flex items-center gap-2 text-xs text-gray-500 hover:text-amber-400 transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Download
+                </button>
+              </div>
             )}
           </>
         ) : (

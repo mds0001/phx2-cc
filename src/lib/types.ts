@@ -112,6 +112,9 @@ export interface ScheduledTask {
    *  "create_only"      — skip the row if a record with the same key already exists. */
   write_mode?: WriteMode;
   customer_id?: string | null;
+  /** When true, this is a locked system-provided template. Admins can promote/demote;
+   *  all users can clone it via "Use as Template". */
+  is_system?: boolean;
   created_by: string | null;
   created_at: string;
   updated_at: string;

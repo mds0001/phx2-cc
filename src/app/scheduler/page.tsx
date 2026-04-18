@@ -26,9 +26,10 @@ export default async function SchedulerPage() {
     ? await supabase.from("customers").select("id, name, company").order("name")
     : { data: [] };
 
-  // Fetch tasks scoped to active customer (or all if none selected)
+  // Fetch tasks scoped to active customer (or all if none selected).
+  // System tasks are always included regardless of customer filter.
   let tasksQuery = supabase.from("scheduled_tasks").select("*").order("created_at", { ascending: false });
-  if (activeCustomerId) tasksQuery = tasksQuery.eq("customer_id", activeCustomerId);
+  if (activeCustomerId) tasksQuery = tasksQuery.or(`customer_id.eq.${activeCustomerId},is_system.eq.true`);
 
   const { data: tasks } = await tasksQuery;
 

@@ -144,6 +144,23 @@ async function main() {
     summary.push({ table: 'mapping_profiles', count: 0, error: true });
   }
 
+  // ── 3. Scheduled tasks (system templates) ─────────────────────────────────
+  process.stdout.write(`  ${'scheduled_tasks'.padEnd(28)}`);
+  try {
+    const rows = await fetchSystemRecords(prod, 'scheduled_tasks');
+    if (rows.length === 0) {
+      console.log('— (none)');
+      summary.push({ table: 'scheduled_tasks', count: 0 });
+    } else {
+      await upsertSystemRecords(dev, 'scheduled_tasks', sanitize(rows));
+      console.log(`✓  ${rows.length} template${rows.length !== 1 ? 's' : ''}`);
+      summary.push({ table: 'scheduled_tasks', count: rows.length });
+    }
+  } catch (err) {
+    console.log(`❌ ${err.message}`);
+    summary.push({ table: 'scheduled_tasks', count: 0, error: true });
+  }
+
   // ── Summary ────────────────────────────────────────────────────────────────
   const total = summary.reduce((n, s) => n + s.count, 0);
   const errors = summary.filter((s) => s.error);
