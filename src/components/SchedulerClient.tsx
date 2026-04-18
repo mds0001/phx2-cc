@@ -38,7 +38,7 @@ import type {
 import { applyMappingProfile, MappingSlot } from "@/lib/types";
 import { evaluateFilter } from "@/lib/filterExpression";
 import { extractZipFile } from "@/lib/zip";
-import { GitMerge, Plug, BookOpen } from "lucide-react";
+import { GitMerge, Plug, BookOpen, Building2 } from "lucide-react";
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -2492,9 +2492,20 @@ export default function SchedulerClient({
 
                       {/* Task info */}
                       <div className="flex-1 min-w-0">
-                        <p className="text-white font-medium truncate">
-                          {task.task_name}
-                        </p>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-white font-medium truncate">
+                            {task.task_name}
+                          </p>
+                          {!activeCustomerId && task.customer_id && (() => {
+                            const cust = customers.find((c) => c.id === task.customer_id);
+                            return cust ? (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-400 text-[10px] font-medium shrink-0">
+                                <Building2 className="w-2.5 h-2.5" />
+                                {cust.company || cust.name}
+                              </span>
+                            ) : null;
+                          })()}
+                        </div>
                         <p className="text-xs text-gray-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
                           {task.mapping_profile_id && (
                             <GitMerge className="w-3 h-3 text-purple-400 shrink-0" />

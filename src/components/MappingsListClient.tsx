@@ -15,6 +15,7 @@ import {
   Lock,
   Shield,
   ShieldOff,
+  Building2,
 } from "lucide-react";
 import type { MappingProfile } from "@/lib/types";
 import CustomerSwitcher, { type CustomerOption } from "@/components/CustomerSwitcher";
@@ -304,14 +305,25 @@ export default function MappingsListClient({ profiles: initial, isReadOnly = fal
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-1 mt-3 text-xs text-gray-600">
-                    <Calendar className="w-3 h-3" />
-                    Updated{" "}
-                    {new Date(p.updated_at).toLocaleDateString(undefined, {
-                      month: "short",
-                      day: "numeric",
-                      year: "numeric",
-                    })}
+                  <div className="flex items-center gap-2 mt-3 flex-wrap">
+                    <div className="flex items-center gap-1 text-xs text-gray-600">
+                      <Calendar className="w-3 h-3" />
+                      Updated{" "}
+                      {new Date(p.updated_at).toLocaleDateString(undefined, {
+                        month: "short",
+                        day: "numeric",
+                        year: "numeric",
+                      })}
+                    </div>
+                    {!activeCustomerId && !p.is_system && p.customer_id && (() => {
+                      const cust = customers.find((c) => c.id === p.customer_id);
+                      return cust ? (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-400 text-[10px] font-medium">
+                          <Building2 className="w-2.5 h-2.5" />
+                          {cust.company || cust.name}
+                        </span>
+                      ) : null;
+                    })()}
                   </div>
                 </div>
               );

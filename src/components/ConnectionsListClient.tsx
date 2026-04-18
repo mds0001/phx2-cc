@@ -232,6 +232,15 @@ export default function ConnectionsListClient({
                           <div className="min-w-0">
                             <p className="font-semibold text-white truncate">{conn.name}</p>
                             <p className="text-xs text-gray-500 mt-0.5 truncate">{configSummary(conn)}</p>
+                            {!activeCustomerId && !conn.is_system && conn.customer_id && (() => {
+                              const cust = customers.find((c) => c.id === conn.customer_id);
+                              return cust ? (
+                                <span className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-400 text-[10px] font-medium">
+                                  <Building2 className="w-2.5 h-2.5" />
+                                  {cust.company || cust.name}
+                                </span>
+                              ) : null;
+                            })()}
                           </div>
                         </div>
                         {conn.is_system && (

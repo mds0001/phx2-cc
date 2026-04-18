@@ -149,6 +149,39 @@ async function main() {
   }
   console.log(`  ✓  Profile created (administrator / admin)`);
 
+  // ── Step 6: Seed dev customers ───────────────────────────────────────────
+  console.log('\n🏢  Creating dev customers...');
+  const devCustomers = [
+    {
+      name: 'Acme IT Services',
+      company: 'Acme Corp',
+      email: 'it@acme.dev',
+      payment_status: 'active',
+      alert_days_before: 30,
+      created_by: created.user.id,
+    },
+    {
+      name: 'Globex Infrastructure',
+      company: 'Globex Industries',
+      email: 'ops@globex.dev',
+      payment_status: 'active',
+      alert_days_before: 30,
+      created_by: created.user.id,
+    },
+    {
+      name: 'Initech Technology',
+      company: 'Initech LLC',
+      email: 'tech@initech.dev',
+      payment_status: 'active',
+      alert_days_before: 30,
+      created_by: created.user.id,
+    },
+  ];
+
+  const { error: custErr } = await dev.from('customers').insert(devCustomers);
+  if (custErr) console.warn(`  ⚠️  Could not create customers: ${custErr.message}`);
+  else console.log(`  ✓  ${devCustomers.length} dev customers created`);
+
   // ── Done ──────────────────────────────────────────────────────────────────
   console.log(`
 ✅  Dev reset complete!
