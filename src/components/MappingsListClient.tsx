@@ -315,7 +315,7 @@ export default function MappingsListClient({ profiles: initial, isReadOnly = fal
                         year: "numeric",
                       })}
                     </div>
-                    {!activeCustomerId && !p.is_system && p.customer_id && (() => {
+                    {!p.is_system && p.customer_id && (() => {
                       const cust = customers.find((c) => c.id === p.customer_id);
                       return cust ? (
                         <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-400 text-[10px] font-medium">

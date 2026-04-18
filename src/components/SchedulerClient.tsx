@@ -2496,7 +2496,7 @@ export default function SchedulerClient({
                           <p className="text-white font-medium truncate">
                             {task.task_name}
                           </p>
-                          {!activeCustomerId && task.customer_id && (() => {
+                          {task.customer_id && (() => {
                             const cust = customers.find((c) => c.id === task.customer_id);
                             return cust ? (
                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-400 text-[10px] font-medium shrink-0">
