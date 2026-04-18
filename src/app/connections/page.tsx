@@ -14,6 +14,8 @@ export default async function ConnectionsPage() {
   const { data: profile } = await supabase.from("profiles").select("role, customer_id").eq("id", user.id).single();
 
   const role = profile?.role;
+  const activeCustomerId = await resolveCustomerFilter(role, profile?.customer_id);
+
   const { data: customers } = role !== "basic"
     ? await supabase.from("customers").select("id, name, company").order("name")
     : { data: [] };
