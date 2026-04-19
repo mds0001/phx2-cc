@@ -25,6 +25,7 @@ import {
   Zap,
   Maximize2,
   Minimize2,
+  Save,
 } from "lucide-react";
 import type {
   Profile,
@@ -127,6 +128,10 @@ interface FormState {
   mappingSlots: MappingSlot[];
   writeMode: "upsert" | "create_only";
   customerId: string | null;
+  targetConnectionId: string | null;
+  /** Storage folder prefix used when a slot's source connection has no file_path set.
+   *  e.g. "mikeco" → resolves Assets.xlsx as "mikeco/Assets.xlsx" */
+  sourceDirectory: string;
 }
 
 const EMPTY_FORM: FormState = {
@@ -137,6 +142,8 @@ const EMPTY_FORM: FormState = {
   mappingSlots: [{ id: "slot-new-0", mapping_profile_id: null }],
   writeMode: "upsert",
   customerId: null,
+  targetConnectionId: null,
+  sourceDirectory: "",
 };
 
 // ─── Component ───────────────────────────────────────────────
@@ -232,6 +239,8 @@ export default function SchedulerClient({
   const [mappingProfiles, setMappingProfiles] = useState<MappingProfile[]>([]);
   const [endpointConnections, setEndpointConnections] = useState<EndpointConnection[]>([]);
   const [promoting, setPromoting] = useState<string | null>(null);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [showSystem, setShowSystem] = useState(false);
 
   // Fetch log counts for the initial task list on mount (tasks are SSR'd, counts are not)
   useEffect(() => {
@@ -345,9 +354,11 @@ export default function SchedulerClient({
         mapping_slots: newSlots.length ? newSlots : null,
         source_connection_id: task.source_connection_id,
         target_connection_id: task.target_connection_id,
+        source_file_path: task.source_file_path ?? null,
         write_mode: task.write_mode ?? "upsert",
         is_system: false,
         customer_id: null,
+        created_by: userId,
       })
       .select("*")
       .single();
@@ -481,11 +492,12 @@ export default function SchedulerClient({
         }
 
         // ── Step 3: Resolve target connection ─────────────────
+        // Priority: mapping profile's target_connection_id → task-level target_connection_id
         let targetConnection: Record<string, string> | null = null;
         let targetConnRawConfig: Record<string, unknown> | null = null;
         let targetConnType: string | null = null;
         const resolvedTargetConnId =
-          mappingProfile?.target_connection_id ?? null;
+          mappingProfile?.target_connection_id ?? task.target_connection_id ?? null;
         if (resolvedTargetConnId) {
           const { data: conn } = await supabase
             .from("endpoint_connections")
@@ -496,7 +508,7 @@ export default function SchedulerClient({
             targetConnection = conn.config as Record<string, string>;
             targetConnRawConfig = conn.config as Record<string, unknown>;
             targetConnType = conn.type as string;
-            const src = "mapping profile";
+            const src = mappingProfile?.target_connection_id ? "mapping profile" : "task override";
             await supabase.from("task_logs").insert({
               task_id: task.id,
               action: "INFO",
@@ -506,14 +518,31 @@ export default function SchedulerClient({
         }
 
         // ── Step 4: Route by source connection type ──────────────
-        // All source/destination info comes exclusively from the endpoint
-        // connections referenced by the mapping profile. No task-level overrides.
-        // Priority: manual override > task file path > source connection file config
-        const resolvedSourceFilePath = sourceConnFileConfig?.file_path ?? null;
+        // Priority: source connection file_path → task sourceDirectory + connection file_name
+        const connFilePath = sourceConnFileConfig?.file_path ?? null;
+        const connFileName = sourceConnFileConfig?.file_name ?? null;
+        const taskDir = task.source_file_path?.trim().replace(/\/$/, "") ?? null;
+        const resolvedSourceFilePath =
+          connFilePath ||
+          (taskDir && connFileName ? `${taskDir}/${connFileName}` : null);
+
+        if (resolvedSourceFilePath && resolvedSourceFilePath !== connFilePath) {
+          await supabase.from("task_logs").insert({
+            task_id: task.id,
+            action: "INFO",
+            details: `Source path resolved from task directory: ${resolvedSourceFilePath}`,
+          });
+        }
 
         if (sourceConnType === "file") {
           if (!resolvedSourceFilePath) {
-            throw new Error("Source endpoint is a file type but no file_path is configured in the connection.");
+            rowErrorCount++;
+            await supabase.from("task_logs").insert({
+              task_id: task.id,
+              action: "ERROR",
+              details: `Source connection "${connFileName ?? "unknown"}" has no file configured. Set a Source Directory on this task to resolve files automatically.`,
+            });
+            break;
           }
 
           const fileCfg = sourceConnRawConfig as { file_name?: string } | null;
@@ -529,8 +558,15 @@ export default function SchedulerClient({
           const { data: fileData, error: dlError } = await supabase.storage
             .from("task_files")
             .download(resolvedSourceFilePath!);
-          if (dlError || !fileData)
-            throw new Error("Failed to download file: " + dlError?.message);
+          if (dlError || !fileData) {
+            rowErrorCount++;
+            await supabase.from("task_logs").insert({
+              task_id: task.id,
+              action: "ERROR",
+              details: `File not found in storage: ${resolvedSourceFilePath}`,
+            });
+            break;
+          }
           const label = fileCfg?.file_name ?? resolvedSourceFilePath.split("/").pop() ?? "file";
           fileEntries.push({ label, buffer: await fileData.arrayBuffer() });
 
@@ -1993,7 +2029,8 @@ export default function SchedulerClient({
         mapping_profile_id: form.mappingSlots[0]?.mapping_profile_id ?? form.mappingProfileId ?? null,
         mapping_slots: form.mappingSlots.length > 1 ? form.mappingSlots : [],
         source_connection_id: null,
-        target_connection_id: null,
+        target_connection_id: form.targetConnectionId ?? null,
+        source_file_path: form.sourceDirectory.trim() || null,
         status: "waiting",
         write_mode: form.writeMode ?? "upsert",
         created_by: userId,
@@ -2002,6 +2039,7 @@ export default function SchedulerClient({
 
       if (error) throw error;
       setForm(EMPTY_FORM);
+      setShowCreateForm(false);
       await fetchTasks();
     } catch (err: unknown) {
       setFormError(
@@ -2029,9 +2067,11 @@ export default function SchedulerClient({
   }
 
   async function deleteTask(id: string) {
-    if (!confirm("Delete this task and all its logs?")) return;
-    await supabase.from("scheduled_tasks").delete().eq("id", id);
-    await fetchTasks();
+    if (!window.confirm("Delete this task and all its logs?")) return;
+    await supabase.from("task_logs").delete().eq("task_id", id);
+    const { error } = await supabase.from("scheduled_tasks").delete().eq("id", id);
+    if (error) { alert("Delete failed: " + error.message); return; }
+    setTasks((p) => p.filter((t) => t.id !== id));
   }
 
   // ── DateTime quick-pick helper ────────────────────────────
@@ -2048,7 +2088,7 @@ export default function SchedulerClient({
     setEditTask(task);
     setEditForm({
       taskName: task.task_name,
-      startDateTime: toLocalDatetimeString(task.start_date_time),
+      startDateTime: "",
       recurrence: task.recurrence,
       mappingProfileId: task.mapping_profile_id ?? null,
       mappingSlots: ((task.mapping_slots ?? []) as MappingSlot[]).length > 0
@@ -2056,6 +2096,8 @@ export default function SchedulerClient({
         : [{ id: "slot-edit-0", mapping_profile_id: task.mapping_profile_id ?? null }],
       writeMode: (task.write_mode ?? "upsert") as "upsert" | "create_only",
       customerId: task.customer_id ?? null,
+      targetConnectionId: task.target_connection_id ?? null,
+      sourceDirectory: task.source_file_path ?? "",
     });
   }
 
@@ -2066,7 +2108,11 @@ export default function SchedulerClient({
     setEditSubmitting(true);
 
     try {
-      const startUtc = new Date(editForm.startDateTime).toISOString();
+      // If start date/time was cleared, push it far into the future so the task
+      // stays in "waiting" without auto-triggering on the next poll.
+      const startUtc = editForm.startDateTime
+        ? new Date(editForm.startDateTime).toISOString()
+        : new Date(Date.now() + 10 * 365 * 24 * 60 * 60 * 1000).toISOString();
 
       const { error } = await supabase
         .from("scheduled_tasks")
@@ -2077,7 +2123,8 @@ export default function SchedulerClient({
           mapping_profile_id: editForm.mappingSlots[0]?.mapping_profile_id ?? editForm.mappingProfileId ?? null,
           mapping_slots: editForm.mappingSlots.length > 1 ? editForm.mappingSlots : [],
           source_connection_id: null,
-          target_connection_id: null,
+          target_connection_id: editForm.targetConnectionId ?? null,
+          source_file_path: editForm.sourceDirectory.trim() || null,
           status: "waiting",
           write_mode: editForm.writeMode ?? "upsert",
           customer_id: editForm.customerId ?? null,
@@ -2100,6 +2147,9 @@ export default function SchedulerClient({
       setEditSubmitting(false);
     }
   }
+
+  // ─── Derived state ────────────────────────────────────────
+  const visibleTasks = showSystem ? tasks : tasks.filter((t) => !t.is_system);
 
   // ─── Render ───────────────────────────────────────────────
 
@@ -2130,6 +2180,28 @@ export default function SchedulerClient({
           <div className="flex items-center gap-3">
             {customers.length > 0 && (
               <CustomerSwitcher customers={customers} activeCustomerId={activeCustomerId} />
+            )}
+            {!isReadOnly && (
+              <button
+                onClick={() => setShowSystem((s) => !s)}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border transition-all ${
+                  showSystem
+                    ? "bg-cyan-500/15 border-cyan-500/40 text-cyan-400"
+                    : "bg-gray-800 border-gray-700 text-gray-400 hover:text-gray-300"
+                }`}
+              >
+                <Lock className="w-3.5 h-3.5" />
+                Show Templates
+              </button>
+            )}
+            {!isReadOnly && (
+              <button
+                onClick={() => { setForm(EMPTY_FORM); setFormError(null); setShowCreateForm(true); }}
+                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-all shadow-lg shadow-indigo-600/20"
+              >
+                <Plus className="w-4 h-4" />
+                New Task
+              </button>
             )}
 
           {/* Polling control — visible to administrator and schedule_administrator roles */}
@@ -2190,13 +2262,21 @@ export default function SchedulerClient({
       </header>
 
       <main className="max-w-7xl mx-auto px-6 py-10 space-y-10">
-        {/* ── Create Task Form ── */}
-        {!isReadOnly && <section>
-          <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
-            <Plus className="w-5 h-5 text-indigo-400" />
-            Create New Task
-          </h2>
-          <div className="bg-gray-900 border border-gray-800 rounded-3xl p-8 shadow-xl">
+        {/* ── Create Task Modal ── */}
+        {!isReadOnly && showCreateForm && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setShowCreateForm(false)} />
+            <div className="relative bg-gray-900 border border-gray-700 rounded-3xl w-full max-w-5xl shadow-2xl max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between px-6 py-5 border-b border-gray-800">
+                <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                  <Plus className="w-5 h-5 text-indigo-400" />
+                  New Task
+                </h3>
+                <button onClick={() => setShowCreateForm(false)} className="text-gray-500 hover:text-white transition-colors">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+          <div className="p-6">
             {formError && (
               <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-2xl text-red-400 text-sm">
                 {formError}
@@ -2234,79 +2314,84 @@ export default function SchedulerClient({
                     </label>
                     <div className="space-y-2">
                       {form.mappingSlots.map((slot, slotIdx) => (
-                        <div key={slot.id} className="flex items-center gap-2">
+                        <div key={slot.id} className="flex gap-2 items-start">
+                          {/* Slot number */}
                           {form.mappingSlots.length > 1 && (
-                            <span className="text-xs text-gray-600 w-5 shrink-0 text-center font-mono">
+                            <span className="text-xs text-gray-600 w-5 shrink-0 text-center font-mono pt-3.5">
                               {slotIdx + 1}.
                             </span>
                           )}
-                          <select
-                            value={slot.mapping_profile_id ?? ""}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              if (val === "__new_mapping__") {
-                                sessionStorage.setItem("scheduler_create_draft", JSON.stringify({form}));
-                                router.push("/mappings/new?returnTo=scheduler&returnMode=create");
-                                return;
-                              }
-                              if (val === "__copy_mapping__") {
-                                setCopyMappingSourceId(slot.mapping_profile_id ?? mappingProfiles[0]?.id ?? "");
-                                setCopyMappingName("");
-                                setCopyMappingTarget("create");
-                                return;
-                              }
-                              setForm((p) => ({
-                                ...p,
-                                mappingSlots: p.mappingSlots.map((s, i) =>
-                                  i === slotIdx ? { ...s, mapping_profile_id: val || null } : s
-                                ),
-                              }));
-                            }}
-                            className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                          >
-                            <option value="">— No mapping (send raw data) —</option>
-                            {mappingProfiles.map((mp) => (
-                              <option key={mp.id} value={mp.id}>
-                                {mp.name} ({mp.mappings?.length ?? 0} mappings)
-                              </option>
-                            ))}
-                            <option value="__new_mapping__">+ Create new mapping...</option>
-                            <option value="__copy_mapping__">+ Copy existing mapping...</option>
-                          </select>
-                          {form.mappingSlots.length > 1 && (
-                            <input
-                              type="text"
-                              value={slot.label ?? ""}
-                              onChange={(e) => setForm((p) => ({
-                                ...p,
-                                mappingSlots: p.mappingSlots.map((s, i) =>
-                                  i === slotIdx ? { ...s, label: e.target.value } : s
-                                ),
-                              }))}
-                              placeholder="Label (optional)"
-                              className="w-32 bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-xs text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-purple-500"
-                            />
-                          )}
-                          {slotIdx === 0 ? (
-                            <button
-                              type="button"
-                              onClick={() => router.push("/mappings")}
-                              className="px-3 py-3 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-purple-400 rounded-xl transition-all shrink-0"
-                              title="Manage mapping profiles"
+                          {/* Select + optional label stacked */}
+                          <div className="flex-1 min-w-0 flex flex-col gap-1">
+                            <select
+                              value={slot.mapping_profile_id ?? ""}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                if (val === "__new_mapping__") {
+                                  sessionStorage.setItem("scheduler_create_draft", JSON.stringify({form}));
+                                  router.push("/mappings/new?returnTo=scheduler&returnMode=create");
+                                  return;
+                                }
+                                if (val === "__copy_mapping__") {
+                                  setCopyMappingSourceId(slot.mapping_profile_id ?? mappingProfiles[0]?.id ?? "");
+                                  setCopyMappingName("");
+                                  setCopyMappingTarget("create");
+                                  return;
+                                }
+                                setForm((p) => ({
+                                  ...p,
+                                  mappingSlots: p.mappingSlots.map((s, i) =>
+                                    i === slotIdx ? { ...s, mapping_profile_id: val || null } : s
+                                  ),
+                                }));
+                              }}
+                              className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                             >
-                              <GitMerge className="w-4 h-4" />
-                            </button>
-                          ) : (
+                              <option value="">— No mapping (send raw data) —</option>
+                              {mappingProfiles.map((mp) => (
+                                <option key={mp.id} value={mp.id}>
+                                  {mp.name} ({mp.mappings?.length ?? 0} mappings)
+                                </option>
+                              ))}
+                              <option value="__new_mapping__">+ Create new mapping...</option>
+                              <option value="__copy_mapping__">+ Copy existing mapping...</option>
+                            </select>
+                            {form.mappingSlots.length > 1 && (
+                              <input
+                                type="text"
+                                value={slot.label ?? ""}
+                                onChange={(e) => setForm((p) => ({
+                                  ...p,
+                                  mappingSlots: p.mappingSlots.map((s, i) =>
+                                    i === slotIdx ? { ...s, label: e.target.value } : s
+                                  ),
+                                }))}
+                                placeholder="Slot label (optional)"
+                                className="w-full bg-gray-800/50 border border-gray-700/50 rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                              />
+                            )}
+                          </div>
+                          {/* Action button — always show delete when >1 slot, otherwise show manage icon */}
+                          {form.mappingSlots.length > 1 ? (
                             <button
                               type="button"
                               onClick={() => setForm((p) => ({
                                 ...p,
                                 mappingSlots: p.mappingSlots.filter((_, i) => i !== slotIdx),
                               }))}
-                              className="px-3 py-3 text-gray-500 hover:text-red-400 transition-colors shrink-0"
+                              className="p-2.5 text-gray-500 hover:text-red-400 hover:bg-gray-800 rounded-xl transition-colors shrink-0 mt-0.5"
                               title="Remove slot"
                             >
                               <X className="w-4 h-4" />
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => router.push("/mappings")}
+                              className="p-2.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-purple-400 rounded-xl transition-all shrink-0 mt-0.5"
+                              title="Manage mapping profiles"
+                            >
+                              <GitMerge className="w-4 h-4" />
                             </button>
                           )}
                         </div>
@@ -2372,6 +2457,57 @@ export default function SchedulerClient({
                     <option value="upsert">Upsert — create or update</option>
                     <option value="create_only">Create only — skip if exists</option>
                   </select>
+                </div>
+
+                {/* Source Directory */}
+                <div>
+                  <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                    <BookOpen className="w-3 h-3 text-orange-400" />
+                    Source Directory
+                    <span className="text-gray-600 normal-case font-normal ml-1">(optional)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={form.sourceDirectory}
+                    onChange={(e) => setForm((p) => ({ ...p, sourceDirectory: e.target.value }))}
+                    placeholder="e.g. mikeco"
+                    className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                  />
+                  {form.sourceDirectory.trim() && (
+                    <p className="text-xs text-orange-400 mt-1.5 flex items-center gap-1">
+                      <Check className="w-3 h-3" />
+                      Slots with no file configured will look in &quot;{form.sourceDirectory.trim()}/&quot;
+                    </p>
+                  )}
+                </div>
+
+                {/* Target Connection Override */}
+                <div>
+                  <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                    <Plug className="w-3 h-3 text-cyan-400" />
+                    Target Connection Override
+                    <span className="text-gray-600 normal-case font-normal ml-1">(optional)</span>
+                  </label>
+                  <select
+                    value={form.targetConnectionId ?? ""}
+                    onChange={(e) => setForm((p) => ({ ...p, targetConnectionId: e.target.value || null }))}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
+                  >
+                    <option value="">— Use connection from each mapping profile —</option>
+                    {endpointConnections
+                      .filter((c) => c.type !== "file")
+                      .map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} [{c.type.toUpperCase()}]
+                        </option>
+                      ))}
+                  </select>
+                  {form.targetConnectionId && (
+                    <p className="text-xs text-cyan-400 mt-1.5 flex items-center gap-1">
+                      <Check className="w-3 h-3" />
+                      All slots will use this connection when their mapping profile has no target set
+                    </p>
+                  )}
                 </div>
 
                 {/* Customer — admin only */}
@@ -2450,7 +2586,9 @@ export default function SchedulerClient({
               </div>
             </form>
           </div>
-        </section>}
+        </div>
+          </div>
+        )}
 
         {/* ── Task List ── */}
         <section>
@@ -2458,20 +2596,22 @@ export default function SchedulerClient({
             <Activity className="w-5 h-5 text-indigo-400" />
             Tasks{" "}
             <span className="text-sm font-normal text-gray-500 ml-1">
-              ({tasks.length})
+              ({visibleTasks.length})
             </span>
           </h2>
 
-          {tasks.length === 0 ? (
+          {visibleTasks.length === 0 ? (
             <div className="bg-gray-900 border border-gray-800 rounded-3xl p-12 text-center">
               <Clock className="w-12 h-12 text-gray-700 mx-auto mb-4" />
               <p className="text-gray-500">
-                No tasks yet. Create your first task above.
+                {tasks.length === 0
+                  ? "No tasks yet. Use the New Task button to get started."
+                  : "No regular tasks. Toggle Show Templates to view system templates."}
               </p>
             </div>
           ) : (
             <div className="space-y-3">
-              {tasks.map((task) => {
+              {visibleTasks.map((task) => {
                 const badge =
                   STATUS_BADGE[task.status] ?? STATUS_BADGE.waiting;
                 const icon = STATUS_ICON[task.status];
@@ -3065,21 +3205,31 @@ export default function SchedulerClient({
             className="absolute inset-0 bg-black/70 backdrop-blur-sm"
             onClick={() => setEditTask(null)}
           />
-          <div className="relative bg-gray-900 border border-gray-700 rounded-3xl w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between px-8 py-6 border-b border-gray-800">
+          <div className="relative bg-gray-900 border border-gray-700 rounded-3xl w-full max-w-5xl shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between px-6 py-5 border-b border-gray-800">
               <h3 className="text-lg font-bold text-white flex items-center gap-2">
                 <Edit2 className="w-5 h-5 text-indigo-400" />
                 Edit Task
               </h3>
-              <button
-                onClick={() => setEditTask(null)}
-                className="text-gray-500 hover:text-white transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  type="submit"
+                  form="edit-task-form"
+                  className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold rounded-xl transition-colors"
+                >
+                  <Save className="w-4 h-4" />
+                  Save Changes
+                </button>
+                <button
+                  onClick={() => setEditTask(null)}
+                  className="text-gray-500 hover:text-white transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
-            <form onSubmit={handleEditSave} className="p-8 space-y-6">
+            <form id="edit-task-form" onSubmit={handleEditSave} className="p-6 space-y-6">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
                   <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
@@ -3128,9 +3278,11 @@ export default function SchedulerClient({
                         startDateTime: e.target.value,
                       }))
                     }
-                    required
                     className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
+                  {!editForm.startDateTime && (
+                    <p className="text-xs text-gray-600 mt-1">Leave blank to save without scheduling — task will stay in Waiting.</p>
+                  )}
                 </div>
 
                 <div>
@@ -3209,79 +3361,84 @@ export default function SchedulerClient({
                     </label>
                     <div className="space-y-2">
                       {editForm.mappingSlots.map((slot, slotIdx) => (
-                        <div key={slot.id} className="flex items-center gap-2">
+                        <div key={slot.id} className="flex gap-2 items-start">
+                          {/* Slot number */}
                           {editForm.mappingSlots.length > 1 && (
-                            <span className="text-xs text-gray-600 w-5 shrink-0 text-center font-mono">
+                            <span className="text-xs text-gray-600 w-5 shrink-0 text-center font-mono pt-3.5">
                               {slotIdx + 1}.
                             </span>
                           )}
-                          <select
-                            value={slot.mapping_profile_id ?? ""}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              if (val === "__new_mapping__") {
-                                sessionStorage.setItem("scheduler_edit_draft", JSON.stringify({editForm}));
-                                router.push("/mappings/new?returnTo=scheduler&returnMode=edit&returnTaskId=" + (editTask?.id ?? ""));
-                                return;
-                              }
-                              if (val === "__copy_mapping__") {
-                                setCopyMappingSourceId(slot.mapping_profile_id ?? mappingProfiles[0]?.id ?? "");
-                                setCopyMappingName("");
-                                setCopyMappingTarget("edit");
-                                return;
-                              }
-                              setEditForm((p) => ({
-                                ...p,
-                                mappingSlots: p.mappingSlots.map((s, i) =>
-                                  i === slotIdx ? { ...s, mapping_profile_id: val || null } : s
-                                ),
-                              }));
-                            }}
-                            className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                          >
-                            <option value="">— No mapping (send raw data) —</option>
-                            {mappingProfiles.map((mp) => (
-                              <option key={mp.id} value={mp.id}>
-                                {mp.name} ({mp.mappings?.length ?? 0} mappings)
-                              </option>
-                            ))}
-                            <option value="__new_mapping__">+ Create new mapping...</option>
-                            <option value="__copy_mapping__">+ Copy existing mapping...</option>
-                          </select>
-                          {editForm.mappingSlots.length > 1 && (
-                            <input
-                              type="text"
-                              value={slot.label ?? ""}
-                              onChange={(e) => setEditForm((p) => ({
-                                ...p,
-                                mappingSlots: p.mappingSlots.map((s, i) =>
-                                  i === slotIdx ? { ...s, label: e.target.value } : s
-                                ),
-                              }))}
-                              placeholder="Label (optional)"
-                              className="w-32 bg-gray-800 border border-gray-700 rounded-xl px-3 py-3 text-xs text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-purple-500"
-                            />
-                          )}
-                          {slotIdx === 0 ? (
-                            <button
-                              type="button"
-                              onClick={() => router.push("/mappings")}
-                              className="px-3 py-3 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-purple-400 rounded-xl transition-all shrink-0"
-                              title="Manage mapping profiles"
+                          {/* Select + optional label stacked */}
+                          <div className="flex-1 min-w-0 flex flex-col gap-1">
+                            <select
+                              value={slot.mapping_profile_id ?? ""}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                if (val === "__new_mapping__") {
+                                  sessionStorage.setItem("scheduler_edit_draft", JSON.stringify({editForm}));
+                                  router.push("/mappings/new?returnTo=scheduler&returnMode=edit&returnTaskId=" + (editTask?.id ?? ""));
+                                  return;
+                                }
+                                if (val === "__copy_mapping__") {
+                                  setCopyMappingSourceId(slot.mapping_profile_id ?? mappingProfiles[0]?.id ?? "");
+                                  setCopyMappingName("");
+                                  setCopyMappingTarget("edit");
+                                  return;
+                                }
+                                setEditForm((p) => ({
+                                  ...p,
+                                  mappingSlots: p.mappingSlots.map((s, i) =>
+                                    i === slotIdx ? { ...s, mapping_profile_id: val || null } : s
+                                  ),
+                                }));
+                              }}
+                              className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                             >
-                              <GitMerge className="w-4 h-4" />
-                            </button>
-                          ) : (
+                              <option value="">— No mapping (send raw data) —</option>
+                              {mappingProfiles.map((mp) => (
+                                <option key={mp.id} value={mp.id}>
+                                  {mp.name} ({mp.mappings?.length ?? 0} mappings)
+                                </option>
+                              ))}
+                              <option value="__new_mapping__">+ Create new mapping...</option>
+                              <option value="__copy_mapping__">+ Copy existing mapping...</option>
+                            </select>
+                            {editForm.mappingSlots.length > 1 && (
+                              <input
+                                type="text"
+                                value={slot.label ?? ""}
+                                onChange={(e) => setEditForm((p) => ({
+                                  ...p,
+                                  mappingSlots: p.mappingSlots.map((s, i) =>
+                                    i === slotIdx ? { ...s, label: e.target.value } : s
+                                  ),
+                                }))}
+                                placeholder="Slot label (optional)"
+                                className="w-full bg-gray-800/50 border border-gray-700/50 rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                              />
+                            )}
+                          </div>
+                          {/* Action button — always show delete when >1 slot, otherwise show manage icon */}
+                          {editForm.mappingSlots.length > 1 ? (
                             <button
                               type="button"
                               onClick={() => setEditForm((p) => ({
                                 ...p,
                                 mappingSlots: p.mappingSlots.filter((_, i) => i !== slotIdx),
                               }))}
-                              className="px-3 py-3 text-gray-500 hover:text-red-400 transition-colors shrink-0"
+                              className="p-2.5 text-gray-500 hover:text-red-400 hover:bg-gray-800 rounded-xl transition-colors shrink-0 mt-0.5"
                               title="Remove slot"
                             >
                               <X className="w-4 h-4" />
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => router.push("/mappings")}
+                              className="p-2.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-purple-400 rounded-xl transition-all shrink-0 mt-0.5"
+                              title="Manage mapping profiles"
+                            >
+                              <GitMerge className="w-4 h-4" />
                             </button>
                           )}
                         </div>
@@ -3323,6 +3480,57 @@ export default function SchedulerClient({
                       <option value="upsert">Upsert (create or update)</option>
                       <option value="create_only">Create only (skip if exists)</option>
                     </select>
+                  </div>
+
+                  {/* Source Directory */}
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                      <BookOpen className="w-3 h-3 text-orange-400" />
+                      Source Directory
+                      <span className="text-gray-600 normal-case font-normal ml-1">(optional)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={editForm.sourceDirectory}
+                      onChange={(e) => setEditForm((p) => ({ ...p, sourceDirectory: e.target.value }))}
+                      placeholder="e.g. mikeco"
+                      className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                    />
+                    {editForm.sourceDirectory.trim() && (
+                      <p className="text-xs text-orange-400 mt-1.5 flex items-center gap-1">
+                        <Check className="w-3 h-3" />
+                        Slots with no file configured will look in &quot;{editForm.sourceDirectory.trim()}/&quot;
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Target Connection Override */}
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                      <Plug className="w-3 h-3 text-cyan-400" />
+                      Target Connection Override
+                      <span className="text-gray-600 normal-case font-normal ml-1">(optional)</span>
+                    </label>
+                    <select
+                      value={editForm.targetConnectionId ?? ""}
+                      onChange={(e) => setEditForm((p) => ({ ...p, targetConnectionId: e.target.value || null }))}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
+                    >
+                      <option value="">— Use connection from each mapping profile —</option>
+                      {endpointConnections
+                        .filter((c) => c.type !== "file")
+                        .map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name} [{c.type.toUpperCase()}]
+                          </option>
+                        ))}
+                    </select>
+                    {editForm.targetConnectionId && (
+                      <p className="text-xs text-cyan-400 mt-1.5 flex items-center gap-1">
+                        <Check className="w-3 h-3" />
+                        All slots will use this connection when their mapping profile has no target set
+                      </p>
+                    )}
                   </div>
 
                 </div>

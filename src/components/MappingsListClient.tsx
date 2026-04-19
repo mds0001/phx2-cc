@@ -1,21 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase-browser";
 import {
-  ArrowLeft,
-  Plus,
-  GitMerge,
-  Trash2,
-  Edit2,
-  Copy,
-  Zap,
-  Calendar,
-  Lock,
-  Shield,
-  ShieldOff,
-  Building2,
+  ArrowLeft, Plus, GitMerge, Trash2, Edit2, Copy,
+  Lock, Shield, ShieldOff, Building2, Search, ChevronRight,
 } from "lucide-react";
 import type { MappingProfile } from "@/lib/types";
 import CustomerSwitcher, { type CustomerOption } from "@/components/CustomerSwitcher";
@@ -28,21 +18,39 @@ interface Props {
   activeCustomerId?: string | null;
 }
 
-export default function MappingsListClient({ profiles: initial, isReadOnly = false, isAdmin = false, customers = [], activeCustomerId = null }: Props) {
+export default function MappingsListClient({
+  profiles: initial,
+  isReadOnly = false,
+  isAdmin = false,
+  customers = [],
+  activeCustomerId = null,
+}: Props) {
   const router = useRouter();
   const supabase = createClient();
   const [profiles, setProfiles] = useState(initial);
   const [duplicating, setDuplicating] = useState<string | null>(null);
   const [promoting, setPromoting] = useState<string | null>(null);
   const [showSystem, setShowSystem] = useState(false);
+  const [search, setSearch] = useState("");
 
-  const visibleProfiles = showSystem
-    ? profiles
-    : profiles.filter((p) => !p.is_system);
+  const visibleProfiles = useMemo(() => {
+    const base = showSystem ? profiles : profiles.filter((p) => !p.is_system);
+    if (!search.trim()) return base;
+    const q = search.toLowerCase();
+    return base.filter(
+      (p) =>
+        p.name.toLowerCase().includes(q) ||
+        (p.description ?? "").toLowerCase().includes(q) ||
+        (p.target_business_object ?? "").toLowerCase().includes(q)
+    );
+  }, [profiles, showSystem, search]);
 
   async function handleDuplicate(p: MappingProfile, isTemplate = false) {
     const defaultName = isTemplate ? p.name : `${p.name} (copy)`;
-    const newName = prompt(isTemplate ? "Name for your new profile:" : "Name for the duplicate profile:", defaultName);
+    const newName = prompt(
+      isTemplate ? "Name for your new profile:" : "Name for the duplicate profile:",
+      defaultName
+    );
     if (!newName?.trim()) return;
     setDuplicating(p.id);
     try {
@@ -58,7 +66,6 @@ export default function MappingsListClient({ profiles: initial, isReadOnly = fal
           target_connection_id: p.target_connection_id,
           filter_expression: p.filter_expression,
           is_system: false,
-          // created_by intentionally omitted — will be set server-side or left null
         })
         .select("*")
         .single();
@@ -75,7 +82,7 @@ export default function MappingsListClient({ profiles: initial, isReadOnly = fal
   async function handleDelete(id: string, name: string) {
     if (!confirm(`Delete mapping profile "${name}"?`)) return;
     await supabase.from("mapping_profiles").delete().eq("id", id);
-    setProfiles((p: MappingProfile[]) => p.filter((x) => x.id !== id));
+    setProfiles((p) => p.filter((x) => x.id !== id));
   }
 
   async function handlePromote(id: string) {
@@ -100,7 +107,7 @@ export default function MappingsListClient({ profiles: initial, isReadOnly = fal
 
       {/* Header */}
       <header className="sticky top-0 z-50 bg-gray-900/80 backdrop-blur-xl border-b border-gray-800">
-        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+        <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             <button
               onClick={() => router.push("/dashboard")}
@@ -115,6 +122,11 @@ export default function MappingsListClient({ profiles: initial, isReadOnly = fal
                 <GitMerge className="w-3.5 h-3.5 text-white" />
               </div>
               <span className="font-semibold text-white">Field Mappings</span>
+              {profiles.length > 0 && (
+                <span className="ml-1 px-2 py-0.5 rounded-full bg-gray-800 border border-gray-700 text-xs text-gray-400 font-medium">
+                  {visibleProfiles.length}{visibleProfiles.length !== profiles.length ? ` / ${profiles.length}` : ""}
+                </span>
+              )}
             </div>
           </div>
 
@@ -148,25 +160,15 @@ export default function MappingsListClient({ profiles: initial, isReadOnly = fal
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 py-10">
-        <div className="mb-8">
-          <h2 className="text-3xl font-bold text-white">Mapping Profiles</h2>
-          <p className="text-gray-400 mt-1">
-            Define how source fields map to target fields for your tasks.
-          </p>
-        </div>
-
-        {visibleProfiles.length === 0 ? (
+      <main className="max-w-6xl mx-auto px-6 py-8">
+        {profiles.length === 0 ? (
           <div className="bg-gray-900 border border-gray-800 rounded-3xl p-16 text-center">
             <div className="w-16 h-16 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mx-auto mb-4">
               <GitMerge className="w-8 h-8 text-indigo-400" />
             </div>
-            <h3 className="text-white font-semibold text-lg mb-2">
-              No mapping profiles yet
-            </h3>
+            <h3 className="text-white font-semibold text-lg mb-2">No mapping profiles yet</h3>
             <p className="text-gray-500 text-sm mb-6 max-w-sm mx-auto">
-              Create a profile to visually map source fields (Excel / API) to
-              your target destination fields.
+              Create a profile to visually map source fields (Excel / API) to your target destination fields.
             </p>
             {!isReadOnly && (
               <button
@@ -179,155 +181,212 @@ export default function MappingsListClient({ profiles: initial, isReadOnly = fal
             )}
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {visibleProfiles.map((p) => {
-              const srcCount = p.source_fields?.length ?? 0;
-              const tgtCount = p.target_fields?.length ?? 0;
-              const mapCount = p.mappings?.length ?? 0;
-
-              return (
-                <div
-                  key={p.id}
-                  className={`bg-gray-900 border rounded-2xl p-6 shadow-lg transition-all group ${p.is_system ? "border-cyan-500/20 hover:border-cyan-500/40 cursor-default" : "border-gray-800 hover:border-indigo-500/40 cursor-pointer"}`}
-                  onClick={() => !p.is_system && router.push(`/mappings/${p.id}`)}
+          <div className="space-y-6">
+            {/* Search bar */}
+            <div className="relative">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by name, description, or business object…"
+                className="w-full bg-gray-900 border border-gray-800 rounded-xl pl-11 pr-10 py-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-600 hover:text-gray-400 transition-colors"
                 >
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex items-center gap-2">
-                      <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center group-hover:bg-indigo-500/20 transition-colors">
-                        <GitMerge className="w-5 h-5 text-indigo-400" />
-                      </div>
-                      {p.is_system && (
-                        <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-cyan-500/10 border border-cyan-500/25 text-cyan-400 text-xs font-medium">
-                          <Lock className="w-3 h-3" />
-                          System
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
-                      {p.is_system ? (
-                        <>
-                          <button
-                            onClick={() => handleDuplicate(p, true)}
-                            disabled={duplicating === p.id}
-                            className="w-8 h-8 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/25 flex items-center justify-center text-cyan-400 transition-all disabled:opacity-50"
-                            title="Use as Template"
-                          >
-                            <Copy className="w-3.5 h-3.5" />
-                          </button>
-                          {isAdmin && (
-                            <>
+                  ✕
+                </button>
+              )}
+            </div>
+
+            {/* Table */}
+            {visibleProfiles.length === 0 ? (
+              <p className="text-gray-500 text-sm text-center py-12">
+                No profiles match &quot;{search}&quot;
+              </p>
+            ) : (
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-gray-800">
+                      <th className="py-3 pl-4 pr-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                        Name
+                      </th>
+                      <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider hidden md:table-cell w-32">
+                        Mappings
+                      </th>
+                      <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider hidden lg:table-cell w-40">
+                        Business Object
+                      </th>
+                      <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider hidden lg:table-cell w-24">
+                        Updated
+                      </th>
+                      <th className="py-3 pl-3 pr-4 w-44" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleProfiles.map((p) => {
+                      const mapCount = p.mappings?.length ?? 0;
+                      const srcCount = p.source_fields?.length ?? 0;
+                      const custName = !p.is_system && p.customer_id
+                        ? customers.find((c) => c.id === p.customer_id)?.company ||
+                          customers.find((c) => c.id === p.customer_id)?.name
+                        : null;
+
+                      return (
+                        <tr
+                          key={p.id}
+                          className="border-b border-gray-800/60 hover:bg-gray-800/30 transition-colors group"
+                        >
+                          {/* Name */}
+                          <td className="py-3 pl-4 pr-3">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <button
                                 onClick={() => router.push(`/mappings/${p.id}`)}
-                                className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-gray-700 flex items-center justify-center text-gray-400 hover:text-white transition-all"
-                                title="Edit"
+                                className="text-sm text-white font-medium hover:text-indigo-400 transition-colors text-left"
                               >
-                                <Edit2 className="w-3.5 h-3.5" />
+                                {p.name}
                               </button>
-                              <button
-                                onClick={() => handleDemote(p.id)}
-                                disabled={promoting === p.id}
-                                className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-gray-700 flex items-center justify-center text-gray-400 hover:text-gray-300 transition-all disabled:opacity-50"
-                                title="Remove from System"
-                              >
-                                <ShieldOff className="w-3.5 h-3.5" />
-                              </button>
-                            </>
-                          )}
-                        </>
-                      ) : (
-                        !isReadOnly && (
-                          <>
-                            <button
-                              onClick={() => router.push(`/mappings/${p.id}`)}
-                              className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-gray-700 flex items-center justify-center text-gray-400 hover:text-white transition-all"
-                              title="Edit"
-                            >
-                              <Edit2 className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              onClick={() => handleDuplicate(p)}
-                              disabled={duplicating === p.id}
-                              className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-indigo-500/20 flex items-center justify-center text-gray-400 hover:text-indigo-400 transition-all disabled:opacity-50"
-                              title="Duplicate"
-                            >
-                              <Copy className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              onClick={() => handleDelete(p.id, p.name)}
-                              className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-red-500/20 flex items-center justify-center text-gray-400 hover:text-red-400 transition-all"
-                              title="Delete"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                            {isAdmin && (
-                              <button
-                                onClick={() => handlePromote(p.id)}
-                                disabled={promoting === p.id}
-                                className="w-8 h-8 rounded-lg bg-gray-800 hover:bg-cyan-500/10 flex items-center justify-center text-gray-400 hover:text-cyan-400 transition-all disabled:opacity-50"
-                                title="Make System"
-                              >
-                                <Shield className="w-3.5 h-3.5" />
-                              </button>
+                              {p.is_system && (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-cyan-500/10 border border-cyan-500/25 text-cyan-400 text-[10px] font-medium shrink-0">
+                                  <Lock className="w-2.5 h-2.5" />
+                                  System
+                                </span>
+                              )}
+                              {custName && (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-400 text-[10px] font-medium shrink-0">
+                                  <Building2 className="w-2.5 h-2.5" />
+                                  {custName}
+                                </span>
+                              )}
+                              {p.description && (
+                                <span className="text-xs text-gray-600 hidden xl:block truncate max-w-xs">
+                                  {p.description}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* Mappings count */}
+                          <td className="py-3 px-3 hidden md:table-cell">
+                            <div className="flex items-center gap-1.5">
+                              <GitMerge className="w-3 h-3 text-indigo-400 shrink-0" />
+                              <span className="text-xs text-gray-400">
+                                {mapCount} mappings
+                              </span>
+                            </div>
+                            <div className="text-xs text-gray-600 mt-0.5">
+                              {srcCount} source fields
+                            </div>
+                          </td>
+
+                          {/* Business object */}
+                          <td className="py-3 px-3 hidden lg:table-cell">
+                            {p.target_business_object ? (
+                              <span className="text-xs text-gray-400 font-mono">{p.target_business_object}</span>
+                            ) : (
+                              <span className="text-xs text-gray-700">—</span>
                             )}
-                          </>
-                        )
-                      )}
-                    </div>
-                  </div>
+                          </td>
 
-                  <h3 className="text-white font-semibold mb-1 truncate">
-                    {p.name}
-                  </h3>
-                  {p.description && (
-                    <p className="text-gray-500 text-xs mb-4 line-clamp-2">
-                      {p.description}
-                    </p>
-                  )}
+                          {/* Updated */}
+                          <td className="py-3 px-3 hidden lg:table-cell">
+                            <span className="text-xs text-gray-600">
+                              {new Date(p.updated_at).toLocaleDateString()}
+                            </span>
+                          </td>
 
-                  {/* Stats */}
-                  <div className="flex items-center gap-3 mt-4 pt-4 border-t border-gray-800">
-                    <div className="flex items-center gap-1.5">
-                      <Zap className="w-3 h-3 text-yellow-400" />
-                      <span className="text-xs text-gray-400">
-                        {srcCount} source
-                      </span>
-                    </div>
-                    <span className="text-gray-700">→</span>
-                    <div className="flex items-center gap-1.5">
-                      <Zap className="w-3 h-3 text-emerald-400" />
-                      <span className="text-xs text-gray-400">
-                        {tgtCount} target
-                      </span>
-                    </div>
-                    <div className="ml-auto flex items-center gap-1 text-xs text-indigo-400 font-medium">
-                      <GitMerge className="w-3 h-3" />
-                      {mapCount} mapped
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 mt-3 flex-wrap">
-                    <div className="flex items-center gap-1 text-xs text-gray-600">
-                      <Calendar className="w-3 h-3" />
-                      Updated{" "}
-                      {new Date(p.updated_at).toLocaleDateString(undefined, {
-                        month: "short",
-                        day: "numeric",
-                        year: "numeric",
-                      })}
-                    </div>
-                    {!p.is_system && p.customer_id && (() => {
-                      const cust = customers.find((c) => c.id === p.customer_id);
-                      return cust ? (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-400 text-[10px] font-medium">
-                          <Building2 className="w-2.5 h-2.5" />
-                          {cust.company || cust.name}
-                        </span>
-                      ) : null;
-                    })()}
-                  </div>
-                </div>
-              );
-            })}
+                          {/* Actions */}
+                          <td className="py-3 pl-3 pr-4">
+                            <div className="flex items-center gap-1 justify-end">
+                              {p.is_system ? (
+                                <>
+                                  <button
+                                    onClick={() => handleDuplicate(p, true)}
+                                    disabled={duplicating === p.id}
+                                    className="flex items-center gap-1 px-2.5 py-1 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/25 text-cyan-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50 whitespace-nowrap"
+                                    title="Use as Template"
+                                  >
+                                    <Copy className="w-3 h-3" />
+                                    Use as Template
+                                  </button>
+                                  {isAdmin && (
+                                    <>
+                                      <button
+                                        onClick={() => router.push(`/mappings/${p.id}`)}
+                                        className="p-1.5 text-gray-500 hover:text-gray-300 transition-colors rounded-lg hover:bg-gray-800"
+                                        title="Edit"
+                                      >
+                                        <Edit2 className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button
+                                        onClick={() => handleDemote(p.id)}
+                                        disabled={promoting === p.id}
+                                        className="p-1.5 text-gray-600 hover:text-gray-300 transition-colors rounded-lg hover:bg-gray-800 disabled:opacity-40"
+                                        title="Remove from system templates"
+                                      >
+                                        <ShieldOff className="w-3.5 h-3.5" />
+                                      </button>
+                                    </>
+                                  )}
+                                </>
+                              ) : (
+                                !isReadOnly && (
+                                  <>
+                                    <button
+                                      onClick={() => router.push(`/mappings/${p.id}`)}
+                                      className="p-1.5 text-gray-500 hover:text-gray-300 transition-colors rounded-lg hover:bg-gray-800"
+                                      title="Edit"
+                                    >
+                                      <Edit2 className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      onClick={() => handleDuplicate(p)}
+                                      disabled={duplicating === p.id}
+                                      className="p-1.5 text-gray-500 hover:text-indigo-400 transition-colors rounded-lg hover:bg-gray-800 disabled:opacity-40"
+                                      title="Duplicate"
+                                    >
+                                      <Copy className="w-3.5 h-3.5" />
+                                    </button>
+                                    {isAdmin && (
+                                      <button
+                                        onClick={() => handlePromote(p.id)}
+                                        disabled={promoting === p.id}
+                                        className="p-1.5 text-gray-600 hover:text-cyan-400 transition-colors rounded-lg hover:bg-gray-800 disabled:opacity-40"
+                                        title="Make system template"
+                                      >
+                                        <Shield className="w-3.5 h-3.5" />
+                                      </button>
+                                    )}
+                                    <button
+                                      onClick={() => handleDelete(p.id, p.name)}
+                                      className="p-1.5 text-gray-600 hover:text-red-400 transition-colors rounded-lg hover:bg-gray-800"
+                                      title="Delete"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </>
+                                )
+                              )}
+                              <button
+                                onClick={() => router.push(`/mappings/${p.id}`)}
+                                className="p-1.5 text-gray-700 hover:text-gray-400 transition-colors rounded-lg hover:bg-gray-800"
+                                title="Open"
+                              >
+                                <ChevronRight className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
       </main>

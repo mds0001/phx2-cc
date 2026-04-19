@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import {
   Plus, Plug, Trash2, Edit2, File, Cloud, Mail, Database, Globe,
@@ -11,19 +11,18 @@ import { createClient } from "@/lib/supabase-browser";
 import type { EndpointConnection, ConnectionType } from "@/lib/types";
 
 const TYPE_META: Record<ConnectionType, { label: string; icon: React.ReactNode; color: string; bg: string }> = {
-  file:           { label: "File",            icon: <File         className="w-4 h-4" />, color: "text-amber-400",   bg: "bg-amber-500/10 border-amber-500/25"     },
-  cloud:          { label: "Cloud",           icon: <Cloud        className="w-4 h-4" />, color: "text-sky-400",     bg: "bg-sky-500/10 border-sky-500/25"         },
-  smtp:           { label: "SMTP",            icon: <Mail         className="w-4 h-4" />, color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/25" },
-  odbc:           { label: "ODBC",            icon: <Database     className="w-4 h-4" />, color: "text-violet-400",  bg: "bg-violet-500/10 border-violet-500/25"   },
-  portal:         { label: "Portal",          icon: <Globe        className="w-4 h-4" />, color: "text-rose-400",    bg: "bg-rose-500/10 border-rose-500/25"       },
-  ivanti:         { label: "Ivanti ITSM",     icon: <Zap          className="w-4 h-4" />, color: "text-orange-400",  bg: "bg-orange-500/10 border-orange-500/25"   },
-  ivanti_neurons: { label: "Ivanti Neurons",  icon: <Search       className="w-4 h-4" />, color: "text-indigo-400",  bg: "bg-indigo-500/10 border-indigo-500/25"   },
-  dell:           { label: "Dell",            icon: <ShoppingCart className="w-4 h-4" />, color: "text-blue-400",    bg: "bg-blue-500/10 border-blue-500/25"       },
-  cdw:            { label: "CDW",             icon: <Package      className="w-4 h-4" />, color: "text-red-400",     bg: "bg-red-500/10 border-red-500/25"         },
-  azure:          { label: "Azure",           icon: <Building2    className="w-4 h-4" />, color: "text-cyan-400",    bg: "bg-cyan-500/10 border-cyan-500/25"       },
+  file:           { label: "File",           icon: <File         className="w-3.5 h-3.5" />, color: "text-amber-400",   bg: "bg-amber-500/10 border-amber-500/25"     },
+  cloud:          { label: "Cloud",          icon: <Cloud        className="w-3.5 h-3.5" />, color: "text-sky-400",     bg: "bg-sky-500/10 border-sky-500/25"         },
+  smtp:           { label: "SMTP",           icon: <Mail         className="w-3.5 h-3.5" />, color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/25" },
+  odbc:           { label: "ODBC",           icon: <Database     className="w-3.5 h-3.5" />, color: "text-violet-400",  bg: "bg-violet-500/10 border-violet-500/25"   },
+  portal:         { label: "Portal",         icon: <Globe        className="w-3.5 h-3.5" />, color: "text-rose-400",    bg: "bg-rose-500/10 border-rose-500/25"       },
+  ivanti:         { label: "Ivanti ITSM",    icon: <Zap          className="w-3.5 h-3.5" />, color: "text-orange-400",  bg: "bg-orange-500/10 border-orange-500/25"   },
+  ivanti_neurons: { label: "Ivanti Neurons", icon: <Search       className="w-3.5 h-3.5" />, color: "text-indigo-400",  bg: "bg-indigo-500/10 border-indigo-500/25"   },
+  dell:           { label: "Dell",           icon: <ShoppingCart className="w-3.5 h-3.5" />, color: "text-blue-400",    bg: "bg-blue-500/10 border-blue-500/25"       },
+  cdw:            { label: "CDW",            icon: <Package      className="w-3.5 h-3.5" />, color: "text-red-400",     bg: "bg-red-500/10 border-red-500/25"         },
+  azure:          { label: "Azure",          icon: <Building2    className="w-3.5 h-3.5" />, color: "text-cyan-400",    bg: "bg-cyan-500/10 border-cyan-500/25"       },
 };
 
-// Display order for type groups
 const TYPE_ORDER: ConnectionType[] = [
   "file", "cloud", "ivanti", "ivanti_neurons", "dell", "cdw",
   "azure", "smtp", "odbc", "portal",
@@ -67,10 +66,19 @@ export default function ConnectionsListClient({
   const [deleting, setDeleting] = useState<string | null>(null);
   const [promoting, setPromoting] = useState<string | null>(null);
   const [showSystem, setShowSystem] = useState(false);
+  const [search, setSearch] = useState("");
 
-  const visibleConnections = showSystem
-    ? connections
-    : connections.filter((c) => !c.is_system);
+  const visibleConnections = useMemo(() => {
+    const base = showSystem ? connections : connections.filter((c) => !c.is_system);
+    if (!search.trim()) return base;
+    const q = search.toLowerCase();
+    return base.filter(
+      (c) =>
+        c.name.toLowerCase().includes(q) ||
+        configSummary(c).toLowerCase().includes(q) ||
+        (TYPE_META[c.type]?.label ?? c.type).toLowerCase().includes(q)
+    );
+  }, [connections, showSystem, search]);
 
   async function handleDelete(id: string) {
     if (!confirm("Delete this connection?")) return;
@@ -100,20 +108,158 @@ export default function ConnectionsListClient({
     router.push(`/connections/new?from=${id}`);
   }
 
-  // Group by type, preserving TYPE_ORDER (use filtered list)
-  const grouped: { type: ConnectionType; items: EndpointConnection[] }[] = TYPE_ORDER
-    .map((t) => ({ type: t, items: visibleConnections.filter((c) => c.type === t) }))
-    .filter((g) => g.items.length > 0);
+  // When searching, show a flat list. Otherwise group by type.
+  const isSearching = search.trim().length > 0;
 
-  // Any types not in TYPE_ORDER (future-proof)
-  const knownTypes = new Set(TYPE_ORDER);
-  const extras = visibleConnections.filter((c) => !knownTypes.has(c.type));
-  if (extras.length > 0) {
-    const extraGroups = Array.from(new Set(extras.map((c) => c.type))).map((t) => ({
-      type: t,
-      items: extras.filter((c) => c.type === t),
-    }));
-    grouped.push(...extraGroups);
+  const grouped = useMemo<{ type: ConnectionType; items: EndpointConnection[] }[]>(() => {
+    if (isSearching) return [];
+    const knownTypes = new Set(TYPE_ORDER);
+    const result = TYPE_ORDER
+      .map((t) => ({ type: t, items: visibleConnections.filter((c) => c.type === t) }))
+      .filter((g) => g.items.length > 0);
+    const extras = visibleConnections.filter((c) => !knownTypes.has(c.type));
+    if (extras.length > 0) {
+      Array.from(new Set(extras.map((c) => c.type))).forEach((t) => {
+        result.push({ type: t, items: extras.filter((c) => c.type === t) });
+      });
+    }
+    return result;
+  }, [visibleConnections, isSearching]);
+
+  function RowActions({ conn }: { conn: EndpointConnection }) {
+    return (
+      <div className="flex items-center gap-1.5 justify-end">
+        {conn.is_system ? (
+          <>
+            <button
+              onClick={() => handleUseAsTemplate(conn.id)}
+              className="flex items-center gap-1 px-2.5 py-1 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/25 text-cyan-400 rounded-lg text-xs font-medium transition-all whitespace-nowrap"
+            >
+              <Copy className="w-3 h-3" />
+              Use as Template
+            </button>
+            {isAdmin && (
+              <>
+                <button
+                  onClick={() => router.push(`/connections/${conn.id}`)}
+                  className="p-1.5 text-gray-500 hover:text-gray-300 transition-colors rounded-lg hover:bg-gray-800"
+                  title="Edit"
+                >
+                  <Edit2 className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={() => handleDemote(conn.id)}
+                  disabled={promoting === conn.id}
+                  className="p-1.5 text-gray-600 hover:text-gray-300 transition-colors rounded-lg hover:bg-gray-800 disabled:opacity-40"
+                  title="Remove from system templates"
+                >
+                  <ShieldOff className="w-3.5 h-3.5" />
+                </button>
+              </>
+            )}
+          </>
+        ) : (
+          !isReadOnly && (
+            <>
+              <button
+                onClick={() => router.push(`/connections/${conn.id}`)}
+                className="p-1.5 text-gray-500 hover:text-gray-300 transition-colors rounded-lg hover:bg-gray-800"
+                title="Edit"
+              >
+                <Edit2 className="w-3.5 h-3.5" />
+              </button>
+              {isAdmin && (
+                <button
+                  onClick={() => handlePromote(conn.id)}
+                  disabled={promoting === conn.id}
+                  className="p-1.5 text-gray-600 hover:text-cyan-400 transition-colors rounded-lg hover:bg-gray-800 disabled:opacity-40"
+                  title="Make system template"
+                >
+                  <Shield className="w-3.5 h-3.5" />
+                </button>
+              )}
+              <button
+                onClick={() => handleDelete(conn.id)}
+                disabled={deleting === conn.id}
+                className="p-1.5 text-gray-600 hover:text-red-400 transition-colors rounded-lg hover:bg-gray-800 disabled:opacity-40"
+                title="Delete"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </>
+          )
+        )}
+      </div>
+    );
+  }
+
+  function ConnectionRow({ conn }: { conn: EndpointConnection }) {
+    const meta = TYPE_META[conn.type] ?? {
+      label: conn.type, icon: <Plug className="w-3.5 h-3.5" />, color: "text-gray-400", bg: "bg-gray-500/10 border-gray-500/25",
+    };
+    const custName = !conn.is_system && conn.customer_id
+      ? customers.find((c) => c.id === conn.customer_id)?.company || customers.find((c) => c.id === conn.customer_id)?.name
+      : null;
+
+    return (
+      <tr className="border-b border-gray-800/60 hover:bg-gray-800/30 transition-colors group">
+        {/* Type badge */}
+        <td className="py-3 pl-4 pr-3 w-36">
+          <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md border text-xs font-medium ${meta.bg} ${meta.color}`}>
+            {meta.icon}
+            {meta.label}
+          </span>
+        </td>
+
+        {/* Name */}
+        <td className="py-3 px-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-sm text-white font-medium">{conn.name}</span>
+            {conn.is_system && (
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-cyan-500/10 border border-cyan-500/25 text-cyan-400 text-[10px] font-medium shrink-0">
+                <Lock className="w-2.5 h-2.5" />
+                System
+              </span>
+            )}
+            {custName && (
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-400 text-[10px] font-medium shrink-0">
+                <Building2 className="w-2.5 h-2.5" />
+                {custName}
+              </span>
+            )}
+          </div>
+        </td>
+
+        {/* Config summary */}
+        <td className="py-3 px-3 w-56 hidden md:table-cell">
+          <span className="text-xs text-gray-500 truncate block max-w-[200px]">{configSummary(conn)}</span>
+        </td>
+
+        {/* Updated */}
+        <td className="py-3 px-3 w-24 hidden lg:table-cell">
+          <span className="text-xs text-gray-600">
+            {new Date(conn.updated_at).toLocaleDateString()}
+          </span>
+        </td>
+
+        {/* Actions */}
+        <td className="py-3 pl-3 pr-4 w-48">
+          <RowActions conn={conn} />
+        </td>
+      </tr>
+    );
+  }
+
+  function ConnectionTable({ items }: { items: EndpointConnection[] }) {
+    return (
+      <table className="w-full">
+        <tbody>
+          {items.map((conn) => (
+            <ConnectionRow key={conn.id} conn={conn} />
+          ))}
+        </tbody>
+      </table>
+    );
   }
 
   return (
@@ -139,7 +285,7 @@ export default function ConnectionsListClient({
               <span className="font-semibold text-white">Endpoint Connections</span>
               {connections.length > 0 && (
                 <span className="ml-1 px-2 py-0.5 rounded-full bg-gray-800 border border-gray-700 text-xs text-gray-400 font-medium">
-                  {connections.length}
+                  {visibleConnections.length}{visibleConnections.length !== connections.length ? ` / ${connections.length}` : ""}
                 </span>
               )}
             </div>
@@ -174,7 +320,7 @@ export default function ConnectionsListClient({
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-6 py-8 space-y-10">
+      <main className="max-w-6xl mx-auto px-6 py-8">
         {connections.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-24 gap-4">
             <div className="w-16 h-16 rounded-2xl bg-gray-800 flex items-center justify-center">
@@ -193,136 +339,65 @@ export default function ConnectionsListClient({
             )}
           </div>
         ) : (
-          grouped.map(({ type, items }) => {
-            const meta = TYPE_META[type] ?? {
-              label: type, icon: <Plug className="w-4 h-4" />, color: "text-gray-400", bg: "bg-gray-500/10 border-gray-500/25",
-            };
-            return (
-              <section key={type}>
-                {/* Group header */}
-                <div className="flex items-center gap-3 mb-4">
-                  <div className={`w-7 h-7 rounded-lg flex items-center justify-center border ${meta.bg} ${meta.color}`}>
-                    {meta.icon}
-                  </div>
-                  <h2 className={`text-sm font-semibold uppercase tracking-widest ${meta.color}`}>
-                    {meta.label}
-                  </h2>
-                  <span className="px-2 py-0.5 rounded-full bg-gray-800 border border-gray-700 text-xs text-gray-500 font-medium">
-                    {items.length}
-                  </span>
-                  <div className="flex-1 h-px bg-gray-800" />
+          <div className="space-y-8">
+            {/* Search bar */}
+            <div className="relative">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by name, type, or URL…"
+                className="w-full bg-gray-900 border border-gray-800 rounded-xl pl-11 pr-4 py-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-600 hover:text-gray-400 transition-colors"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            {/* Results */}
+            {isSearching ? (
+              visibleConnections.length === 0 ? (
+                <p className="text-gray-500 text-sm text-center py-12">No connections match &quot;{search}&quot;</p>
+              ) : (
+                <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+                  <ConnectionTable items={visibleConnections} />
                 </div>
-
-                {/* Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                  {items.map((conn) => (
-                    <div
-                      key={conn.id}
-                      className={`bg-gray-900 border border-gray-800 rounded-2xl p-5 flex flex-col gap-4 hover:border-opacity-60 transition-colors`}
-                      style={{ borderColor: "rgb(31 41 55)" }}
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.borderColor = ""; }}
-                      onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.borderColor = "rgb(31 41 55)"; }}
-                    >
-                      {/* Top row */}
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-center gap-3 min-w-0">
-                          <div className={`w-9 h-9 rounded-xl flex items-center justify-center border ${meta.bg} ${meta.color} shrink-0`}>
-                            {meta.icon}
-                          </div>
-                          <div className="min-w-0">
-                            <p className="font-semibold text-white truncate">{conn.name}</p>
-                            <p className="text-xs text-gray-500 mt-0.5 truncate">{configSummary(conn)}</p>
-                            {!conn.is_system && conn.customer_id && (() => {
-                              const cust = customers.find((c) => c.id === conn.customer_id);
-                              return cust ? (
-                                <span className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-400 text-[10px] font-medium">
-                                  <Building2 className="w-2.5 h-2.5" />
-                                  {cust.company || cust.name}
-                                </span>
-                              ) : null;
-                            })()}
-                          </div>
-                        </div>
-                        {conn.is_system && (
-                          <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-cyan-500/10 border border-cyan-500/25 text-cyan-400 text-xs font-medium shrink-0">
-                            <Lock className="w-3 h-3" />
-                            System
-                          </div>
-                        )}
+              )
+            ) : (
+              grouped.map(({ type, items }) => {
+                const meta = TYPE_META[type] ?? {
+                  label: type, icon: <Plug className="w-3.5 h-3.5" />, color: "text-gray-400", bg: "bg-gray-500/10 border-gray-500/25",
+                };
+                return (
+                  <section key={type}>
+                    {/* Group header */}
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className={`w-6 h-6 rounded-md flex items-center justify-center border ${meta.bg} ${meta.color}`}>
+                        {meta.icon}
                       </div>
-
-                      {/* Actions */}
-                      <div className="flex items-center gap-2 pt-1 border-t border-gray-800 flex-wrap">
-                        {conn.is_system ? (
-                          <>
-                            <button
-                              onClick={() => handleUseAsTemplate(conn.id)}
-                              className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/25 text-cyan-400 rounded-lg text-xs font-medium transition-all"
-                            >
-                              <Copy className="w-3 h-3" />
-                              Use as Template
-                            </button>
-                            {isAdmin && (
-                              <>
-                                <button
-                                  onClick={() => router.push(`/connections/${conn.id}`)}
-                                  className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg text-xs font-medium transition-all"
-                                >
-                                  <Edit2 className="w-3 h-3" />
-                                  Edit
-                                </button>
-                                <button
-                                  onClick={() => handleDemote(conn.id)}
-                                  disabled={promoting === conn.id}
-                                  className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
-                                >
-                                  <ShieldOff className="w-3 h-3" />
-                                  Remove from System
-                                </button>
-                              </>
-                            )}
-                          </>
-                        ) : (
-                          !isReadOnly && (
-                            <>
-                              <button
-                                onClick={() => router.push(`/connections/${conn.id}`)}
-                                className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg text-xs font-medium transition-all"
-                              >
-                                <Edit2 className="w-3 h-3" />
-                                Edit
-                              </button>
-                              <button
-                                onClick={() => handleDelete(conn.id)}
-                                disabled={deleting === conn.id}
-                                className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                                Delete
-                              </button>
-                              {isAdmin && (
-                                <button
-                                  onClick={() => handlePromote(conn.id)}
-                                  disabled={promoting === conn.id}
-                                  className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-cyan-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
-                                >
-                                  <Shield className="w-3 h-3" />
-                                  Make System
-                                </button>
-                              )}
-                            </>
-                          )
-                        )}
-                        <span className="ml-auto text-xs text-gray-600">
-                          {new Date(conn.updated_at).toLocaleDateString()}
-                        </span>
-                      </div>
+                      <h2 className={`text-xs font-semibold uppercase tracking-widest ${meta.color}`}>
+                        {meta.label}
+                      </h2>
+                      <span className="px-2 py-0.5 rounded-full bg-gray-800 border border-gray-700 text-xs text-gray-500 font-medium">
+                        {items.length}
+                      </span>
+                      <div className="flex-1 h-px bg-gray-800" />
                     </div>
-                  ))}
-                </div>
-              </section>
-            );
-          })
+
+                    <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+                      <ConnectionTable items={items} />
+                    </div>
+                  </section>
+                );
+              })
+            )}
+          </div>
         )}
       </main>
     </div>
