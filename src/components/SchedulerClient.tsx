@@ -2114,7 +2114,7 @@ export default function SchedulerClient({
         ? new Date(editForm.startDateTime).toISOString()
         : new Date(Date.now() + 10 * 365 * 24 * 60 * 60 * 1000).toISOString();
 
-      const { error } = await supabase
+      const { data: updated, error } = await supabase
         .from("scheduled_tasks")
         .update({
           task_name: editForm.taskName,
@@ -2129,9 +2129,17 @@ export default function SchedulerClient({
           write_mode: editForm.writeMode ?? "upsert",
           customer_id: editForm.customerId ?? null,
         })
-        .eq("id", editTask.id);
+        .eq("id", editTask.id)
+        .select("id");
 
       if (error) throw error;
+      if (!updated || updated.length === 0) {
+        throw new Error(
+          "Save was blocked — you don't have permission to edit this task.\n\n" +
+          "System templates can only be edited by their owner or an admin. " +
+          "Use \u201cUse as Template\u201d to create your own editable copy."
+        );
+      }
 
       await supabase.from("task_logs").insert({
         task_id: editTask.id,

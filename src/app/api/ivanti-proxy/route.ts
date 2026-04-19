@@ -15,6 +15,14 @@ function odataEscape(val: string): string {
   return val.replace(/'/g, "''");
 }
 
+// Encode an Ivanti business-object name for use in a URL path segment.
+// Ivanti uses '#' as a namespace separator (e.g. "AddressCountry#", "Location#").
+// Node.js fetch() treats bare '#' as a fragment delimiter and strips everything
+// from it onward, so '#' must be percent-encoded as '%23' in URL paths.
+function encodeBoForUrl(name: string): string {
+  return name.replace(/#/g, "%23");
+}
+
 // Derive a candidate Ivanti business-object name from a _Link field name.
 //   "ivnt_AssignedManufacturerLink" -> "Manufacturer"
 //   "ivnt_AssignedModelLink"        -> "Model"
@@ -259,7 +267,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ existing: [] });
       }
       const resolvedCeKey  = ceApiKey ?? FALLBACK_API_KEY;
-      const resolvedCeBo   = ceBo ?? "CI__Computers";
+      const resolvedCeBo   = encodeBoForUrl(ceBo ?? "CI__Computers");
       const keyField       = ceKey ?? "Name";
       const base           = ceUrl.replace(/\/$/, "");
       const endpoint       = `${base}/api/odata/businessobject/${resolvedCeBo}`;
@@ -365,6 +373,9 @@ export async function POST(request: NextRequest) {
 
     // Resolve the correct BO endpoint name — try as-is, then pluralized (Ivanti Neurons
     // uses plural entity set names: Location→Locations, Vendor→Vendors, etc.)
+    // '#' in BO names is an Ivanti namespace separator and must be percent-encoded
+    // as '%23' in URL paths — Node.js fetch() treats bare '#' as a fragment delimiter
+    // and strips everything from it onward, producing a malformed request path.
     // Result is cached at module level so the probe only runs once per BO per process.
     const cacheKey = `${base}:${effectiveObject}`;
     let resolvedBoName: string;
@@ -372,10 +383,11 @@ export async function POST(request: NextRequest) {
       resolvedBoName = boNameCache.get(cacheKey)!;
       console.log(`[ivanti-proxy] BO name cache hit: ${effectiveObject} -> ${resolvedBoName}`);
     } else {
-      resolvedBoName = effectiveObject;
-      const probeNames = effectiveObject.endsWith("s")
-        ? [effectiveObject]
-        : [effectiveObject, effectiveObject + "s"];
+      resolvedBoName = encodeBoForUrl(effectiveObject);
+      const baseName = encodeBoForUrl(effectiveObject);
+      const probeNames = baseName.endsWith("s")
+        ? [baseName]
+        : [baseName, baseName + "s"];
       for (const candidate of probeNames) {
         try {
           const probeRes = await fetch(`${base}/api/odata/businessobject/${candidate}?$top=0`, { headers });
@@ -678,7 +690,7 @@ export async function PUT(request: NextRequest) {
     }
 
     const resolvedKey    = apiKey         ?? FALLBACK_API_KEY;
-    const resolvedObject = businessObject ?? "CI__Computers";
+    const resolvedObject = encodeBoForUrl(businessObject ?? "CI__Computers");
 
     // Ivanti enforces a hard cap of 100 records per page.
     // We page through using $skip since this instance doesn't return @odata.nextLink.

@@ -7,6 +7,7 @@
  *   ==   !=   >   <   >=   <=
  *   contains   starts_with   ends_with
  *   is_empty   is_not_empty
+ *   IS NULL   IS NOT NULL   (SQL-style null checks)
  *
  * Logical combinators: AND  OR  (case-insensitive)
  * Grouping: ( )
@@ -45,7 +46,7 @@ interface Token {
 
 // ── Lexer ─────────────────────────────────────────────────────
 
-const UNARY_OPS = ["is_empty", "is_not_empty"];
+const UNARY_OPS = ["is_empty", "is_not_empty", "is_null", "is_not_null"];
 const BINARY_OPS = [
   "contains", "starts_with", "ends_with",
   ">=", "<=", "!=", "==", ">", "<",
@@ -129,6 +130,28 @@ function tokenize(expr: string): Token[] {
       while (j < expr.length && /[a-zA-Z0-9_]/.test(expr[j])) j++;
       const word = expr.slice(i, j);
       const upper = word.toUpperCase();
+
+      // Handle SQL-style "IS NOT NULL" and "IS NULL" as unary operators
+      if (upper === "IS") {
+        // Peek ahead (skip whitespace) for "NOT NULL" or "NULL"
+        let k = j;
+        while (k < expr.length && /\s/.test(expr[k])) k++;
+        const rest = expr.slice(k).toUpperCase();
+        if (rest.startsWith("NOT")) {
+          let k2 = k + 3;
+          while (k2 < expr.length && /\s/.test(expr[k2])) k2++;
+          if (expr.slice(k2).toUpperCase().startsWith("NULL")) {
+            tokens.push({ kind: "UNARY_OP", value: "is_not_null" });
+            i = k2 + 4;
+            continue;
+          }
+        } else if (rest.startsWith("NULL")) {
+          tokens.push({ kind: "UNARY_OP", value: "is_null" });
+          i = k + 4;
+          continue;
+        }
+      }
+
       if (upper === "AND") tokens.push({ kind: "AND", value: "AND" });
       else if (upper === "OR") tokens.push({ kind: "OR", value: "OR" });
       else if (upper === "TRUE") tokens.push({ kind: "BOOL", value: "true" });
@@ -256,7 +279,10 @@ function evalNode(node: ASTNode, row: Record<string, unknown>): boolean {
 
     case "unary": {
       const raw = row[node.field];
-      const isEmpty = raw === null || raw === undefined || String(raw).trim() === "";
+      const isNull  = raw === null || raw === undefined;
+      const isEmpty = isNull || String(raw).trim() === "";
+      if (node.op === "is_null")     return isNull;
+      if (node.op === "is_not_null") return !isNull;
       return node.op === "is_empty" ? isEmpty : !isEmpty;
     }
 
