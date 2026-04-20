@@ -49,15 +49,26 @@ export async function POST(request: NextRequest) {
     // ── Open xlsx as zip ──────────────────────────────────────────────────────
     const zip = await JSZip.loadAsync(buffer);
 
+    // ── Diagnostic: log all zip paths ─────────────────────────────────────────
+    const allZipKeys = Object.keys(zip.files);
+    console.log("[extract-xlsx-images] Zip contents:", allZipKeys.join(" | "));
+
     // ── Locate drawing file(s) ────────────────────────────────────────────────
     // Drawings live at xl/drawings/drawing1.xml (Excel always uses this name for
     // the first sheet's drawing part).  We scan all keys to be robust.
-    const drawingKeys = Object.keys(zip.files).filter(
+    const drawingKeys = allZipKeys.filter(
       (k) => /^xl\/drawings\/drawing\d+\.xml$/.test(k)
     );
 
+    console.log("[extract-xlsx-images] Drawing keys found:", drawingKeys);
+
     if (drawingKeys.length === 0) {
-      return NextResponse.json({ images: [] });
+      // Log media files found anyway so we can diagnose alternate image storage
+      const mediaKeys = allZipKeys.filter((k) => k.startsWith("xl/media/"));
+      const cellImageKeys = allZipKeys.filter((k) => k.startsWith("xl/cellImages/"));
+      console.log("[extract-xlsx-images] Media files:", mediaKeys);
+      console.log("[extract-xlsx-images] Cell image files:", cellImageKeys);
+      return NextResponse.json({ images: [], debug: { allZipKeys, mediaKeys, cellImageKeys } });
     }
 
     const results: { rowIndex: number; base64: string; mimeType: string; fileName: string }[] = [];

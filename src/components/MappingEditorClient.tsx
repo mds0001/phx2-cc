@@ -279,7 +279,9 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
               body: JSON.stringify({ storageKey: cfg.file_path }),
             });
             if (imgRes.ok) {
-              const { images } = await imgRes.json() as { images?: { rowIndex: number }[] };
+              const imgData = await imgRes.json() as { images?: { rowIndex: number }[]; debug?: unknown };
+              console.log("[extract-xlsx-images] response:", JSON.stringify(imgData.debug ?? { imageCount: imgData.images?.length }));
+              const { images } = imgData;
               if (images && images.length > 0) {
                 allFields = [
                   ...fields,
