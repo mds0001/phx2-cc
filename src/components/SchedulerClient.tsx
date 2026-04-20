@@ -665,8 +665,8 @@ export default function SchedulerClient({
           const hasImageMapping = fileMappingProfile?.source_fields.some(
             (f) => f.id === "__embedded_image__" || f.name === "__embedded_image__"
           ) ?? false;
-          // Map: drawing row index (number) → base64 string
-          let embeddedImageMap: Map<number, string> | null = null;
+          // Map: drawing row index (number) → { base64, mimeType }
+          let embeddedImageMap: Map<number, { base64: string; mimeType: string }> | null = null;
           if (hasImageMapping && resolvedSourceFilePath) {
             try {
               const imgRes = await fetch("/api/extract-xlsx-images", {
@@ -680,7 +680,7 @@ export default function SchedulerClient({
                   zipKeys?: string[];
                 };
                 if (images && images.length > 0) {
-                  embeddedImageMap = new Map(images.map((img) => [img.rowIndex, img.base64]));
+                  embeddedImageMap = new Map(images.map((img) => [img.rowIndex, { base64: img.base64, mimeType: img.mimeType }]));
                   await taskLog("INFO", `[${fileEntry.label}] Extracted ${images.length} embedded image(s) from xlsx`);
                 } else {
                   const relevantKeys = (zipKeys ?? []).filter(k =>
@@ -1006,14 +1006,39 @@ export default function SchedulerClient({
 
             // Inject embedded image for this row before mapping.
             // Drawing row 0 = header, so data row i → drawing row i+1.
+            const embeddedImgData = embeddedImageMap?.get(i + 1);
             const rowForMapping: Record<string, unknown> =
-              embeddedImageMap?.has(i + 1)
-                ? { ...row, __embedded_image__: embeddedImageMap.get(i + 1) }
+              embeddedImgData
+                ? { ...row, __embedded_image__: embeddedImgData.base64 }
                 : row;
 
             const payload = fileMappingProfile
               ? applyMappingProfile(rowForMapping, fileMappingProfile, aiResults, aiGuessResults)
               : rowForMapping;
+
+            // For Ivanti targets: separate binary image fields from the main payload.
+            // Ivanti REST API rejects base64 strings for varbinary columns — the image
+            // must be uploaded separately via a PUT to the OData property endpoint.
+            // We detect the target field that __embedded_image__ maps to, strip it from
+            // the payload, and pass it in binaryFields so the proxy can upload it after
+            // the main record write succeeds.
+            const imageSourceFieldId = fileMappingProfile?.source_fields.find(
+              (sf) => sf.id === "__embedded_image__" || sf.name === "__embedded_image__"
+            )?.id;
+            const imageMapping = imageSourceFieldId
+              ? fileMappingProfile?.mappings.find((m) => m.sourceFieldId === imageSourceFieldId)
+              : undefined;
+            const imageTargetFieldName = imageMapping
+              ? fileMappingProfile?.target_fields.find((tf) => tf.id === imageMapping.targetFieldId)?.name
+              : undefined;
+            let binaryFieldsForProxy: Record<string, { base64: string; mimeType: string }> | undefined;
+            const mainPayload: Record<string, unknown> = { ...payload };
+            if (imageTargetFieldName && embeddedImgData &&
+                typeof mainPayload[imageTargetFieldName] === "string" &&
+                (mainPayload[imageTargetFieldName] as string).length > 100) {
+              binaryFieldsForProxy = { [imageTargetFieldName]: embeddedImgData };
+              delete mainPayload[imageTargetFieldName];
+            }
             // Warn about mapped fields that had no source value (null in payload)
             if (fileMappingProfile) {
               const nullFields: string[] = [];
@@ -1021,7 +1046,7 @@ export default function SchedulerClient({
                 if (mapping.transform === "static" || mapping.transform === "ai_lookup" || mapping.transform === "ai_guess") continue;
                 const tgtF = fileMappingProfile.target_fields.find((f) => f.id === mapping.targetFieldId);
                 const srcF = fileMappingProfile.source_fields.find((f) => f.id === mapping.sourceFieldId);
-                if (tgtF && srcF && payload[tgtF.name] === null) {
+                if (tgtF && srcF && mainPayload[tgtF.name] === null) {
                   nullFields.push(`${srcF.name} → ${tgtF.name}`);
                 }
               }
@@ -1032,11 +1057,16 @@ export default function SchedulerClient({
             // Build a log-safe payload copy — truncate any binary (base64) fields
             // that would otherwise flood the log with hundreds of KB of image data.
             const payloadForLog: Record<string, unknown> = {};
-            for (const [k, v] of Object.entries(payload)) {
+            for (const [k, v] of Object.entries(mainPayload)) {
               if (typeof v === "string" && v.length > 512) {
                 payloadForLog[k] = `[binary: ${Math.round(v.length * 0.75 / 1024)}KB]`;
               } else {
                 payloadForLog[k] = v;
+              }
+            }
+            if (binaryFieldsForProxy) {
+              for (const [k, { base64 }] of Object.entries(binaryFieldsForProxy)) {
+                payloadForLog[k] = `[binary upload: ${Math.round(base64.length * 0.75 / 1024)}KB]`;
               }
             }
             await taskLog("ROW", `Sending row ${i + 1}/${rows.length}: ${JSON.stringify(payloadForLog)}`);
@@ -1070,7 +1100,7 @@ export default function SchedulerClient({
               const isFileM2M = !!(fileMappingProfile?.many_to_many && fileMappingProfile.relationship_name);
               let proxyBody: Record<string, unknown> = {
                 ivantiUrl: effectiveUrl,
-                data: payload,
+                data: mainPayload,
                 apiKey: effectiveApiKey,
                 businessObject: effectiveBusinessObject,
                 tenantId: effectiveTenantId,
@@ -1084,13 +1114,16 @@ export default function SchedulerClient({
                   manyToMany: true,
                   relationshipName: fileMappingProfile!.relationship_name,
                 }),
+                // Binary fields (e.g. ivnt_CatalogImage) are uploaded separately after
+                // the main record write via PUT to the OData property endpoint.
+                ...(binaryFieldsForProxy && { binaryFields: binaryFieldsForProxy }),
               };
               if (resolvedConnType === "dell") {
                 proxyRoute = "/api/dell-proxy";
-                proxyBody = { data: payload, connectionId: fileTargetConnId };
+                proxyBody = { data: mainPayload, connectionId: fileTargetConnId };
               } else if (resolvedConnType === "cdw") {
                 proxyRoute = "/api/cdw-proxy";
-                proxyBody = { data: payload, connectionId: fileTargetConnId };
+                proxyBody = { data: mainPayload, connectionId: fileTargetConnId };
               }
 
               await new Promise((r) => setTimeout(r, 75));
@@ -1151,6 +1184,18 @@ export default function SchedulerClient({
                 _typeStr || undefined,
               ].filter(Boolean).join(" | ");
               await taskLog(res.ok ? "SUCCESS" : "ERROR", `${_label}${_link}`);
+
+              // Log binary field upload results if any
+              if (res.ok && json?.binaryUploadResults) {
+                const binResults = json.binaryUploadResults as Record<string, string>;
+                for (const [field, result] of Object.entries(binResults)) {
+                  if (result === "ok") {
+                    await taskLog("INFO", `Row ${i + 1}: Binary field "${field}" uploaded successfully`);
+                  } else {
+                    await taskLog("WARN", `Row ${i + 1}: Binary field "${field}" upload failed: ${result}`);
+                  }
+                }
+              }
 
               // Surface the Ivanti error detail when the row failed
               if (!res.ok) {

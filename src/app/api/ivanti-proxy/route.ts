@@ -661,7 +661,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { ivantiUrl, data, apiKey, businessObject, tenantId, linkFieldNames, linkFieldBoNames, linkFieldLookupFields, upsertKey, upsertKeys, skipIfExists, skipIfNotExists, method, directRecId, directBoName } = body as {
+    const { ivantiUrl, data, apiKey, businessObject, tenantId, linkFieldNames, linkFieldBoNames, linkFieldLookupFields, upsertKey, upsertKeys, skipIfExists, skipIfNotExists, method, directRecId, directBoName, binaryFields } = body as {
       ivantiUrl: string;
       data: Record<string, unknown>;
       apiKey?: string;
@@ -688,6 +688,10 @@ export async function POST(request: NextRequest) {
        *  Must be paired with directBoName (the already-resolved, URL-encoded BO name). */
       directRecId?: string;
       directBoName?: string;
+      /** Binary fields to upload separately via PUT after the main record write.
+       *  Ivanti REST API rejects base64 strings for varbinary columns in JSON payloads.
+       *  Each entry: fieldName → { base64: string, mimeType: string } */
+      binaryFields?: Record<string, { base64: string; mimeType: string }>;
     };
 
     // ── Direct DELETE by known RecID (fast path used by resetTask) ───────────
@@ -1016,6 +1020,62 @@ export async function POST(request: NextRequest) {
     console.log(`[ivanti-proxy] ${upsertMethod} response status:`, response.status);
     console.log("[ivanti-proxy] Response body:", JSON.stringify(responseBody));
 
+    // ── Binary field upload (e.g. ivnt_CatalogImage) ─────────────────────────
+    // Ivanti REST API rejects base64 strings for varbinary fields in JSON payloads.
+    // After a successful main record write, upload each binary field via a PUT
+    // directly to the OData property endpoint with the raw bytes as the body.
+    const binaryUploadResults: Record<string, string> = {};
+    if (binaryFields && Object.keys(binaryFields).length > 0 && (response.ok || response.status === 204)) {
+      const finalRecId = existingRecId ?? (responseBody as Record<string, unknown> | null)?.RecId as string | undefined;
+      if (finalRecId) {
+        for (const [fieldName, { base64, mimeType }] of Object.entries(binaryFields)) {
+          // Try the OData $value property endpoint first (standard OData v4)
+          // then fall back to a plain property PUT without $value suffix.
+          const attempts = [
+            `${endpoint}('${finalRecId}')/${fieldName}/$value`,
+            `${endpoint}('${finalRecId}')/${fieldName}`,
+          ];
+          let uploaded = false;
+          for (const uploadUrl of attempts) {
+            try {
+              console.log(`[ivanti-proxy] Binary upload: PUT ${uploadUrl} (${mimeType}, ${Math.round(base64.length * 0.75 / 1024)}KB)`);
+              const bytes = Buffer.from(base64, "base64");
+              const binRes = await fetch(uploadUrl, {
+                method: "PUT",
+                headers: {
+                  Authorization: `rest_api_key=${resolvedKey}`,
+                  "Content-Type": mimeType,
+                  ...(tenantId ? { "X-Tenant-Id": tenantId } : {}),
+                },
+                body: bytes,
+              });
+              const binStatus = binRes.status;
+              const binText = binStatus === 204 ? "" : await binRes.text().catch(() => "");
+              console.log(`[ivanti-proxy] Binary upload ${fieldName}: HTTP ${binStatus} ${binText.slice(0, 200)}`);
+              if (binRes.ok || binStatus === 204) {
+                binaryUploadResults[fieldName] = "ok";
+                uploaded = true;
+                break;
+              }
+              binaryUploadResults[fieldName] = `HTTP ${binStatus}: ${binText.slice(0, 100)}`;
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              console.warn(`[ivanti-proxy] Binary upload error for ${fieldName}:`, msg);
+              binaryUploadResults[fieldName] = `error: ${msg}`;
+            }
+          }
+          if (!uploaded) {
+            console.warn(`[ivanti-proxy] Binary upload failed for ${fieldName}: ${binaryUploadResults[fieldName]}`);
+          }
+        }
+      } else {
+        console.warn("[ivanti-proxy] Binary fields present but no RecId available for upload");
+        for (const fieldName of Object.keys(binaryFields)) {
+          binaryUploadResults[fieldName] = "skipped: no RecId";
+        }
+      }
+    }
+
     return NextResponse.json(
       {
         status: response.status === 204 ? 200 : response.status,
@@ -1025,6 +1085,7 @@ export async function POST(request: NextRequest) {
         resolvedBoName,
         upsert: { method: upsertMethod, existingRecId },
         ...(strippedFields?.length ? { strippedFields, strippedValues } : {}),
+        ...(Object.keys(binaryUploadResults).length > 0 ? { binaryUploadResults } : {}),
       },
       { status: response.ok || response.status === 204 ? 200 : response.status }
     );
