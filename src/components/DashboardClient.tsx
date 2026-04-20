@@ -179,12 +179,12 @@ export default function DashboardClient({ profile, initialCounts, role, initialR
 
       <header className="sticky top-0 z-50 bg-gray-900/80 backdrop-blur-xl border-b border-gray-800">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+          <a href="https://www.cloudweavr.com" target="_blank" rel="noopener noreferrer" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
             <div className="w-8 h-8 rounded-xl flex items-center justify-center lg-glow-cyan" style={{ background: "linear-gradient(135deg, #00F5FF 0%, #7B61FF 100%)" }}>
               <Zap className="w-4 h-4 text-white" strokeWidth={2.5} />
             </div>
             <span className="font-bold lg-gradient-text text-lg">Threads by Cloud Weaver</span>
-          </div>
+          </a>
           <div className="flex items-center gap-3">
             {isAdmin && customers.length > 0 && (
               <CustomerSwitcher customers={customers} activeCustomerId={activeCustomerId} />
