@@ -268,10 +268,41 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
             sample: sample[i] !== undefined ? String(sample[i]) : undefined,
           }));
         if (side === "source") {
+          // Check for embedded images in the xlsx (Insert → Picture anchored to cells).
+          // If found, append a virtual __embedded_image__ field so users can map it to
+          // a binary target field (e.g. ivnt_CatalogImage on FRS_PriceItem).
+          let allFields = fields;
+          try {
+            const imgRes = await fetch("/api/extract-xlsx-images", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ storageKey: cfg.file_path }),
+            });
+            if (imgRes.ok) {
+              const { images } = await imgRes.json() as { images?: { rowIndex: number }[] };
+              if (images && images.length > 0) {
+                allFields = [
+                  ...fields,
+                  {
+                    id: "__embedded_image__",
+                    name: "__embedded_image__",
+                    sample: "[Embedded Image]",
+                  },
+                ];
+              }
+            }
+          } catch {
+            // Non-fatal — if image check fails, just skip the virtual field
+          }
+
           // Preserve existing mapping references: reuse IDs for fields whose names match
           // existing source fields so that saved mappings remain valid after re-enumeration.
           const existingByName = new Map(sourceFields.map((f) => [f.name, f.id]));
-          const mergedFields = fields.map((f) => ({ ...f, id: existingByName.get(f.name) ?? f.id }));
+          const mergedFields = allFields.map((f) => ({
+            ...f,
+            // Always keep the stable sentinel ID for the virtual image field
+            id: f.name === "__embedded_image__" ? "__embedded_image__" : (existingByName.get(f.name) ?? f.id),
+          }));
           setSourceFields(mergedFields);
           // Only drop mapping rows for source fields that no longer exist.
           const validSourceIds = new Set(mergedFields.map((f) => f.id));
@@ -728,7 +759,8 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
   }
 
   function getFieldName(fields: FieldDef[], id: string) {
-    return fields.find((f) => f.id === id)?.name ?? "—";
+    const name = fields.find((f) => f.id === id)?.name ?? "—";
+    return name === "__embedded_image__" ? "Row Image (Embedded)" : name;
   }
 
   // ── Render ───────────────────────────────────────────────────
@@ -2181,14 +2213,16 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
                               ? "text-yellow-300"
                               : isMapped
                               ? "text-emerald-300"
+                              : field.id === "__embedded_image__"
+                              ? "text-sky-300"
                               : "text-white"
                           }`}
                         >
-                          {field.name}
+                          {field.id === "__embedded_image__" ? "Row Image (Embedded)" : field.name}
                         </p>
                         {field.sample !== undefined && (
                           <p className="text-xs text-gray-500 truncate">
-                            e.g. &quot;{field.sample}&quot;
+                            {field.id === "__embedded_image__" ? "📷 one image per row" : `e.g. "${field.sample}"`}
                           </p>
                         )}
                       </div>

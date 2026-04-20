@@ -35,6 +35,7 @@ import type {
   RecurrenceType,
   MappingProfile,
   EndpointConnection,
+  AttachmentRule,
 } from "@/lib/types";
 import { applyMappingProfile, MappingSlot } from "@/lib/types";
 import { evaluateFilter } from "@/lib/filterExpression";
@@ -656,6 +657,41 @@ export default function SchedulerClient({
 
           await taskLog("INFO", `[${fileEntry.label}] Parsed ${rows.length} rows from sheet "${sheetName}"`);
 
+          // ── Embedded image extraction ──────────────────────────────────────
+          // If any mapping row uses the __embedded_image__ virtual source field,
+          // pre-fetch all row images from the xlsx zip so we can inject them
+          // per-row before calling applyMappingProfile.
+          // Drawing row 0 = Excel header row; data row i → drawing row i+1.
+          const hasImageMapping = fileMappingProfile?.source_fields.some(
+            (f) => f.id === "__embedded_image__" || f.name === "__embedded_image__"
+          ) ?? false;
+          // Map: drawing row index (number) → base64 string
+          let embeddedImageMap: Map<number, string> | null = null;
+          if (hasImageMapping && resolvedSourceFilePath) {
+            try {
+              const imgRes = await fetch("/api/extract-xlsx-images", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ storageKey: resolvedSourceFilePath }),
+              });
+              if (imgRes.ok) {
+                const { images } = await imgRes.json() as {
+                  images?: { rowIndex: number; base64: string; mimeType: string; fileName: string }[];
+                };
+                if (images && images.length > 0) {
+                  embeddedImageMap = new Map(images.map((img) => [img.rowIndex, img.base64]));
+                  await taskLog("INFO", `[${fileEntry.label}] Extracted ${images.length} embedded image(s) from xlsx`);
+                } else {
+                  await taskLog("WARN", `[${fileEntry.label}] __embedded_image__ is mapped but no images found in file`);
+                }
+              } else {
+                await taskLog("WARN", `[${fileEntry.label}] Image extraction failed — images will be skipped`);
+              }
+            } catch (_imgErr) {
+              await taskLog("WARN", `[${fileEntry.label}] Image extraction error: ${_imgErr instanceof Error ? _imgErr.message : String(_imgErr)}`);
+            }
+          }
+
           // Resolve effective connection from target endpoint
           const effectiveUrl            = fileTargetConnection?.url;
           const effectiveApiKey         = fileTargetConnection?.api_key        ?? undefined;
@@ -963,9 +999,16 @@ export default function SchedulerClient({
               }
             }
 
+            // Inject embedded image for this row before mapping.
+            // Drawing row 0 = header, so data row i → drawing row i+1.
+            const rowForMapping: Record<string, unknown> =
+              embeddedImageMap?.has(i + 1)
+                ? { ...row, __embedded_image__: embeddedImageMap.get(i + 1) }
+                : row;
+
             const payload = fileMappingProfile
-              ? applyMappingProfile(row, fileMappingProfile, aiResults, aiGuessResults)
-              : row;
+              ? applyMappingProfile(rowForMapping, fileMappingProfile, aiResults, aiGuessResults)
+              : rowForMapping;
             // Warn about mapped fields that had no source value (null in payload)
             if (fileMappingProfile) {
               const nullFields: string[] = [];
@@ -981,7 +1024,17 @@ export default function SchedulerClient({
                 await taskLog("INFO", `Row ${i + 1}: mapped fields with no source value (will send null): ${nullFields.join(", ")}`);
               }
             }
-            await taskLog("ROW", `Sending row ${i + 1}/${rows.length}: ${JSON.stringify(payload)}`);
+            // Build a log-safe payload copy — truncate any binary (base64) fields
+            // that would otherwise flood the log with hundreds of KB of image data.
+            const payloadForLog: Record<string, unknown> = {};
+            for (const [k, v] of Object.entries(payload)) {
+              if (typeof v === "string" && v.length > 512) {
+                payloadForLog[k] = `[binary: ${Math.round(v.length * 0.75 / 1024)}KB]`;
+              } else {
+                payloadForLog[k] = v;
+              }
+            }
+            await taskLog("ROW", `Sending row ${i + 1}/${rows.length}: ${JSON.stringify(payloadForLog)}`);
 
             // Determine proxy route from the (possibly per-file-overridden) target connection type
             const resolvedConnType = fileTargetConnType;
@@ -1099,6 +1152,46 @@ export default function SchedulerClient({
                 const _errMsg = json?.error ?? json?.message ?? json?.body?.Message ?? json?.body?.error;
                 const _errBody = _errMsg ? String(_errMsg) : JSON.stringify(json).slice(0, 400);
                 await taskLog("ERROR", `Row ${i + 1} Ivanti response: ${_errBody}`);
+              }
+
+              // ── Attachment upload: check connection's attachment_rules ───────
+              // If the target Ivanti connection has attachment rules and this row
+              // matched a rule, upload the configured image to the written record.
+              if (res.ok && resolvedConnType === "ivanti") {
+                const _savedRecId = _recId ?? (_upsert.existingRecId as string | undefined);
+                const _attachRules = ((fileTargetConnection as unknown as Record<string, unknown>)
+                  ?.attachment_rules as AttachmentRule[] | undefined) ?? [];
+                if (_savedRecId && _attachRules.length > 0 && effectiveBusinessObject) {
+                  for (const _rule of _attachRules) {
+                    const _fieldVal = String(payload[_rule.matchField] ?? "").trim();
+                    if (_fieldVal && _fieldVal === _rule.matchValue.trim() && _rule.storageKey) {
+                      try {
+                        const _attRes = await fetch("/api/ivanti-attachment", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            ivantiUrl:      effectiveUrl,
+                            apiKey:         effectiveApiKey,
+                            tenantId:       effectiveTenantId,
+                            businessObject: effectiveBusinessObject,
+                            recordRecId:    _savedRecId,
+                            storageKey:     _rule.storageKey,
+                            fileName:       _rule.fileName,
+                          }),
+                        });
+                        const _attJson = await _attRes.json() as { success?: boolean; error?: string };
+                        if (_attJson.success) {
+                          await taskLog("INFO", `Row ${i + 1}: attached image "${_rule.fileName}" (${_rule.matchField}="${_rule.matchValue}")`);
+                        } else {
+                          await taskLog("WARN", `Row ${i + 1}: attachment upload failed — ${_attJson.error ?? "unknown error"}`);
+                        }
+                      } catch (_attErr) {
+                        await taskLog("WARN", `Row ${i + 1}: attachment upload error — ${_attErr instanceof Error ? _attErr.message : String(_attErr)}`);
+                      }
+                      break; // only one matching rule per record
+                    }
+                  }
+                }
               }
 
               // If the proxy had to strip validated fields on auto-retry, surface a WARN.
