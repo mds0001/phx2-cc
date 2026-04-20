@@ -1031,8 +1031,10 @@ export async function POST(request: NextRequest) {
     if (binaryFields && Object.keys(binaryFields).length > 0 && (response.ok || response.status === 204)) {
       const finalRecId = existingRecId ?? (responseBody as Record<string, unknown> | null)?.RecId as string | undefined;
       if (finalRecId) {
-        // ── Capture session cookies via OData probe ────────────────────────────
-        // The upload handler requires session cookies (and the CSRF token from them).
+        // ── Establish session + capture CSRF token ────────────────────────────
+        // UploadImageHandler.ashx requires an ASP.NET session with a valid CSRF token.
+        // OData (api_key only) doesn't create a browser session, so we must fetch
+        // the HEAT main page first — that sets ASP.NET_SessionId and the CSRF cookie.
         const capturedBinaryCookies: string[] = [];
         const captureBinaryCookies = (setCookieHeader: string | null) => {
           if (!setCookieHeader) return;
@@ -1042,8 +1044,51 @@ export async function POST(request: NextRequest) {
             if (nv && !capturedBinaryCookies.includes(nv)) capturedBinaryCookies.push(nv);
           }
         };
+
+        // Try fetching the HEAT UI page to establish a session + get CSRF token.
+        // Then also probe the OData endpoint to pick up any API-key session cookies.
+        let csrfToken = "";
+        const sessionProbeUrls = [
+          `${base}/HEAT`,
+          `${base}/`,
+          `${base}/HEAT/`,
+        ];
+        for (const probeUrl of sessionProbeUrls) {
+          try {
+            const probeRes = await fetch(probeUrl, {
+              method: "GET",
+              headers: {
+                Accept: "text/html,application/xhtml+xml,*/*",
+                Authorization: `rest_api_key=${resolvedKey}`,
+                ...(tenantId ? { "X-Tenant-Id": tenantId } : {}),
+              },
+              redirect: "follow",
+            });
+            captureBinaryCookies(probeRes.headers.get("set-cookie"));
+            const html = await probeRes.text().catch(() => "");
+            // Extract CSRF token from common Ivanti/ASP.NET meta/input patterns
+            const tokenMatch =
+              html.match(/name="__RequestVerificationToken"[^>]+value="([^"]+)"/) ??
+              html.match(/name="_csrfToken"[^>]+value="([^"]+)"/) ??
+              html.match(/"csrfToken"\s*:\s*"([^"]+)"/) ??
+              html.match(/"_csrfToken"\s*:\s*"([^"]+)"/);
+            if (tokenMatch?.[1]) {
+              csrfToken = tokenMatch[1];
+              console.log(`[ivanti-proxy] CSRF from page ${probeUrl}: ${csrfToken.slice(0, 8)}...`);
+              break;
+            }
+            if (capturedBinaryCookies.length > 0) {
+              console.log(`[ivanti-proxy] Session probe ${probeUrl}: ${capturedBinaryCookies.length} cookie(s), no inline CSRF`);
+              break;
+            }
+          } catch (e) {
+            console.warn(`[ivanti-proxy] Session probe ${probeUrl} error:`, e);
+          }
+        }
+
+        // Also probe OData to merge in any API-key session cookies
         try {
-          const probeRes = await fetch(`${endpoint}?$top=0`, {
+          const odataProbeRes = await fetch(`${endpoint}?$top=0`, {
             method: "GET",
             headers: {
               Authorization: `rest_api_key=${resolvedKey}`,
@@ -1051,16 +1096,18 @@ export async function POST(request: NextRequest) {
               ...(tenantId ? { "X-Tenant-Id": tenantId } : {}),
             },
           });
-          captureBinaryCookies(probeRes.headers.get("set-cookie"));
-          console.log(`[ivanti-proxy] Binary probe captured ${capturedBinaryCookies.length} cookies`);
-        } catch (e) {
-          console.warn("[ivanti-proxy] Binary probe error:", e);
-        }
+          captureBinaryCookies(odataProbeRes.headers.get("set-cookie"));
+        } catch { /* non-fatal */ }
 
-        // Extract CSRF token from captured cookies (may be named csrfToken, _csrfToken, etc.)
-        const csrfEntry = capturedBinaryCookies.find((c) => /^(csrf|_csrf|csrfToken|CSRF|XSRF|xsrf)/i.test(c));
-        const csrfToken = csrfEntry ? (csrfEntry.split("=")[1] ?? "") : "";
+        // Try to find CSRF token in cookies if page parsing didn't yield one
+        if (!csrfToken) {
+          const csrfEntry = capturedBinaryCookies.find(
+            (c) => /^(__RequestVerificationToken|csrf|_csrf|csrfToken|CSRF|XSRF|xsrf)/i.test(c)
+          );
+          csrfToken = csrfEntry ? (csrfEntry.split("=")[1] ?? "") : "";
+        }
         console.log(`[ivanti-proxy] CSRF token: ${csrfToken ? csrfToken.slice(0, 8) + "..." : "(none found)"}`);
+        console.log(`[ivanti-proxy] Session cookies (${capturedBinaryCookies.length}): ${capturedBinaryCookies.map(c => c.split("=")[0]).join(", ")}`);
 
         const cookieHeader = capturedBinaryCookies.join("; ");
 
