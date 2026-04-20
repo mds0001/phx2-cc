@@ -268,34 +268,18 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
             sample: sample[i] !== undefined ? String(sample[i]) : undefined,
           }));
         if (side === "source") {
-          // Check for embedded images in the xlsx (Insert → Picture anchored to cells).
-          // If found, append a virtual __embedded_image__ field so users can map it to
-          // a binary target field (e.g. ivnt_CatalogImage on FRS_PriceItem).
-          let allFields = fields;
-          try {
-            const imgRes = await fetch("/api/extract-xlsx-images", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ storageKey: cfg.file_path }),
-            });
-            if (imgRes.ok) {
-              const imgData = await imgRes.json() as { images?: { rowIndex: number }[]; debug?: unknown };
-              console.log("[extract-xlsx-images] response:", JSON.stringify(imgData.debug ?? { imageCount: imgData.images?.length }));
-              const { images } = imgData;
-              if (images && images.length > 0) {
-                allFields = [
-                  ...fields,
-                  {
-                    id: "__embedded_image__",
-                    name: "__embedded_image__",
-                    sample: "[Embedded Image]",
-                  },
-                ];
-              }
-            }
-          } catch {
-            // Non-fatal — if image check fails, just skip the virtual field
-          }
+          // Always include a virtual __embedded_image__ field for file connections.
+          // It maps to a binary target field (e.g. ivnt_CatalogImage on FRS_PriceItem).
+          // At run time the scheduler extracts per-row images from the xlsx zip and
+          // injects them into the payload — no image, no value sent for that row.
+          const allFields: FieldDef[] = [
+            ...fields,
+            {
+              id: "__embedded_image__",
+              name: "__embedded_image__",
+              sample: "[Embedded Image]",
+            },
+          ];
 
           // Preserve existing mapping references: reuse IDs for fields whose names match
           // existing source fields so that saved mappings remain valid after re-enumeration.
