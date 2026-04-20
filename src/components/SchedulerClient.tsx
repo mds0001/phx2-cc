@@ -499,6 +499,10 @@ export default function SchedulerClient({
           const slot = slots[slotIdx];
           _logSlot = slotIdx + 1;
 
+          // Per-slot counters for log messages (task-wide totals are tracked separately)
+          let slotFilteredCount = 0;
+          let slotSkipCount     = 0;
+
           // Check cancellation before starting each slot
           if (cancelledRef.current.has(task.id)) break;
 
@@ -708,7 +712,8 @@ export default function SchedulerClient({
                   const before = rows.length;
                   rows = rows.filter(r => !existingSet.has(String(r[nameSrcField.name] ?? "")));
                   const skippedUpfront = before - rows.length;
-                  rowSkipCount += skippedUpfront;
+                  rowSkipCount  += skippedUpfront;
+                  slotSkipCount += skippedUpfront;
                   await taskLog("INFO", `Create only: ${existing.length} record(s) already exist — skipped. ${rows.length} new row(s) will be processed.`);
                 }
               } catch (e) {
@@ -909,6 +914,7 @@ export default function SchedulerClient({
               }
               if (!pass) {
                 filteredCount++;
+                slotFilteredCount++;
                 continue;
               }
             }
@@ -1041,6 +1047,7 @@ export default function SchedulerClient({
               // ── Skipped row (create_only mode — record already existed) ──────
               if (json?.skipped === true) {
                 rowSkipCount++;
+                slotSkipCount++;
                 await taskLog("SKIP", `Row ${i + 1} → Skipped — ${json.reason ?? "record already exists"}`);
                 continue;
               }
@@ -1115,11 +1122,11 @@ export default function SchedulerClient({
           }
 
           // Log filter summary if any rows were skipped
-          if (filteredCount > 0) {
-            await taskLog("INFO", `Row filter: ${filteredCount} of ${rows.length} rows skipped (did not match expression)`);
+          if (slotFilteredCount > 0) {
+            await taskLog("INFO", `Row filter: ${slotFilteredCount} of ${rows.length} rows skipped (did not match expression)`);
           }
-          if (rowSkipCount > 0) {
-            await taskLog("INFO", `Write mode (create only): ${rowSkipCount} of ${rows.length} rows skipped — record already existed in target.`);
+          if (slotSkipCount > 0) {
+            await taskLog("INFO", `Write mode (create only): ${slotSkipCount} of ${rows.length} rows skipped — record already existed in target.`);
           }
           } // end for (fileEntry of fileEntries)
         } else if (sourceConnType === "ivanti") {

@@ -798,8 +798,15 @@ export async function POST(request: NextRequest) {
       : [upsertKey ?? "Name"];
 
     // Build the OData $filter — compound AND for multiple key fields.
+    // Link fields (isLinkField) are resolved to RecIDs before the record is written, but
+    // Ivanti OData does NOT support filtering by link-field RecID values — those filters
+    // always return 0 results, causing the existence check to silently fail and the proxy
+    // to create a duplicate on every run.  Skip link fields here; non-link keys (e.g. Name)
+    // are sufficient to identify an existing record.
+    const linkFieldSet = new Set(linkFieldNames ?? []);
     const filterParts = keyFields
       .map((f) => {
+        if (linkFieldSet.has(f)) return null; // skip link fields — RecID filter not supported by OData
         const v = resolvedData[f];
         if (v === null || v === undefined || v === "") return null;
         const escaped = String(v).replace(/'/g, "''");
