@@ -6,21 +6,28 @@ import JSZip from "jszip";
  * POST /api/extract-xlsx-images
  *
  * Downloads an xlsx from Supabase Storage and extracts embedded images.
- * Handles two Excel image storage formats:
+ * Handles three Excel image storage formats:
  *
  * 1. Traditional floating pictures (xl/drawings/drawingN.xml)
  *    Images are anchored to rows via <xdr:from><xdr:row>N</xdr:row>.
  *    Row 0 = header, so data row i → drawing row i+1.
  *
- * 2. Excel 365 "Place in Cell" images (xl/cellImages/)
+ * 2. Excel 365 "Place in Cell" images — older format (xl/cellImages/)
  *    Images live in worksheet cells.  We parse the sheet XML to find
  *    which row each cell-image belongs to, then resolve through the
  *    cellImages rels → media files.
  *
- * In both cases rowIndex is 0-based and data row i → rowIndex i+1.
+ * 3. Excel 365 "Place in Cell" images — newer richData format (xl/richData/)
+ *    Images stored via xl/richData/richValueRel.xml → xl/media/*.
+ *    Row mapping via vm="N" attribute on cells in sheet1.xml, or
+ *    positional fallback (image N → data row N).
+ *
+ * 4. Positional fallback — xl/media/ only, no structural mapping.
+ *
+ * In all cases rowIndex is 0-based and data row i → rowIndex i+1.
  *
  * Body:  { storageKey: string }
- * Response: { images: Array<{ rowIndex: number; base64: string; mimeType: string; fileName: string }> }
+ * Response: { images: Array<{ rowIndex: number; base64: string; mimeType: string; fileName: string }>, zipKeys: string[] }
  */
 export async function POST(request: NextRequest) {
   try {
@@ -126,16 +133,13 @@ export async function POST(request: NextRequest) {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    // Path 2: Excel 365 "Place in Cell" images
+    // Path 2: Excel 365 "Place in Cell" images — older cellImages format
     // Images live in worksheet cells, stored in xl/cellImages/.
-    // We parse sheet1.xml to find which row each cell-image is in, then
-    // resolve: sheet rels → cellImageN.xml rels → media file.
     // ══════════════════════════════════════════════════════════════════════════
     const cellImageKeys = allZipKeys.filter((k) => /^xl\/cellImages\/cellImage\d+\.xml$/.test(k));
     console.log("[extract-xlsx-images] Cell image keys:", cellImageKeys);
 
     if (cellImageKeys.length > 0 && results.length === 0) {
-      // Find the first worksheet XML — try sheet1.xml first, then scan
       const sheetKey = allZipKeys.find((k) => k === "xl/worksheets/sheet1.xml")
         ?? allZipKeys.find((k) => /^xl\/worksheets\/sheet\d+\.xml$/.test(k));
       const sheetRelsKey = sheetKey
@@ -152,26 +156,20 @@ export async function POST(request: NextRequest) {
             sheetRelsFile.async("string"),
           ]);
 
-          // Parse sheet rels: rId → cellImage path (relative to xl/worksheets/)
           const sheetRIdToTarget = new Map<string, string>();
           for (const m of sheetRelsXml.matchAll(/Id="([^"]+)"[^>]+Target="([^"]+)"/g)) {
             sheetRIdToTarget.set(m[1], m[2]);
           }
 
-          // Parse sheet XML: find <c r="XN"> cells that contain a cellImage rId
-          // Excel stores in-cell images in a cell's <extLst> like:
-          //   <ext uri="{...}"><x14:cellImage><xdr:pic>...<a:blip r:embed="rId1"/>
-          // We find the row number from the cell reference (e.g. "E3" → row 3).
           const cellRe = /<c\s[^>]*r="([A-Z]+(\d+))"[^>]*>([\s\S]*?)<\/c>/g;
           for (const cellMatch of sheetXml.matchAll(cellRe)) {
-            const rowNum   = parseInt(cellMatch[2], 10); // 1-based Excel row
+            const rowNum   = parseInt(cellMatch[2], 10);
             const cellBody = cellMatch[3];
-            // Look for r:embed inside extLst (cell image reference)
             const rIdMatch = cellBody.match(/r:embed="([^"]+)"/);
             if (!rIdMatch) continue;
 
-            const rId     = rIdMatch[1];
-            const relTarget = sheetRIdToTarget.get(rId); // e.g. "../cellImages/cellImage1.xml"
+            const rId       = rIdMatch[1];
+            const relTarget = sheetRIdToTarget.get(rId);
             if (!relTarget) continue;
 
             const cellImagePath = resolveZipPath("xl/worksheets", relTarget);
@@ -180,7 +178,6 @@ export async function POST(request: NextRequest) {
 
             const cellImageXml = await cellImageFile.async("string");
 
-            // Parse cellImage rels to find the actual media file
             const cellImageRelsPath = cellImagePath.replace(
               /^(xl\/cellImages\/)(.+)$/,
               "xl/cellImages/_rels/$2.rels"
@@ -190,7 +187,6 @@ export async function POST(request: NextRequest) {
 
             const cellImageRelsXml = await cellImageRelsFile.async("string");
 
-            // Get rId from cellImage XML blip
             const blipRIdMatch = cellImageXml.match(/r:embed="([^"]+)"/);
             if (!blipRIdMatch) continue;
 
@@ -206,7 +202,6 @@ export async function POST(request: NextRequest) {
             if (!mediaFile) continue;
 
             const base64 = Buffer.from(await mediaFile.async("arraybuffer")).toString("base64");
-            // rowNum is 1-based Excel row; row 1 = header, row 2 = data[0] → rowIndex = rowNum - 1
             results.push({
               rowIndex: rowNum - 1,
               base64,
@@ -218,10 +213,128 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // Path 3: Excel 365 "Place in Cell" images — newer richData format
+    // xl/richData/richValueRel.xml lists ordered rIds → media files.
+    // xl/worksheets/sheet1.xml cells with vm="N" attribute reference image N.
+    // If vm attribute not present, fall back to positional mapping.
+    // ══════════════════════════════════════════════════════════════════════════
+    const richDataKeys = allZipKeys.filter((k) => k.startsWith("xl/richData/"));
+    console.log("[extract-xlsx-images] richData keys:", richDataKeys);
+
+    const richValueRelKey     = "xl/richData/richValueRel.xml";
+    const richValueRelRelsKey = "xl/richData/_rels/richValueRel.xml.rels";
+
+    if (richDataKeys.length > 0 && results.length === 0) {
+      const richValueRelFile     = zip.file(richValueRelKey);
+      const richValueRelRelsFile = zip.file(richValueRelRelsKey);
+
+      console.log("[extract-xlsx-images] richValueRel file found:", !!richValueRelFile);
+      console.log("[extract-xlsx-images] richValueRel rels file found:", !!richValueRelRelsFile);
+
+      if (richValueRelFile && richValueRelRelsFile) {
+        const [richValueRelXml, richValueRelRelsXml] = await Promise.all([
+          richValueRelFile.async("string"),
+          richValueRelRelsFile.async("string"),
+        ]);
+
+        console.log("[extract-xlsx-images] richValueRel XML:", richValueRelXml.slice(0, 800));
+        console.log("[extract-xlsx-images] richValueRel rels XML:", richValueRelRelsXml.slice(0, 800));
+
+        // Parse rels: rId → media target path
+        const rIdToMedia = new Map<string, string>();
+        for (const m of richValueRelRelsXml.matchAll(/Id="([^"]+)"[^>]+Target="([^"]+)"/g)) {
+          rIdToMedia.set(m[1], m[2]);
+        }
+
+        // Get ordered rIds from richValueRel.xml
+        const rIdOrder: string[] = [];
+        for (const m of richValueRelXml.matchAll(/r:id="([^"]+)"/g)) {
+          rIdOrder.push(m[1]);
+        }
+        console.log("[extract-xlsx-images] richData rId order:", rIdOrder);
+
+        // Try to find row mapping via vm attribute on cells in sheet XML
+        const sheetKey = allZipKeys.find((k) => k === "xl/worksheets/sheet1.xml")
+          ?? allZipKeys.find((k) => /^xl\/worksheets\/sheet\d+\.xml$/.test(k));
+
+        const vmRowMap = new Map<number, number>(); // vmIndex (1-based) → Excel row (1-based)
+
+        if (sheetKey) {
+          const sheetFile = zip.file(sheetKey);
+          if (sheetFile) {
+            const sheetXml = await sheetFile.async("string");
+            // Cells with vm="N" attribute: <c r="E2" ... vm="1" ...>
+            const vmRe = /<c\s[^>]*r="[A-Z]+(\d+)"[^>]*\bvm="(\d+)"[^>]*/g;
+            for (const m of sheetXml.matchAll(vmRe)) {
+              const excelRow = parseInt(m[1], 10);
+              const vmIndex  = parseInt(m[2], 10);
+              vmRowMap.set(vmIndex, excelRow);
+            }
+            console.log("[extract-xlsx-images] vm→row map:", Array.from(vmRowMap.entries()));
+          }
+        }
+
+        for (let idx = 0; idx < rIdOrder.length; idx++) {
+          const rId         = rIdOrder[idx];
+          const mediaTarget = rIdToMedia.get(rId);
+          if (!mediaTarget) continue;
+
+          const mediaPath = resolveZipPath("xl/richData", mediaTarget);
+          const mediaFile = zip.file(mediaPath);
+          if (!mediaFile) continue;
+
+          // vm is 1-based so vmIndex idx+1 → Excel row; rowIndex = excelRow - 1
+          // Fallback: image 0 → data row 1 → rowIndex 1
+          let rowIndex: number;
+          if (vmRowMap.has(idx + 1)) {
+            rowIndex = vmRowMap.get(idx + 1)! - 1;
+          } else {
+            rowIndex = idx + 1;
+          }
+
+          const base64 = Buffer.from(await mediaFile.async("arraybuffer")).toString("base64");
+          results.push({
+            rowIndex,
+            base64,
+            mimeType: extMime(mediaPath),
+            fileName: mediaPath.split("/").pop() ?? "image.png",
+          });
+        }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // Path 4: Positional fallback — xl/media/ image files, no structural mapping.
+    // image[0] → rowIndex 1, image[1] → rowIndex 2, etc.
+    // ══════════════════════════════════════════════════════════════════════════
+    if (results.length === 0) {
+      const mediaImageKeys = allZipKeys
+        .filter((k) => /^xl\/media\//.test(k) && /\.(png|jpg|jpeg|gif|bmp|webp)$/i.test(k))
+        .sort();
+      console.log("[extract-xlsx-images] Fallback media keys:", mediaImageKeys);
+
+      for (let idx = 0; idx < mediaImageKeys.length; idx++) {
+        const mediaPath = mediaImageKeys[idx];
+        const mediaFile = zip.file(mediaPath);
+        if (!mediaFile) continue;
+        const base64 = Buffer.from(await mediaFile.async("arraybuffer")).toString("base64");
+        results.push({
+          rowIndex: idx + 1,
+          base64,
+          mimeType: extMime(mediaPath),
+          fileName: mediaPath.split("/").pop() ?? "image.png",
+        });
+      }
+      if (mediaImageKeys.length > 0) {
+        console.log("[extract-xlsx-images] Used positional fallback for", mediaImageKeys.length, "images");
+      }
+    }
+
     results.sort((a, b) => a.rowIndex - b.rowIndex);
     console.log("[extract-xlsx-images] Found", results.length, "images, rowIndexes:", results.map(r => r.rowIndex));
 
-    return NextResponse.json({ images: results });
+    return NextResponse.json({ images: results, zipKeys: allZipKeys });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error("[extract-xlsx-images] Error:", message);

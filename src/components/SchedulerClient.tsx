@@ -675,14 +675,19 @@ export default function SchedulerClient({
                 body: JSON.stringify({ storageKey: resolvedSourceFilePath }),
               });
               if (imgRes.ok) {
-                const { images } = await imgRes.json() as {
+                const { images, zipKeys } = await imgRes.json() as {
                   images?: { rowIndex: number; base64: string; mimeType: string; fileName: string }[];
+                  zipKeys?: string[];
                 };
                 if (images && images.length > 0) {
                   embeddedImageMap = new Map(images.map((img) => [img.rowIndex, img.base64]));
                   await taskLog("INFO", `[${fileEntry.label}] Extracted ${images.length} embedded image(s) from xlsx`);
                 } else {
-                  await taskLog("WARN", `[${fileEntry.label}] __embedded_image__ is mapped but no images found in file`);
+                  const relevantKeys = (zipKeys ?? []).filter(k =>
+                    k.startsWith("xl/drawings/") || k.startsWith("xl/cellImages/") ||
+                    k.startsWith("xl/richData/") || k.startsWith("xl/media/")
+                  );
+                  await taskLog("WARN", `[${fileEntry.label}] __embedded_image__ is mapped but no images found. Zip image-related keys: ${relevantKeys.join(", ") || "(none)"}`);
                 }
               } else {
                 await taskLog("WARN", `[${fileEntry.label}] Image extraction failed — images will be skipped`);
