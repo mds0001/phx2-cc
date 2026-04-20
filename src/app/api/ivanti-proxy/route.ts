@@ -1021,51 +1021,172 @@ export async function POST(request: NextRequest) {
     console.log("[ivanti-proxy] Response body:", JSON.stringify(responseBody));
 
     // ── Binary field upload (e.g. ivnt_CatalogImage) ─────────────────────────
-    // Ivanti REST API rejects base64 strings for varbinary fields in JSON payloads.
-    // After a successful main record write, upload each binary field via a PUT
-    // directly to the OData property endpoint with the raw bytes as the body.
+    // Ivanti's OData layer cannot accept base64 strings for varbinary fields.
+    // Correct approach (reverse-engineered from Ivanti admin UI network traffic):
+    //  Step 1: POST multipart to /handlers/SessionStorage/UploadImageHandler.ashx
+    //          → response: { success: true, id: "GUID", ... }
+    //  Step 2: POST to /Services/Save.asmx/SaveDataExecuteAction with temp GUID
+    //          in both values.{fieldName} and uploadedImageIds.{fieldName}.
     const binaryUploadResults: Record<string, string> = {};
     if (binaryFields && Object.keys(binaryFields).length > 0 && (response.ok || response.status === 204)) {
       const finalRecId = existingRecId ?? (responseBody as Record<string, unknown> | null)?.RecId as string | undefined;
       if (finalRecId) {
+        // ── Capture session cookies via OData probe ────────────────────────────
+        // The upload handler requires session cookies (and the CSRF token from them).
+        const capturedBinaryCookies: string[] = [];
+        const captureBinaryCookies = (setCookieHeader: string | null) => {
+          if (!setCookieHeader) return;
+          const pairs = setCookieHeader.split(/,(?=[^;]+=[^;]+;)/);
+          for (const pair of pairs) {
+            const nv = pair.split(";")[0].trim();
+            if (nv && !capturedBinaryCookies.includes(nv)) capturedBinaryCookies.push(nv);
+          }
+        };
+        try {
+          const probeRes = await fetch(`${endpoint}?$top=0`, {
+            method: "GET",
+            headers: {
+              Authorization: `rest_api_key=${resolvedKey}`,
+              Accept: "application/json",
+              ...(tenantId ? { "X-Tenant-Id": tenantId } : {}),
+            },
+          });
+          captureBinaryCookies(probeRes.headers.get("set-cookie"));
+          console.log(`[ivanti-proxy] Binary probe captured ${capturedBinaryCookies.length} cookies`);
+        } catch (e) {
+          console.warn("[ivanti-proxy] Binary probe error:", e);
+        }
+
+        // Extract CSRF token from captured cookies (may be named csrfToken, _csrfToken, etc.)
+        const csrfEntry = capturedBinaryCookies.find((c) => /^(csrf|_csrf|csrfToken|CSRF|XSRF|xsrf)/i.test(c));
+        const csrfToken = csrfEntry ? (csrfEntry.split("=")[1] ?? "") : "";
+        console.log(`[ivanti-proxy] CSRF token: ${csrfToken ? csrfToken.slice(0, 8) + "..." : "(none found)"}`);
+
+        const cookieHeader = capturedBinaryCookies.join("; ");
+
+        // SaveDataExecuteAction objectType uses Ivanti's '#' namespace separator.
+        // Config stores it as '__' (e.g. CI__Computers → CI#Computers) or already with '#'.
+        const saveObjectType = effectiveObject.includes("#")
+          ? effectiveObject
+          : effectiveObject.replace(/__/g, "#");
+
         for (const [fieldName, { base64, mimeType }] of Object.entries(binaryFields)) {
-          // Try the OData $value property endpoint first (standard OData v4)
-          // then fall back to a plain property PUT without $value suffix.
-          const attempts = [
-            `${endpoint}('${finalRecId}')/${fieldName}/$value`,
-            `${endpoint}('${finalRecId}')/${fieldName}`,
-          ];
+          const bytes = Buffer.from(base64, "base64");
+          const sizeKB = Math.round(bytes.byteLength / 1024);
+          const ext = mimeType.split("/")[1]?.split("+")[0] ?? "png";
+          const fileName = `image.${ext}`;
           let uploaded = false;
-          for (const uploadUrl of attempts) {
+          let lastErr = "";
+
+          // ── Step 1: POST to UploadImageHandler.ashx ─────────────────────────
+          let tempImageId: string | null = null;
+          try {
+            const uploadUrl = `${base}/handlers/SessionStorage/UploadImageHandler.ashx`;
+            const uploadIdentifier = Date.now().toString(16).toUpperCase().padStart(8, "0");
+            const form = new FormData();
+            form.append("APC_UPLOAD_PROGRESS", uploadIdentifier);
+            form.append("UPLOAD_IDENTIFIER", uploadIdentifier);
+            form.append("MAX_FILE_SIZE", "104857600");
+            form.append("_csrfToken", csrfToken);
+            form.append("path", "");
+            form.append("files", "");
+            form.append("multiplefiles", "false");
+            form.append("cmd", "upload");
+            form.append("dir", ".");
+            form.append("file", new Blob([bytes], { type: mimeType }), fileName);
+
+            const uploadHeaders: Record<string, string> = {
+              Authorization: `rest_api_key=${resolvedKey}`,
+              Accept: "application/json, text/plain, */*",
+              ...(tenantId ? { "X-Tenant-Id": tenantId } : {}),
+              ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+            };
+
+            console.log(`[ivanti-proxy] Binary step1 upload: POST ${uploadUrl} (${mimeType}, ${sizeKB}KB)`);
+            const uploadRes = await fetch(uploadUrl, { method: "POST", headers: uploadHeaders, body: form });
+            const uploadText = await uploadRes.text().catch(() => "");
+            console.log(`[ivanti-proxy] Binary step1 ${fieldName}: HTTP ${uploadRes.status} ${uploadText.slice(0, 300)}`);
+
+            if (uploadRes.ok) {
+              try {
+                const uploadJson = JSON.parse(uploadText) as { success?: boolean; id?: string };
+                if (uploadJson.success && uploadJson.id) {
+                  tempImageId = uploadJson.id;
+                  console.log(`[ivanti-proxy] Binary step1 got tempId: ${tempImageId}`);
+                } else {
+                  lastErr = `Upload handler returned no id: ${uploadText.slice(0, 200)}`;
+                }
+              } catch {
+                lastErr = `Could not parse upload response: ${uploadText.slice(0, 200)}`;
+              }
+            } else {
+              lastErr = `Upload handler HTTP ${uploadRes.status}: ${uploadText.slice(0, 200)}`;
+            }
+          } catch (e) {
+            lastErr = `Step1 error: ${e instanceof Error ? e.message : String(e)}`;
+            console.warn(`[ivanti-proxy] Binary step1 error:`, lastErr);
+          }
+
+          // ── Step 2: SaveDataExecuteAction with temp GUID ─────────────────────
+          if (tempImageId) {
             try {
-              console.log(`[ivanti-proxy] Binary upload: PUT ${uploadUrl} (${mimeType}, ${Math.round(base64.length * 0.75 / 1024)}KB)`);
-              const bytes = Buffer.from(base64, "base64");
-              const binRes = await fetch(uploadUrl, {
-                method: "PUT",
-                headers: {
-                  Authorization: `rest_api_key=${resolvedKey}`,
-                  "Content-Type": mimeType,
-                  ...(tenantId ? { "X-Tenant-Id": tenantId } : {}),
+              const saveUrl = `${base}/Services/Save.asmx/SaveDataExecuteAction`;
+              const saveBody = {
+                shouldSave: true,
+                data: {
+                  [finalRecId]: {
+                    op:                  "update",
+                    objectId:            finalRecId,
+                    objectType:          saveObjectType,
+                    values:              { [fieldName]: tempImageId },
+                    valuesOrder:         { [fieldName]: 0 },
+                    forceAutoFill:       {},
+                    originalValues:      { [fieldName]: "" },
+                    pureOriginalValues:  {},
+                    attachementCacheIds: {},
+                    uploadedImageIds:    { [fieldName]: tempImageId },
+                    textFields:          [],
+                  },
                 },
-                body: bytes,
-              });
-              const binStatus = binRes.status;
-              const binText = binStatus === 204 ? "" : await binRes.text().catch(() => "");
-              console.log(`[ivanti-proxy] Binary upload ${fieldName}: HTTP ${binStatus} ${binText.slice(0, 200)}`);
-              if (binRes.ok || binStatus === 204) {
+                actionParams: {
+                  FormParams: {
+                    objectId:   finalRecId,
+                    formNames:  [],
+                    clientData: { Objects: {}, ObjectRelationships: {} },
+                  },
+                },
+                promptParams: null,
+              };
+
+              const saveHeaders: Record<string, string> = {
+                Authorization: `rest_api_key=${resolvedKey}`,
+                "Content-Type": "application/json",
+                Accept: "application/json, text/plain, */*",
+                ...(tenantId ? { "X-Tenant-Id": tenantId } : {}),
+                ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+              };
+
+              console.log(`[ivanti-proxy] Binary step2 SaveDataExecuteAction: POST ${saveUrl}`);
+              console.log(`[ivanti-proxy] Binary step2 objectType=${saveObjectType} recId=${finalRecId} field=${fieldName} tempId=${tempImageId}`);
+              const saveRes = await fetch(saveUrl, { method: "POST", headers: saveHeaders, body: JSON.stringify(saveBody) });
+              const saveText = saveRes.status === 204 ? "" : await saveRes.text().catch(() => "");
+              console.log(`[ivanti-proxy] Binary step2 ${fieldName}: HTTP ${saveRes.status} ${saveText.slice(0, 300)}`);
+
+              if (saveRes.ok || saveRes.status === 204) {
                 binaryUploadResults[fieldName] = "ok";
                 uploaded = true;
-                break;
+              } else {
+                lastErr = `Step2 SaveDataExecuteAction HTTP ${saveRes.status}: ${saveText.slice(0, 200)}`;
               }
-              binaryUploadResults[fieldName] = `HTTP ${binStatus}: ${binText.slice(0, 100)}`;
             } catch (e) {
-              const msg = e instanceof Error ? e.message : String(e);
-              console.warn(`[ivanti-proxy] Binary upload error for ${fieldName}:`, msg);
-              binaryUploadResults[fieldName] = `error: ${msg}`;
+              lastErr = `Step2 error: ${e instanceof Error ? e.message : String(e)}`;
+              console.warn(`[ivanti-proxy] Binary step2 error:`, lastErr);
             }
           }
+
           if (!uploaded) {
-            console.warn(`[ivanti-proxy] Binary upload failed for ${fieldName}: ${binaryUploadResults[fieldName]}`);
+            binaryUploadResults[fieldName] = lastErr || "upload failed";
+            console.warn(`[ivanti-proxy] Binary upload failed for ${fieldName}: ${lastErr}`);
           }
         }
       } else {
