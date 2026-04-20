@@ -38,7 +38,7 @@ function boNameFromLinkField(fieldName: string): string | null {
 // Excel epoch = Dec 30 1899; JS epoch = Jan 1 1970 => offset of 25569 days.
 // Converts fields whose name suggests a date value (case-insensitive keywords)
 // and whose value is an integer in the range 25569–73050 (roughly 1970–2099).
-const DATE_FIELD_KEYWORDS = ["date", "expir", "yearend", "year_end", "fiscal", "warranty", "renewal", "purchased", "retired", "disposed", "received"];
+const DATE_FIELD_KEYWORDS = ["date", "expir", "yearend", "year_end", "fiscal", "warranty", "renewal", "purchased", "retired", "disposed", "received", "delivery", "expected", "expiry", "maint"];
 function looksLikeDateField(key: string): boolean {
   const k = key.toLowerCase().replace(/[_\s]/g, "");
   return DATE_FIELD_KEYWORDS.some((kw) => k.includes(kw));
@@ -92,7 +92,13 @@ async function resolveLinkFields(
     // don't add extra lookups for fields the user intentionally left unchecked.
     const isAutoLink = linkFieldNames.length === 0 && key.endsWith("Link");
     if (!isAutoLink && !isExplicitLink) continue;
-    if (typeof value !== "string" || !value.trim()) continue;
+    if (typeof value !== "string" || !value.trim()) {
+      // Remove null/empty link fields entirely from the payload.
+      // Sending null for a link field can cause Ivanti to set unexpected values
+      // (e.g. a null ParentLink on Location gets interpreted as a self-parent link).
+      delete result[key];
+      continue;
+    }
 
     // Use the explicit BO name supplied by the user in the mapping editor, or
     // fall back to auto-deriving it from the field name.
@@ -101,20 +107,18 @@ async function resolveLinkFields(
     if (!boName) continue;
 
     // ── Module-level cache check ─────────────────────────────
-    // Avoids repeating expensive multi-variant lookups for the same (boName, value)
-    // pair across rows.  null in the cache means "previously tried and failed".
+    // Caches successful RecID resolutions only — failures are NOT cached so that
+    // config changes (e.g. updating linkFieldLookupField) take effect immediately
+    // without requiring a server restart.
     const lfCacheKey = `${boName}::${value}`;
     if (linkFieldCache.has(lfCacheKey)) {
       const cached = linkFieldCache.get(lfCacheKey)!;
-      if (cached) {
-        delete result[key];
-        result[`${key}_RecID`] = cached;
-        log.push({ field: key, value, recId: cached });
-        console.log(`[ivanti-proxy] ${key}="${value}" -> ${key}_RecID="${cached}" (cache hit)`);
-      } else {
-        log.push({ field: key, value, error: "Cached: lookup previously failed — skipping retry" });
-        console.warn(`[ivanti-proxy] ${key}="${value}": skipping (cached failure)`);
-      }
+      // RecID resolved from cache — keep the display value in the payload for now.
+      // The caller will swap to _RecID if this is a PATCH (update); for POST (create)
+      // we keep the display value so Ivanti resolves the link internally (sending
+      // _RecID on POST causes an implicit varchar→varbinary SQL conversion error).
+      log.push({ field: key, value, recId: cached });
+      console.log(`[ivanti-proxy] ${key}="${value}" -> RecID="${cached}" (cache hit, display value kept for now)`);
       continue;
     }
 
@@ -159,6 +163,9 @@ async function resolveLinkFields(
           `frs_offering_${boLower}`,
           `frs_offering_${boLower}s`,
           `CI_${boName}`,
+          `CI%23${boName}`,
+          `ci%23${boLower}`,
+          `CI%23${boLower}`,
         ];
     // When the user explicitly specified a lookup field in the mapping editor, use ONLY
     // that field — no guessing, no fallback list. This is the fastest and most accurate path.
@@ -179,13 +186,20 @@ async function resolveLinkFields(
           `startswith(tolower(${lookupField}),tolower('${escapedVal}'))`,
         ]) {
           try {
-            const url = `${base}/api/odata/businessobject/${boVariant}?$filter=${filter}&$select=RecId`;
+            const url = `${base}/api/odata/businessobject/${encodeBoForUrl(boVariant)}?$filter=${filter}&$top=1`;
             console.log(`[ivanti-proxy] Direct lookup ${key}: GET ${url}`);
             const res = await fetch(url, { method: "GET", headers });
             if (!res.ok) { lastError = `HTTP ${res.status} for ${boVariant}`; continue; }
-            const json = (await res.json()) as { value?: Array<{ RecId?: string }> };
-            const row = json.value?.[0];
-            if (row?.RecId) { recId = row.RecId; break directSearch; }
+            const json = (await res.json()) as { value?: Array<Record<string, string>> | string };
+            // Some Ivanti endpoints return value as a JSON-encoded string rather than
+            // a native array — parse it if needed.
+            const rawVal = json.value;
+            const valueArr: Array<Record<string, string>> = typeof rawVal === "string"
+              ? JSON.parse(rawVal)
+              : (Array.isArray(rawVal) ? rawVal : []);
+            const row = valueArr[0];
+            const foundId = row?.RecId ?? row?.RecID ?? row?._RecID ?? row?.recId ?? row?.recID;
+            if (foundId) { recId = foundId; break directSearch; }
             lastError = `No record in ${boVariant} where ${lookupField}='${escapedVal}'`;
           } catch (e) { lastError = e instanceof Error ? e.message : String(e); }
         }
@@ -224,15 +238,16 @@ async function resolveLinkFields(
     }
 
     if (recId) {
-      // Ivanti (Neurons) resolves link fields via a flat _RecID companion field.
-      // Remove the display-value string and set the RecID field instead.
+      // Cache the resolved RecID for future rows.
       linkFieldCache.set(lfCacheKey, recId);
-      delete result[key];
-      result[`${key}_RecID`] = recId;
       log.push({ field: key, value, recId });
-      console.log(`[ivanti-proxy] ${key}="${value}" -> ${key}_RecID="${recId}" (cached)`);
+      // Keep the display value in the payload for now — the caller will swap to
+      // _RecID when doing a PATCH (update). For POST (create), Ivanti resolves the
+      // display value internally; sending _RecID on POST causes an implicit
+      // varchar→varbinary SQL conversion error.
+      console.log(`[ivanti-proxy] ${key}="${value}" -> RecID="${recId}" (resolved, display value kept for now)`);
     } else {
-      linkFieldCache.set(lfCacheKey, null); // cache failure — skip on subsequent rows
+      // Do not cache failures — allows config changes to take effect without restart.
       log.push({ field: key, value, error: lastError || "Unknown lookup failure" });
       console.warn(`[ivanti-proxy] Could not resolve ${key}="${value}": ${lastError}`);
     }
@@ -245,6 +260,19 @@ async function resolveLinkFields(
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
+
+    // ── Mode: clear-cache ─────────────────────────────────────────────────────
+    // Clears the module-level link-field resolution cache and BO name cache.
+    // Called by SchedulerClient at the start of each task run so that stale
+    // "previously failed" cache entries from an earlier run don't block lookups
+    // for freshly-created records (e.g. HQ location deleted then re-created).
+    if ((body as { mode?: string }).mode === "clear-cache") {
+      const before = linkFieldCache.size + boNameCache.size;
+      linkFieldCache.clear();
+      boNameCache.clear();
+      console.log(`[ivanti-proxy] clear-cache: cleared ${before} entries`);
+      return NextResponse.json({ cleared: before });
+    }
 
     // ── Mode: check-exists ────────────────────────────────────────────────────
     // Batch-checks which of the supplied key values already exist in the target BO.
@@ -305,11 +333,341 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ existing });
     }
 
-    const { ivantiUrl, data, apiKey, businessObject, tenantId, linkFieldNames, linkFieldBoNames, linkFieldLookupFields, upsertKey, upsertKeys, skipIfExists } = body as {
+    // ── Mode: many-to-many relationship linking ──────────────────────────────
+    // Resolves both sides to RecIDs, then links them using Ivanti's proprietary
+    // SaveDataExecuteAction ASMX endpoint — the same one the Ivanti UI uses.
+    // OData navigation-property POSTs return 404 "No service for IEdmModel" on
+    // this instance; SaveDataExecuteAction is the only working approach.
+    if ((body as { manyToMany?: boolean }).manyToMany) {
+      const {
+        ivantiUrl: m2mUrl,
+        apiKey: m2mApiKeyRaw,
+        tenantId: m2mTenant,
+        businessObject: m2mPrimaryBo,
+        relationshipName: m2mRel,
+        linkFieldBoNames: m2mLinkBoNames,
+        linkFieldLookupFields: m2mLookupFields,
+        data: m2mData,
+      } = body as {
+        ivantiUrl: string;
+        apiKey?: string;
+        tenantId?: string;
+        businessObject?: string;
+        relationshipName: string;
+        linkFieldBoNames?: Record<string, string>;
+        linkFieldLookupFields?: Record<string, string>;
+        data: Record<string, unknown>;
+      };
+
+      if (!m2mUrl || !m2mRel || !m2mData) {
+        return NextResponse.json({ error: "M2M mode requires ivantiUrl, relationshipName, and data" }, { status: 400 });
+      }
+
+      const m2mBase   = m2mUrl.replace(/\/$/, "");
+      const m2mApiKey = m2mApiKeyRaw ?? FALLBACK_API_KEY;
+      const m2mHeaders: Record<string, string> = {
+        Authorization: `rest_api_key=${m2mApiKey}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      };
+      if (m2mTenant) m2mHeaders["X-Tenant-Id"] = m2mTenant;
+
+      // Convert OData @odata.type "#Namespace.SubType" → Ivanti "Namespace#SubType".
+      // e.g. "#ivnt_ContractLineItem.ivnt_Entitlement" → "ivnt_ContractLineItem#ivnt_Entitlement"
+      // e.g. "#CI.Computer"                             → "CI#Computer"
+      const odataTypeToIvantiType = (t: string): string | null => {
+        const s = t.replace(/^#/, "");
+        const dot = s.lastIndexOf(".");
+        return dot > 0 ? `${s.slice(0, dot)}#${s.slice(dot + 1)}` : null;
+      };
+
+      const m2mLog: ResolvedField[] = [];
+      let primaryRecId:  string | null = null;
+      let primaryField:  string | null = null;
+      let primaryBoType: string        = m2mPrimaryBo ?? "CI#";
+      const secondaryRecs: Array<{ field: string; recId: string; bo: string; boType: string }> = [];
+      // Collect cookies from OData responses so we can forward them to the ASMX endpoint,
+      // which requires session-based auth rather than the API-key header.
+      const capturedCookies: string[] = [];
+
+      // Helper: extract cookie name=value pairs from a Set-Cookie header string.
+      const captureCookies = (setCookieHeader: string | null) => {
+        if (!setCookieHeader) return;
+        // Set-Cookie header may contain multiple cookies separated by commas,
+        // but each cookie's name=value is the first segment before the first ';'.
+        const pairs = setCookieHeader.split(/,(?=[^;]+=[^;]+;)/);
+        for (const pair of pairs) {
+          const nv = pair.split(";")[0].trim();
+          if (nv && !capturedCookies.includes(nv)) capturedCookies.push(nv);
+        }
+      };
+
+      // Resolve each field to its RecID.
+      // Fields WITHOUT a linkFieldBoName entry → primary side (query the main businessObject).
+      // Fields WITH a linkFieldBoName entry     → secondary side (query that BO).
+      for (const [fieldName, fieldValue] of Object.entries(m2mData)) {
+        if (typeof fieldValue !== "string" || !fieldValue.trim()) continue;
+
+        const linkBo      = (m2mLinkBoNames ?? {})[fieldName];
+        const lookupField = (m2mLookupFields ?? {})[fieldName] ?? fieldName;
+        const targetBo    = linkBo ?? m2mPrimaryBo ?? "CI#";
+        const escapedVal  = odataEscape(fieldValue);
+
+        const boBase         = encodeBoForUrl(targetBo);
+        const boLower        = boBase.toLowerCase();
+        // Strip subtype suffix (e.g. "ivnt_ContractLineItem%23ivnt_Purchase" → "ivnt_ContractLineItem%23").
+        const boBaseStripped = boBase.includes("%23") && !boBase.endsWith("%23")
+          ? boBase.slice(0, boBase.lastIndexOf("%23") + 3)
+          : null;
+        const boVariants = [
+          boBase,
+          boLower,
+          ...(boBase.endsWith("s") ? [] : [boBase + "s", boLower + "s"]),
+          ...(boBaseStripped ? [boBaseStripped, boBaseStripped.toLowerCase()] : []),
+        ];
+
+        let recId: string | null = null;
+        let resolvedVariant      = boBase;
+        let lastErr              = "";
+
+        for (const boVariant of boVariants) {
+          const lookupUrl = `${m2mBase}/api/odata/businessobject/${boVariant}?$filter=${encodeURIComponent(`${lookupField} eq '${escapedVal}'`)}&$select=RecId&$top=1`;
+          console.log(`[ivanti-proxy] M2M resolve ${fieldName} in ${boVariant}: GET ${lookupUrl}`);
+          try {
+            const res = await fetch(lookupUrl, { headers: m2mHeaders });
+            captureCookies(res.headers.get("set-cookie"));
+            if (res.ok) {
+              const json = (await res.json()) as { value?: Array<{ RecId?: string }> };
+              recId = json.value?.[0]?.RecId ?? null;
+              if (recId) { resolvedVariant = boVariant; break; }
+              lastErr = `No record in ${boVariant} where ${lookupField}='${fieldValue}'`;
+            } else {
+              lastErr = `HTTP ${res.status} for ${boVariant}`;
+            }
+          } catch (e) {
+            lastErr = e instanceof Error ? e.message : String(e);
+          }
+        }
+
+        if (recId) {
+          // Fetch the resolved record to get its @odata.type which includes the subtype
+          // (e.g. "#CI.Computer" or "#ivnt_ContractLineItem.ivnt_Entitlement").
+          // Both SaveDataExecuteAction and OData nav-property calls need the full subtype.
+          let fullBoType = targetBo; // fallback: use the base BO name as-is
+          try {
+            const typeUrl = `${m2mBase}/api/odata/businessobject/${resolvedVariant}('${recId}')?$select=RecId`;
+            const typeRes = await fetch(typeUrl, { headers: m2mHeaders });
+            captureCookies(typeRes.headers.get("set-cookie"));
+            if (typeRes.ok) {
+              const typeJson = (await typeRes.json()) as { "@odata.type"?: string; [k: string]: unknown };
+              const converted = typeJson["@odata.type"] ? odataTypeToIvantiType(typeJson["@odata.type"]) : null;
+              if (converted) {
+                fullBoType = converted;
+                console.log(`[ivanti-proxy] M2M type for ${fieldName}: ${typeJson["@odata.type"]} → ${fullBoType}`);
+              }
+            }
+          } catch {
+            // Non-fatal — proceed with base type
+          }
+
+          m2mLog.push({ field: fieldName, value: fieldValue, recId });
+          if (!linkBo) {
+            primaryRecId  = recId;
+            primaryField  = fieldName;
+            primaryBoType = fullBoType;
+          } else {
+            secondaryRecs.push({ field: fieldName, recId, bo: targetBo, boType: fullBoType });
+          }
+        } else {
+          m2mLog.push({
+            field: fieldName,
+            value: fieldValue,
+            error: lastErr || `Could not resolve ${fieldName} in ${targetBo}`,
+          });
+        }
+      }
+
+      if (!primaryRecId) {
+        return NextResponse.json({
+          status: 400,
+          statusText: "M2M primary record not found",
+          linkResolution: m2mLog,
+          error: `Could not resolve primary record (${primaryField ?? "unknown field"}) in ${m2mPrimaryBo}`,
+        }, { status: 400 });
+      }
+      if (secondaryRecs.length === 0) {
+        return NextResponse.json({
+          status: 400,
+          statusText: "M2M secondary record not found",
+          linkResolution: m2mLog,
+          error: "Could not resolve any secondary (linked) record",
+        }, { status: 400 });
+      }
+
+      const secondary = secondaryRecs[0];
+
+      // ── SaveDataExecuteAction ──────────────────────────────────────────────
+      // This is the endpoint the Ivanti UI calls when a user links two records.
+      // Body format reverse-engineered from browser network capture.
+      const saveUrl  = `${m2mBase}/Services/Save.asmx/SaveDataExecuteAction`;
+      const saveBody = {
+        shouldSave: true,
+        data: {
+          [secondary.recId]: {
+            op:                   "link",
+            objectId:             secondary.recId,
+            objectType:           secondary.boType,
+            values:               {},
+            valuesOrder:          {},
+            forceAutoFill:        {},
+            originalValues:       {},
+            pureOriginalValues:   {},
+            attachementCacheIds:  {},
+            uploadedImageIds:     {},
+            textFields:           [],
+            masterObjectType:     primaryBoType,
+            masterObjectId:       primaryRecId,
+            relationshipTag:      m2mRel,
+            saveItemRel2Name:     null,
+            saveItemLinkDataRecID: null,
+          },
+        },
+        actionParams: {
+          FormParams: {
+            objectId:   primaryRecId,
+            formNames:  [],
+            clientData: {
+              Objects:             {},
+              ObjectRelationships: {},
+            },
+          },
+        },
+        promptParams: null,
+      };
+
+      // Forward any session cookies captured from OData resolution calls.
+      // The ASMX SaveDataExecuteAction endpoint requires session auth, not just API key.
+      const saveHeaders = { ...m2mHeaders };
+      if (capturedCookies.length > 0) {
+        saveHeaders["Cookie"] = capturedCookies.join("; ");
+        console.log(`[ivanti-proxy] M2M forwarding ${capturedCookies.length} cookie(s) to ASMX: ${capturedCookies.join("; ")}`);
+      }
+
+      console.log(`[ivanti-proxy] M2M SaveDataExecuteAction: POST ${saveUrl}`);
+      console.log(`[ivanti-proxy] M2M link: masterType=${primaryBoType} masterId=${primaryRecId} childType=${secondary.boType} childId=${secondary.recId} rel=${m2mRel}`);
+
+      let relRes: Response | null = null;
+      let relRespBody: unknown    = null;
+      let usedStrategy            = "SaveDataExecuteAction";
+
+      try {
+        const r = await fetch(saveUrl, {
+          method: "POST",
+          headers: saveHeaders,
+          body: JSON.stringify(saveBody),
+        });
+        const ct = r.headers.get("content-type") ?? "";
+        const rb = r.status === 204
+          ? null
+          : ct.includes("application/json") ? await r.json() : await r.text();
+        console.log(`[ivanti-proxy] M2M SaveDataExecuteAction ${r.status}:`, JSON.stringify(rb));
+        if (r.ok || r.status === 204) { relRes = r; relRespBody = rb; }
+        else { relRes = r; relRespBody = rb; } // keep going to OData fallbacks only on auth errors
+      } catch (e) {
+        console.warn(`[ivanti-proxy] M2M SaveDataExecuteAction error:`, e);
+      }
+
+      // If SaveDataExecuteAction failed (likely auth/session issue), fall back to OData.
+      // Per Ivanti docs the correct format for M2M linking is:
+      //   PATCH /{parentBO}('{parentRecId}')/{RelName}('{childRecId}')/$Ref   (empty body)
+      // The child RecID goes IN THE URL, not in the request body.  Method is PATCH not POST.
+      const saveOk = relRes && (relRes.ok || relRes.status === 204);
+      if (!saveOk) {
+        const fullPrimaryBoEnc   = encodeBoForUrl(primaryBoType);
+        const fullSecondaryBoEnc = encodeBoForUrl(secondary.boType);
+        // Base (no subtype) BO names for the "CI#" / "ivnt_ContractLineItem#" case
+        const basePrimaryBoEnc   = encodeBoForUrl(m2mPrimaryBo ?? "CI#");
+        const baseSecondaryBoEnc = encodeBoForUrl(secondary.bo);
+        const emptyBody          = {};
+
+        // Build PATCH $Ref attempts.  Try both full-subtype and base BO names, and
+        // both the plural ("s" suffix) and non-plural variants that Ivanti may require.
+        type ODataAttempt = { url: string; body: Record<string, unknown>; label: string; method: string };
+        const odataAttempts: ODataAttempt[] = [];
+        for (const [primaryEnc, secondaryEnc, tag] of [
+          [fullPrimaryBoEnc,   fullSecondaryBoEnc, "full"],
+          [basePrimaryBoEnc,   baseSecondaryBoEnc, "base"],
+          [fullPrimaryBoEnc + "s", fullSecondaryBoEnc + "s", "full-plural"],
+          [basePrimaryBoEnc  + "s", baseSecondaryBoEnc + "s", "base-plural"],
+        ] as [string, string, string][]) {
+          // PATCH from primary → secondary (docs example direction)
+          odataAttempts.push({
+            url:    `${m2mBase}/api/odata/businessobject/${primaryEnc}('${primaryRecId}')/${m2mRel}('${secondary.recId}')/$Ref`,
+            body:   emptyBody,
+            label:  `patch-primary-${tag}`,
+            method: "PATCH",
+          });
+          // PATCH from secondary → primary (reverse direction)
+          odataAttempts.push({
+            url:    `${m2mBase}/api/odata/businessobject/${secondaryEnc}('${secondary.recId}')/${m2mRel}('${primaryRecId}')/$Ref`,
+            body:   emptyBody,
+            label:  `patch-secondary-${tag}`,
+            method: "PATCH",
+          });
+        }
+
+        for (const attempt of odataAttempts) {
+          console.log(`[ivanti-proxy] M2M OData fallback (${attempt.label}): ${attempt.method} ${attempt.url}`);
+          try {
+            const r = await fetch(attempt.url, { method: attempt.method, headers: m2mHeaders, body: JSON.stringify(attempt.body) });
+            const ct = r.headers.get("content-type") ?? "";
+            const rb = r.status === 204 ? null : (ct.includes("application/json") ? await r.json() : await r.text());
+            console.log(`[ivanti-proxy] M2M OData fallback (${attempt.label}) ${r.status}:`, JSON.stringify(rb));
+            if (r.ok || r.status === 204) { relRes = r; relRespBody = rb; usedStrategy = attempt.label; break; }
+            if (r.status !== 404 && r.status !== 405) { relRes = r; relRespBody = rb; usedStrategy = attempt.label; break; }
+          } catch (e) {
+            console.warn(`[ivanti-proxy] M2M OData fallback (${attempt.label}) error:`, e);
+          }
+        }
+      }
+
+      if (!relRes) {
+        return NextResponse.json({
+          status: 500,
+          error: "All M2M link attempts failed (SaveDataExecuteAction + OData fallbacks)",
+          linkResolution: m2mLog,
+        }, { status: 500 });
+      }
+
+      return NextResponse.json(
+        {
+          status:     relRes.ok || relRes.status === 204 ? 200 : relRes.status,
+          statusText: relRes.ok || relRes.status === 204
+            ? `OK (linked via ${usedStrategy})`
+            : relRes.statusText,
+          body:           relRespBody,
+          linkResolution: m2mLog,
+          m2m: {
+            primaryRecId,
+            primaryField,
+            primaryBoType,
+            secondaryRecId:  secondary.recId,
+            secondaryField:  secondary.field,
+            secondaryBoType: secondary.boType,
+            usedStrategy,
+          },
+        },
+        { status: relRes.ok || relRes.status === 204 ? 200 : relRes.status }
+      );
+    }
+
+    const { ivantiUrl, data, apiKey, businessObject, tenantId, linkFieldNames, linkFieldBoNames, linkFieldLookupFields, upsertKey, upsertKeys, skipIfExists, skipIfNotExists, method, directRecId, directBoName } = body as {
       ivantiUrl: string;
       data: Record<string, unknown>;
       apiKey?: string;
       businessObject?: string;
+      /** When "DELETE": look up record by key fields and DELETE it instead of POST/PATCH. */
+      method?: "DELETE";
       tenantId?: string;
       linkFieldNames?: string[];
       linkFieldBoNames?: Record<string, string>;
@@ -323,7 +681,37 @@ export async function POST(request: NextRequest) {
       /** When true: if a record with the same key already exists, return a skipped response
        *  instead of PATCHing it. */
       skipIfExists?: boolean;
+      /** When true: if no record with the same key exists, return a skipped response
+       *  instead of POSTing a new one (update_only mode). */
+      skipIfNotExists?: boolean;
+      /** Direct DELETE by known RecID — skips BO name probe and upsert lookup entirely.
+       *  Must be paired with directBoName (the already-resolved, URL-encoded BO name). */
+      directRecId?: string;
+      directBoName?: string;
     };
+
+    // ── Direct DELETE by known RecID (fast path used by resetTask) ───────────
+    // Bypasses BO name probe and upsert lookup — just DELETE the record directly.
+    if (method === "DELETE" && directRecId && directBoName) {
+      const base = ivantiUrl.replace(/\/$/, "");
+      const resolvedKey = apiKey ?? FALLBACK_API_KEY;
+      const hdrs: Record<string, string> = {
+        Authorization: `rest_api_key=${resolvedKey}`,
+        Accept: "application/json",
+      };
+      if (tenantId) hdrs["X-Tenant-Id"] = tenantId;
+      const delUrl = `${base}/api/odata/businessobject/${directBoName}('${directRecId}')`;
+      console.log("[ivanti-proxy] Direct DELETE by RecID:", delUrl);
+      const delRes = await fetch(delUrl, { method: "DELETE", headers: hdrs });
+      if (delRes.ok || delRes.status === 204) {
+        return NextResponse.json({ status: 204, deleted: true, existingRecId: directRecId });
+      }
+      if (delRes.status === 404) {
+        return NextResponse.json({ status: 404, deleted: false, skipped: true, reason: "Not found (already deleted?)" });
+      }
+      const errText = await delRes.text().catch(() => "");
+      return NextResponse.json({ status: delRes.status, deleted: false, error: errText }, { status: delRes.status });
+    }
 
     if (!ivantiUrl || !data) {
       return NextResponse.json(
@@ -357,10 +745,13 @@ export async function POST(request: NextRequest) {
     // Convert Excel serial dates to ISO strings before posting
     const dateConvertedData = convertExcelDates(data);
 
-    // Resolve any _Link fields (display name -> RecID) before posting
-    const { resolved: resolvedData, log: resolveLog } = await resolveLinkFields(
-      dateConvertedData, ivantiUrl, resolvedKey, tenantId, effectiveObject, linkFieldNames ?? [], linkFieldBoNames ?? {}, linkFieldLookupFields ?? {}
-    );
+    // For DELETE mode we only need key fields to locate the record — skip expensive
+    // link-field resolution (which fires 50+ HTTP probes per link field).
+    const { resolved: resolvedData, log: resolveLog } = method === "DELETE"
+      ? { resolved: dateConvertedData, log: [] }
+      : await resolveLinkFields(
+          dateConvertedData, ivantiUrl, resolvedKey, tenantId, effectiveObject, linkFieldNames ?? [], linkFieldBoNames ?? {}, linkFieldLookupFields ?? {}
+        );
 
     const base = ivantiUrl.replace(/\/$/, "");
 
@@ -449,6 +840,41 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    // ── Skip if not exists (update_only mode) ────────────────────────────────
+    if (skipIfNotExists && !existingRecId) {
+      const keyDesc = keyFields.map((f) => `${f}="${resolvedData[f] ?? ""}"`).join(", ");
+      console.log(`[ivanti-proxy] Skipping non-existent record in update_only mode (${keyDesc})`);
+      return NextResponse.json({
+        status:  200,
+        skipped: true,
+        reason:  `Record does not exist — skipping in update_only mode (${keyDesc})`,
+        upsert:  { method: "SKIP", existingRecId: null },
+      });
+    }
+
+    // ── DELETE mode ──────────────────────────────────────────────────────────
+    if (method === "DELETE") {
+      if (!existingRecId) {
+        const keyDesc = keyFields.map((f) => `${f}="${resolvedData[f] ?? ""}"`).join(", ");
+        console.log(`[ivanti-proxy] DELETE: record not found (${keyDesc}) — skipping`);
+        return NextResponse.json({
+          status: 200,
+          skipped: true,
+          reason: `Record not found — nothing to delete (${keyDesc})`,
+          upsert: { method: "SKIP", existingRecId: null },
+        });
+      }
+      const deleteUrl = `${endpoint}('${existingRecId}')`;
+      console.log("[ivanti-proxy] DELETE:", deleteUrl);
+      const delRes = await fetch(deleteUrl, { method: "DELETE", headers });
+      const keyDesc = keyFields.map((f) => `${f}="${resolvedData[f] ?? ""}"`).join(", ");
+      if (delRes.ok || delRes.status === 204) {
+        return NextResponse.json({ status: 204, deleted: true, existingRecId, keyDesc });
+      }
+      const errText = await delRes.text().catch(() => "");
+      return NextResponse.json({ status: delRes.status, deleted: false, existingRecId, keyDesc, error: errText }, { status: delRes.status });
+    }
+
     // Helper: send the request and read the response body once.
     const sendRequest = async (payload: Record<string, unknown>) => {
       let res: Response;
@@ -472,7 +898,23 @@ export async function POST(request: NextRequest) {
       return { res, body };
     };
 
-    let { res: response, body: responseBody } = await sendRequest(resolvedData);
+    // For PATCH (update): swap resolved link-field display values to _RecID form.
+    // Ivanti silently ignores display values on PATCH but throws a varchar→varbinary
+    // conversion error if _RecID is sent on POST (create), so we only do this swap here.
+    let sendPayload = resolvedData;
+    if (existingRecId) {
+      const patchPayload = { ...resolvedData };
+      for (const entry of resolveLog) {
+        if ("recId" in entry && patchPayload[entry.field] === entry.value) {
+          delete patchPayload[entry.field];
+          patchPayload[`${entry.field}_RecID`] = entry.recId;
+          console.log(`[ivanti-proxy] PATCH swap: ${entry.field}="${entry.value}" -> ${entry.field}_RecID="${entry.recId}"`);
+        }
+      }
+      sendPayload = patchPayload;
+    }
+
+    let { res: response, body: responseBody } = await sendRequest(sendPayload);
 
     // Auto-retry: if Ivanti returns 400 UndefinedValidatedValue, strip the offending
     // validated fields and retry once.  This handles cases where the AI guessed a
@@ -492,9 +934,9 @@ export async function POST(request: NextRequest) {
         const strippedFieldsList = [...invalidFields];
         const strippedFieldValues: Record<string, unknown> = {};
         for (const f of strippedFieldsList) {
-          strippedFieldValues[f] = (resolvedData as Record<string, unknown>)[f];
+          strippedFieldValues[f] = (sendPayload as Record<string, unknown>)[f];
         }
-        const stripped = { ...resolvedData };
+        const stripped = { ...sendPayload };
         for (const f of invalidFields) delete stripped[f];
         const retry = await sendRequest(stripped);
         response      = retry.res;
@@ -505,13 +947,66 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Auto-retry for POST link-resolution failures:
+    // Ivanti resolves display values for link fields internally on POST for some BOs,
+    // but fails for others (e.g. FRS_PriceItem# Manufacturer). When this happens:
+    //  1. Strip the unresolvable link fields from the payload and retry the POST.
+    //  2. On success, immediately PATCH the new record with _RecID for each resolved link.
+    // This avoids both the display-value resolution failure AND the varchar→varbinary
+    // conversion error that occurs when _RecID is sent on INSERT.
+    if (!existingRecId && response.status === 400) {
+      const postErrMsgs: string[] = (responseBody as { body?: { message?: string[] }; message?: string[] })?.body?.message
+        ?? (responseBody as { message?: string[] })?.message ?? [];
+      const hasLinkNotFound = postErrMsgs.some((m) => /cannot be found/.test(m));
+
+      if (hasLinkNotFound) {
+        const resolvedLinks = resolveLog.filter(
+          (e): e is { field: string; value: string; recId: string } => "recId" in e
+        );
+
+        if (resolvedLinks.length > 0) {
+          const strippedLinkPayload = { ...sendPayload };
+          for (const entry of resolvedLinks) delete strippedLinkPayload[entry.field];
+
+          console.log(`[ivanti-proxy] POST link-not-found; retrying without: ${resolvedLinks.map((e) => e.field).join(", ")}`);
+          const { res: linkRetryRes, body: linkRetryBody } = await sendRequest(strippedLinkPayload);
+
+          if (linkRetryRes.ok || linkRetryRes.status === 204 || linkRetryRes.status === 201) {
+            const newRecId = (linkRetryBody as Record<string, unknown> | null)?.RecId as string | undefined;
+            if (newRecId) {
+              // PATCH the new record with _RecID fields for every resolved link
+              const linkPatchPayload: Record<string, unknown> = {};
+              for (const entry of resolvedLinks) {
+                linkPatchPayload[`${entry.field}_RecID`] = entry.recId;
+              }
+              const linkPatchUrl = `${endpoint}('${newRecId}')`;
+              console.log(`[ivanti-proxy] Post-create PATCH for link _RecIDs:`, linkPatchUrl, JSON.stringify(linkPatchPayload));
+              try {
+                const lpRes = await fetch(linkPatchUrl, { method: "PATCH", headers, body: JSON.stringify(linkPatchPayload) });
+                if (!lpRes.ok && lpRes.status !== 204) {
+                  const lpErr = await lpRes.text().catch(() => "");
+                  console.warn(`[ivanti-proxy] Post-create link PATCH failed ${lpRes.status}: ${lpErr}`);
+                } else {
+                  console.log(`[ivanti-proxy] Post-create link PATCH succeeded for RecId=${newRecId}`);
+                }
+              } catch (lpe) {
+                console.warn(`[ivanti-proxy] Post-create link PATCH error:`, lpe);
+              }
+            }
+            response     = linkRetryRes;
+            responseBody = linkRetryBody;
+          }
+        }
+      }
+    }
+
     // Extract any retry-stripping metadata attached above.
     const _resp = response as Response & { _strippedFields?: string[]; _strippedValues?: Record<string, unknown> };
     const strippedFields = _resp._strippedFields;
     const strippedValues = _resp._strippedValues;
 
-    const method = existingRecId ? "PATCH" : "POST";
-    console.log(`[ivanti-proxy] ${method} response status:`, response.status);
+    const upsertMethod = existingRecId ? "PATCH" : "POST";
+    console.log(`[ivanti-proxy] ${upsertMethod} response status:`, response.status);
     console.log("[ivanti-proxy] Response body:", JSON.stringify(responseBody));
 
     return NextResponse.json(
@@ -520,7 +1015,8 @@ export async function POST(request: NextRequest) {
         statusText: response.status === 204 ? "OK (updated)" : response.statusText,
         body: responseBody,
         linkResolution: resolveLog,
-        upsert: { method, existingRecId },
+        resolvedBoName,
+        upsert: { method: upsertMethod, existingRecId },
         ...(strippedFields?.length ? { strippedFields, strippedValues } : {}),
       },
       { status: response.ok || response.status === 204 ? 200 : response.status }

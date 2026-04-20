@@ -90,7 +90,7 @@ export interface Profile {
   created_at: string;
 }
 
-export type WriteMode = "upsert" | "create_only";
+export type WriteMode = "upsert" | "create_only" | "update_only";
 
 export interface ScheduledTask {
   id: string;
@@ -115,6 +115,9 @@ export interface ScheduledTask {
   /** When true, this is a locked system-provided template. Admins can promote/demote;
    *  all users can clone it via "Use as Template". */
   is_system?: boolean;
+  /** When true, every successful create/update stores the Ivanti RecID in
+   *  task_created_records, enabling the Undo button to delete by RecID directly. */
+  debug_mode?: boolean;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -145,7 +148,8 @@ export type TransformType =
   | "expression"
   | "concat"
   | "ai_lookup"
-  | "ai_guess";
+  | "ai_guess"
+  | "excel_date";
 
 export interface MappingRow {
   id: string;
@@ -191,6 +195,12 @@ export interface MappingProfile {
   source_connection_id?: string | null;
   target_connection_id?: string | null;
   target_business_object?: string | null;
+  /** Ivanti relationship name for many-to-many associations (e.g. "ivnt_ContractLineItemAssocCI"). */
+  relationship_name?: string | null;
+  /** When true, this profile creates a relationship between two existing records rather than
+   *  creating/updating a single record. Both sides are looked up by key fields and linked
+   *  via `relationship_name` on the target BO. */
+  many_to_many?: boolean | null;
   filter_expression?: string | null;
   customer_id?: string | null;
   /** When true, this is a locked system-provided template. Admins can promote/demote;
@@ -208,6 +218,7 @@ export interface MappingSlot {
   id: string;
   mapping_profile_id: string | null;
   label?: string;
+  enabled?: boolean;
 }
 
 // ── Endpoint connections ──────────────────────────────────────
@@ -401,6 +412,17 @@ export function applyMappingProfile(
       case "ai_guess": {
         // Value comes from per-row AI guess results, keyed by mapping row ID
         value = aiGuessResults?.[mapping.id] ?? "";
+        break;
+      }
+      case "excel_date": {
+        // Convert Excel serial date number to ISO date string (YYYY-MM-DD).
+        // Excel's epoch is December 30, 1899. Serial 60 is Excel's phantom
+        // Feb 29 1900 (leap-year bug); subtracting 25569 converts to Unix days.
+        const serial = Number(value);
+        if (!isNaN(serial) && serial > 0) {
+          const date = new Date((serial - 25569) * 86400 * 1000);
+          value = date.toISOString().split("T")[0]; // "YYYY-MM-DD"
+        }
         break;
       }
       default:

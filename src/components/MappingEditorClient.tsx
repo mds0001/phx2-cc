@@ -71,6 +71,7 @@ const TRANSFORMS: { value: TransformType; label: string; desc: string }[] = [
   { value: "concat",     label: "Concat Fields",   desc: "Join two source fields together" },
   { value: "ai_lookup",  label: "AI Lookup",       desc: "Classify using Claude AI from multiple source fields" },
   { value: "ai_guess",   label: "AI Guess",        desc: "Let Claude infer the value from source context (optionally constrained to valid values)" },
+  { value: "excel_date", label: "Excel Date",       desc: "Convert Excel serial date number to ISO date string (YYYY-MM-DD)" },
 ];
 
 // ── Helper ─────────────────────────────────────────────────────
@@ -158,6 +159,12 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
   );
   const [targetBusinessObject, setTargetBusinessObject] = useState<string>(
     profile?.target_business_object ?? ""
+  );
+  const [relationshipName, setRelationshipName] = useState<string>(
+    profile?.relationship_name ?? ""
+  );
+  const [manyToMany, setManyToMany] = useState<boolean>(
+    profile?.many_to_many ?? false
   );
   const [filterExpression, setFilterExpression] = useState<string>(
     profile?.filter_expression ?? ""
@@ -574,6 +581,8 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
         source_connection_id: sourceConnectionId ?? null,
         target_connection_id: targetConnectionId ?? null,
         target_business_object: targetBusinessObject.trim() || null,
+        relationship_name: manyToMany ? (relationshipName.trim() || null) : null,
+        many_to_many: manyToMany,
         filter_expression: filterExpression.trim() || null,
         created_by: userId,
         customer_id: customerId ?? null,
@@ -973,10 +982,12 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
                 ) : null;
               })()}
 
-              {/* Target Business Object — required for Ivanti targets, no default */}
-              {targetConnectionId && (() => {
-                const c = connections.find((x) => x.id === targetConnectionId);
-                if (!c || (c.type !== "ivanti" && c.type !== "ivanti_neurons")) return null;
+              {/* Target Business Object — shown for Ivanti connections OR when a BO is already set (e.g. connection-less profiles) */}
+              {(() => {
+                const c = targetConnectionId ? connections.find((x) => x.id === targetConnectionId) : null;
+                const isIvanti = c && (c.type === "ivanti" || c.type === "ivanti_neurons");
+                // Show if: connection is Ivanti, OR no connection but BO already has a value (legacy / connection-less profiles)
+                if (!isIvanti && !targetBusinessObject.trim()) return null;
                 return (
                   <div className="flex flex-col gap-1.5 mt-1">
                     <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -993,6 +1004,7 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
                       className={`w-full bg-gray-800 border rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 placeholder-gray-600 ${!targetBusinessObject.trim() ? "border-red-500/50" : "border-gray-700"}`}
                     />
                     <p className="text-xs text-gray-500">The Ivanti business object this profile writes to. Must be set explicitly — no default is used.</p>
+
                   </div>
                 );
               })()}
@@ -1287,6 +1299,38 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
               <BrainCircuit className="w-3.5 h-3.5" />
               Add AI Guess
             </button>
+          </div>
+
+          {/* ── Many-to-Many config — shown in mapping section since it governs execution behaviour ── */}
+          <div className={`flex flex-wrap items-start gap-4 mb-4 p-4 rounded-xl border transition-colors ${manyToMany ? "bg-indigo-950/40 border-indigo-500/30" : "bg-gray-900 border-gray-800"}`}>
+            <div className="flex items-center gap-3 shrink-0">
+              <button
+                type="button"
+                onClick={() => setManyToMany((v) => !v)}
+                className={`relative w-9 h-5 rounded-full transition-colors shrink-0 ${manyToMany ? "bg-indigo-500" : "bg-gray-700"}`}
+              >
+                <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${manyToMany ? "translate-x-4" : ""}`} />
+              </button>
+              <span className={`text-xs font-medium ${manyToMany ? "text-indigo-300" : "text-gray-400"}`}>Many-to-Many relationship</span>
+            </div>
+            {manyToMany && (
+              <div className="flex flex-col gap-1 flex-1 min-w-48">
+                <label className="text-xs font-semibold text-indigo-400 uppercase tracking-wider flex items-center gap-1.5">
+                  Relationship Name
+                  {!relationshipName.trim() && (
+                    <span className="text-red-400 font-normal normal-case">— required</span>
+                  )}
+                </label>
+                <input
+                  type="text"
+                  value={relationshipName}
+                  onChange={(e) => setRelationshipName(e.target.value)}
+                  placeholder="e.g. ivnt_ContractLineItemAssocCI"
+                  className={`w-full bg-gray-800 border rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-gray-600 ${!relationshipName.trim() ? "border-red-500/50" : "border-indigo-500/30"}`}
+                />
+                <p className="text-xs text-indigo-400/60">Key fields on each side are resolved to RecIDs and linked — no new record is created.</p>
+              </div>
+            )}
           </div>
 
           {mappings.length === 0 ? (

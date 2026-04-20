@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Plus, Plug, Trash2, Edit2, File, Cloud, Mail, Database, Globe,
   ArrowLeft, Zap, ShoppingCart, Package, Building2, Search,
-  Lock, Copy, Shield, ShieldOff,
+  Lock, Copy, Shield, ShieldOff, Loader2, CheckCircle2, XCircle,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
 import type { EndpointConnection, ConnectionType } from "@/lib/types";
@@ -68,6 +68,30 @@ export default function ConnectionsListClient({
   const [showSystem, setShowSystem] = useState(false);
   const [search, setSearch] = useState("");
 
+  type TestStatus = { status: "testing" | "ok" | "fail"; message: string };
+  const [testResults, setTestResults] = useState<Record<string, TestStatus>>({});
+
+  async function runTest(conn: EndpointConnection) {
+    setTestResults((p) => ({ ...p, [conn.id]: { status: "testing", message: "Testing\u2026" } }));
+    try {
+      const res = await fetch("/api/test-connection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: conn.type, config: conn.config }),
+      });
+      const data = (await res.json()) as { success: boolean; message: string };
+      setTestResults((p) => ({
+        ...p,
+        [conn.id]: { status: data.success ? "ok" : "fail", message: data.message },
+      }));
+    } catch (e) {
+      setTestResults((p) => ({
+        ...p,
+        [conn.id]: { status: "fail", message: e instanceof Error ? e.message : "Unknown error" },
+      }));
+    }
+  }
+
   const visibleConnections = useMemo(() => {
     const base = showSystem ? connections : connections.filter((c) => !c.is_system);
     if (!search.trim()) return base;
@@ -108,7 +132,6 @@ export default function ConnectionsListClient({
     router.push(`/connections/new?from=${id}`);
   }
 
-  // When searching, show a flat list. Otherwise group by type.
   const isSearching = search.trim().length > 0;
 
   const grouped = useMemo<{ type: ConnectionType; items: EndpointConnection[] }[]>(() => {
@@ -201,14 +224,31 @@ export default function ConnectionsListClient({
       ? customers.find((c) => c.id === conn.customer_id)?.company || customers.find((c) => c.id === conn.customer_id)?.name
       : null;
 
+    const test = testResults[conn.id];
+    const badgeColor =
+      !test                     ? `${meta.bg} ${meta.color}` :
+      test.status === "testing"  ? "bg-gray-500/10 border-gray-500/25 text-gray-400" :
+      test.status === "ok"       ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-400" :
+                                   "bg-red-500/10 border-red-500/25 text-red-400";
+    const badgeIcon =
+      !test                     ? meta.icon :
+      test.status === "testing"  ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> :
+      test.status === "ok"       ? <CheckCircle2 className="w-3.5 h-3.5" /> :
+                                   <XCircle className="w-3.5 h-3.5" />;
+
     return (
       <tr className="border-b border-gray-800/60 hover:bg-gray-800/30 transition-colors group">
-        {/* Type badge */}
+        {/* Type badge — click to test connection */}
         <td className="py-3 pl-4 pr-3 w-36">
-          <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md border text-xs font-medium ${meta.bg} ${meta.color}`}>
-            {meta.icon}
+          <button
+            onClick={() => runTest(conn)}
+            disabled={test?.status === "testing"}
+            title={test ? test.message : `Test ${meta.label} connection`}
+            className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md border text-xs font-medium transition-all hover:brightness-125 active:scale-95 disabled:cursor-wait cursor-pointer ${badgeColor}`}
+          >
+            {badgeIcon}
             {meta.label}
-          </span>
+          </button>
         </td>
 
         {/* Name */}
@@ -347,7 +387,7 @@ export default function ConnectionsListClient({
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search by name, type, or URL…"
+                placeholder="Search by name, type, or URL\u2026"
                 className="w-full bg-gray-900 border border-gray-800 rounded-xl pl-11 pr-4 py-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
               />
               {search && (
@@ -355,7 +395,7 @@ export default function ConnectionsListClient({
                   onClick={() => setSearch("")}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-600 hover:text-gray-400 transition-colors"
                 >
-                  ✕
+                  \u2715
                 </button>
               )}
             </div>

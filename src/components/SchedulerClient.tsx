@@ -26,6 +26,7 @@ import {
   Maximize2,
   Minimize2,
   Save,
+  Bug,
 } from "lucide-react";
 import type {
   Profile,
@@ -126,12 +127,13 @@ interface FormState {
   recurrence: RecurrenceType;
   mappingProfileId: string | null;
   mappingSlots: MappingSlot[];
-  writeMode: "upsert" | "create_only";
+  writeMode: "upsert" | "create_only" | "update_only";
   customerId: string | null;
   targetConnectionId: string | null;
   /** Storage folder prefix used when a slot's source connection has no file_path set.
    *  e.g. "mikeco" → resolves Assets.xlsx as "mikeco/Assets.xlsx" */
   sourceDirectory: string;
+  debugMode: boolean;
 }
 
 const EMPTY_FORM: FormState = {
@@ -144,6 +146,7 @@ const EMPTY_FORM: FormState = {
   customerId: null,
   targetConnectionId: null,
   sourceDirectory: "",
+  debugMode: false,
 };
 
 // ─── Component ───────────────────────────────────────────────
@@ -236,6 +239,10 @@ export default function SchedulerClient({
 
   const [runningTasks, setRunningTasks] = useState<Set<string>>(new Set());
   const [cancellingTasks, setCancellingTasks] = useState<Set<string>>(new Set());
+  const [resetingTasks, setResetingTasks] = useState<Set<string>>(new Set());
+  // Debug mode expand/collapse per task, and tracked RecID counts from DB
+  const [expandedDebug, setExpandedDebug] = useState<Set<string>>(new Set());
+  const [trackedCounts, setTrackedCounts] = useState<Map<string, number>>(new Map());
   const [mappingProfiles, setMappingProfiles] = useState<MappingProfile[]>([]);
   const [endpointConnections, setEndpointConnections] = useState<EndpointConnection[]>([]);
   const [promoting, setPromoting] = useState<string | null>(null);
@@ -298,13 +305,37 @@ export default function SchedulerClient({
   // taskAbortControllers: one AbortController per running task.
   // Aborting it immediately interrupts any in-flight fetch (AI pre-fetch, proxy calls, etc.)
   const taskAbortControllers = useRef<Map<string, AbortController>>(new Map());
+  // recentlyFinishedRef: maps task ID → { status, finishedAt }.
+  // When executeTask writes a terminal status locally, it records it here so that
+  // fetchTasks() — called by both the finally block AND the polling loop — cannot
+  // overwrite the badge with stale "active" data from the DB before replication catches up.
+  // Entries are cleared once the DB confirms the terminal status, or after 90 seconds.
+  const recentlyFinishedRef = useRef<Map<string, { status: import("@/lib/types").TaskStatus; finishedAt: number }>>(new Map());
 
   // ── Fetch tasks ──────────────────────────────────────────
   const fetchTasks = useCallback(async () => {
     let q = supabase.from("scheduled_tasks").select("*").order("created_at", { ascending: false });
     if (activeCustomerId) q = q.or(`customer_id.eq.${activeCustomerId},is_system.eq.true`);
     const { data } = await q;
-    if (data) setTasks(data);
+    if (data) {
+      const now = Date.now();
+      setTasks(data.map((dbTask) => {
+        const override = recentlyFinishedRef.current.get(dbTask.id);
+        if (!override) return dbTask;
+        // Stale override — remove it
+        if (now - override.finishedAt > 90_000) {
+          recentlyFinishedRef.current.delete(dbTask.id);
+          return dbTask;
+        }
+        // DB confirmed the terminal status — remove override and use DB value
+        if (dbTask.status !== "active") {
+          recentlyFinishedRef.current.delete(dbTask.id);
+          return dbTask;
+        }
+        // DB still says "active" but we know it finished — preserve our local status
+        return { ...dbTask, status: override.status };
+      }));
+    }
 
     // Fetch log counts for all tasks
     const { data: counts } = await supabase
@@ -316,6 +347,18 @@ export default function SchedulerClient({
         tally[row.task_id] = (tally[row.task_id] ?? 0) + 1;
       }
       setLogCounts(tally);
+    }
+
+    // Fetch tracked RecID counts per task (for debug mode Undo button)
+    const { data: recRows } = await supabase
+      .from("task_created_records")
+      .select("task_id");
+    if (recRows) {
+      const recTally = new Map<string, number>();
+      for (const row of recRows) {
+        recTally.set(row.task_id, (recTally.get(row.task_id) ?? 0) + 1);
+      }
+      setTrackedCounts(recTally);
     }
   }, [supabase, activeCustomerId]);
 
@@ -402,11 +445,13 @@ export default function SchedulerClient({
         .update({ status: "active" })
         .eq("id", task.id);
 
-      await supabase.from("task_logs").insert({
-        task_id: task.id,
-        action: "STARTED",
-        details: `Task "${task.task_name}" started at ${new Date().toISOString()}`,
-      });
+      // Clear previous logs so each run starts with a clean slate
+      await supabase.from("task_logs").delete().eq("task_id", task.id);
+
+      // Tracks the resolved final status so the finally block can re-apply it
+      // after fetchTasks() — preventing fetchTasks from overwriting local state
+      // with stale "active" data if the DB update hasn't propagated yet.
+      let resolvedFinalStatus: string | null = null;
 
       try {
         // ── Build slot list — multi-slot tasks override the legacy single profile ──
@@ -415,6 +460,17 @@ export default function SchedulerClient({
           ? rawSlots
           : [{ id: "legacy", mapping_profile_id: task.mapping_profile_id, label: undefined }];
         const isMultiSlot = slots.length > 1;
+
+        // Slot tracking for log prefix: 0 = task-level (STARTED/SUMMARY), >0 = slot number
+        let _logSlot = 0;
+        const taskLog = (action: string, details: string) =>
+          supabase.from("task_logs").insert({
+            task_id: task.id,
+            action,
+            details: _logSlot > 0 ? `[S${_logSlot}/${slots.length}] ${details}` : details,
+          });
+
+        await taskLog("STARTED", `Task "${task.task_name}" started at ${new Date().toISOString()}`);
 
         let filteredCount     = 0;
         let rowErrorCount     = 0;
@@ -425,19 +481,39 @@ export default function SchedulerClient({
         let totalInputTokens  = 0;
         let totalOutputTokens = 0;
 
+        // In debug mode: clear RecIDs from previous run so Undo always reflects the latest run.
+        if (task.debug_mode) {
+          await supabase.from("task_created_records").delete().eq("task_id", task.id);
+        }
+
+        // Clear the proxy's module-level link-field cache before each run so that
+        // stale "previously failed" entries (e.g. HQ deleted then re-created) don't
+        // block link resolution for freshly-created records in subsequent slots.
+        await fetch("/api/ivanti-proxy", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: "clear-cache" }),
+        }).catch(() => { /* non-fatal */ });
+
         for (let slotIdx = 0; slotIdx < slots.length; slotIdx++) {
           const slot = slots[slotIdx];
+          _logSlot = slotIdx + 1;
 
           // Check cancellation before starting each slot
           if (cancelledRef.current.has(task.id)) break;
 
+          // Skip disabled slots
+          if (slot.enabled === false) {
+            if (isMultiSlot) {
+              const slotLabel = slot.label ? `: ${slot.label}` : "";
+              await taskLog("INFO", `── Slot ${slotIdx + 1} of ${slots.length}${slotLabel} — SKIPPED (disabled) ──`);
+            }
+            continue;
+          }
+
           if (isMultiSlot) {
             const slotLabel = slot.label ? `: ${slot.label}` : "";
-            await supabase.from("task_logs").insert({
-              task_id: task.id,
-              action: "INFO",
-              details: `── Slot ${slotIdx + 1} of ${slots.length}${slotLabel} ──`,
-            });
+            await taskLog("INFO", `── Slot ${slotIdx + 1} of ${slots.length}${slotLabel} ──`);
           }
 
         // ── Step 1: Load mapping profile ─────────────────────
@@ -449,13 +525,9 @@ export default function SchedulerClient({
             .eq("id", slot.mapping_profile_id)
             .single();
           mappingProfile = mp ?? null;
-          await supabase.from("task_logs").insert({
-            task_id: task.id,
-            action: "INFO",
-            details: mappingProfile
-              ? `Using mapping profile "${mappingProfile.name}" (${mappingProfile.mappings.length} mappings)`
-              : "No mapping profile — sending raw row data",
-          });
+          await taskLog("INFO", mappingProfile
+            ? `Using mapping profile "${mappingProfile.name}" (${mappingProfile.mappings.length} mappings)`
+            : "No mapping profile — sending raw row data");
         }
 
         // ── Step 2: Resolve source connection (file endpoint) ─
@@ -476,17 +548,9 @@ export default function SchedulerClient({
             const src = "mapping profile";
             if (srcConn.type === "file") {
               sourceConnFileConfig = srcConn.config as { file_path?: string; file_name?: string };
-              await supabase.from("task_logs").insert({
-                task_id: task.id,
-                action: "INFO",
-                details: `Source connection (${src}): "${srcConn.name}" [FILE] — ${sourceConnFileConfig.file_name ?? sourceConnFileConfig.file_path ?? "no file configured"}`,
-              });
+              await taskLog("INFO", `Source connection (${src}): "${srcConn.name}" [FILE] — ${sourceConnFileConfig.file_name ?? sourceConnFileConfig.file_path ?? "no file configured"}`);
             } else {
-              await supabase.from("task_logs").insert({
-                task_id: task.id,
-                action: "INFO",
-                details: `Source connection (${src}): "${srcConn.name}" [${srcConn.type.toUpperCase()}]`,
-              });
+              await taskLog("INFO", `Source connection (${src}): "${srcConn.name}" [${srcConn.type.toUpperCase()}]`);
             }
           }
         }
@@ -509,11 +573,7 @@ export default function SchedulerClient({
             targetConnRawConfig = conn.config as Record<string, unknown>;
             targetConnType = conn.type as string;
             const src = mappingProfile?.target_connection_id ? "mapping profile" : "task override";
-            await supabase.from("task_logs").insert({
-              task_id: task.id,
-              action: "INFO",
-              details: `Target connection (${src}): "${conn.name}" [${conn.type.toUpperCase()}]${targetConnection.url ? ` — ${targetConnection.url}` : ""}`,
-            });
+            await taskLog("INFO", `Target connection (${src}): "${conn.name}" [${conn.type.toUpperCase()}]${targetConnection.url ? ` — ${targetConnection.url}` : ""}`);
           }
         }
 
@@ -527,21 +587,13 @@ export default function SchedulerClient({
           (taskDir && connFileName ? `${taskDir}/${connFileName}` : null);
 
         if (resolvedSourceFilePath && resolvedSourceFilePath !== connFilePath) {
-          await supabase.from("task_logs").insert({
-            task_id: task.id,
-            action: "INFO",
-            details: `Source path resolved from task directory: ${resolvedSourceFilePath}`,
-          });
+          await taskLog("INFO", `Source path resolved from task directory: ${resolvedSourceFilePath}`);
         }
 
         if (sourceConnType === "file") {
           if (!resolvedSourceFilePath) {
             rowErrorCount++;
-            await supabase.from("task_logs").insert({
-              task_id: task.id,
-              action: "ERROR",
-              details: `Source connection "${connFileName ?? "unknown"}" has no file configured. Set a Source Directory on this task to resolve files automatically.`,
-            });
+            await taskLog("ERROR", `Source connection "${connFileName ?? "unknown"}" has no file configured. Set a Source Directory on this task to resolve files automatically.`);
             break;
           }
 
@@ -550,21 +602,13 @@ export default function SchedulerClient({
           // Download the source file
           const fileEntries: { label: string; buffer: ArrayBuffer; targetConnId?: string | null; mappingProfileId?: string | null }[] = [];
 
-          await supabase.from("task_logs").insert({
-            task_id: task.id,
-            action: "INFO",
-            details: `Downloading file: ${resolvedSourceFilePath}`,
-          });
+          await taskLog("INFO", `Downloading file: ${resolvedSourceFilePath}`);
           const { data: fileData, error: dlError } = await supabase.storage
             .from("task_files")
             .download(resolvedSourceFilePath!);
           if (dlError || !fileData) {
             rowErrorCount++;
-            await supabase.from("task_logs").insert({
-              task_id: task.id,
-              action: "ERROR",
-              details: `File not found in storage: ${resolvedSourceFilePath}`,
-            });
+            await taskLog("ERROR", `File not found in storage: ${resolvedSourceFilePath}`);
             break;
           }
           const label = fileCfg?.file_name ?? resolvedSourceFilePath.split("/").pop() ?? "file";
@@ -591,10 +635,7 @@ export default function SchedulerClient({
               fileTargetConnection = overrideConn.config as Record<string, string>;
               fileTargetConnType = overrideConn.type as string;
               fileTargetConnId = overrideConn.id as string;
-              await supabase.from("task_logs").insert({
-                task_id: task.id, action: "INFO",
-                details: `[${fileEntry.label}] Target override: "${overrideConn.name}" [${overrideConn.type.toUpperCase()}]`,
-              });
+              await taskLog("INFO", `[${fileEntry.label}] Target override: "${overrideConn.name}" [${overrideConn.type.toUpperCase()}]`);
             }
           }
 
@@ -605,18 +646,11 @@ export default function SchedulerClient({
               .from("mapping_profiles").select("*").eq("id", fileEntry.mappingProfileId).single();
             if (overrideMp) {
               fileMappingProfile = overrideMp as MappingProfile;
-              await supabase.from("task_logs").insert({
-                task_id: task.id, action: "INFO",
-                details: `[${fileEntry.label}] Mapping override: "${overrideMp.name}"`,
-              });
+              await taskLog("INFO", `[${fileEntry.label}] Mapping override: "${overrideMp.name}"`);
             }
           }
 
-          await supabase.from("task_logs").insert({
-            task_id: task.id,
-            action: "INFO",
-            details: `[${fileEntry.label}] Parsed ${rows.length} rows from sheet "${sheetName}"`,
-          });
+          await taskLog("INFO", `[${fileEntry.label}] Parsed ${rows.length} rows from sheet "${sheetName}"`);
 
           // Resolve effective connection from target endpoint
           const effectiveUrl            = fileTargetConnection?.url;
@@ -627,10 +661,7 @@ export default function SchedulerClient({
           const effectiveTenantId       = fileTargetConnection?.tenant_id       ?? undefined;
 
           if (!effectiveBusinessObject && (fileTargetConnType === "ivanti" || fileTargetConnType === "ivanti_neurons")) {
-            await supabase.from("task_logs").insert({
-              task_id: task.id, action: "ERROR",
-              details: `Mapping profile "${fileMappingProfile?.name ?? slot.mapping_profile_id}" has no Business Object set. Open the mapping editor and set the target Business Object before running this task.`,
-            });
+            await taskLog("ERROR", `Mapping profile "${fileMappingProfile?.name ?? slot.mapping_profile_id}" has no Business Object set. Open the mapping editor and set the target Business Object before running this task.`);
             continue;
           }
 
@@ -654,10 +685,7 @@ export default function SchedulerClient({
                 rows.map(r => String(r[nameSrcField.name] ?? "")).filter(Boolean)
               )];
 
-              await supabase.from("task_logs").insert({
-                task_id: task.id, action: "INFO",
-                details: `Create only: checking ${keyValues.length} unique key(s) against target…`,
-              });
+              await taskLog("INFO", `Create only: checking ${keyValues.length} unique key(s) against target…`);
 
               try {
                 const ceRes = await fetch("/api/ivanti-proxy", {
@@ -681,18 +709,12 @@ export default function SchedulerClient({
                   rows = rows.filter(r => !existingSet.has(String(r[nameSrcField.name] ?? "")));
                   const skippedUpfront = before - rows.length;
                   rowSkipCount += skippedUpfront;
-                  await supabase.from("task_logs").insert({
-                    task_id: task.id, action: "INFO",
-                    details: `Create only: ${existing.length} record(s) already exist — skipped. ${rows.length} new row(s) will be processed.`,
-                  });
+                  await taskLog("INFO", `Create only: ${existing.length} record(s) already exist — skipped. ${rows.length} new row(s) will be processed.`);
                 }
               } catch (e) {
                 if (e instanceof Error && e.name === "AbortError") throw e;
                 // If the existence check fails, fall through and let the per-row proxy handle it
-                await supabase.from("task_logs").insert({
-                  task_id: task.id, action: "WARN",
-                  details: `Create only: pre-check failed (${e instanceof Error ? e.message : String(e)}) — will check existence per row instead.`,
-                });
+                await taskLog("WARN", `Create only: pre-check failed (${e instanceof Error ? e.message : String(e)}) — will check existence per row instead.`);
               }
             }
           }
@@ -734,11 +756,7 @@ export default function SchedulerClient({
               if (!uniqueCombos.has(key)) uniqueCombos.set(key, sourceValues);
             }
 
-            await supabase.from("task_logs").insert({
-              task_id: task.id,
-              action: "INFO",
-              details: `AI Lookup: ${uniqueCombos.size} unique combo(s) — keys: [${outputKeys.join(", ")}]`,
-            });
+            await taskLog("INFO", `AI Lookup: ${uniqueCombos.size} unique combo(s) — keys: [${outputKeys.join(", ")}]`);
 
             for (const [comboKey, sourceValues] of uniqueCombos) {
               try {
@@ -858,40 +876,24 @@ export default function SchedulerClient({
                     claudeCalls > 0 ? `${claudeCalls} Claude call(s)` : "",
                   ].filter(Boolean).join(", ");
 
-                  await supabase.from("task_logs").insert({
-                    task_id: task.id,
-                    action: "INFO",
-                    details: `AI Guess [${tgtFieldName}]: ${uniqueCombos.size} unique combo(s) — ${distribution} (${sourceLabel || "no results"})`,
-                  });
+                  await taskLog("INFO", `AI Guess [${tgtFieldName}]: ${uniqueCombos.size} unique combo(s) — ${distribution} (${sourceLabel || "no results"})`);
                 }
               } catch (e) {
                 if (e instanceof Error && e.name === "AbortError") break;
                 // Batch failed — log and continue (rows will get WARN for missing values)
-                await supabase.from("task_logs").insert({
-                  task_id: task.id,
-                  action: "WARN",
-                  details: `AI Guess [${tgtFieldName}]: batch pre-fetch failed — ${e instanceof Error ? e.message : String(e)}`,
-                });
+                await taskLog("WARN", `AI Guess [${tgtFieldName}]: batch pre-fetch failed — ${e instanceof Error ? e.message : String(e)}`);
               }
             }
           }
 
           if (fileMappingProfile?.filter_expression) {
-            await supabase.from("task_logs").insert({
-              task_id: task.id,
-              action: "INFO",
-              details: `Row filter expression: ${fileMappingProfile.filter_expression}`,
-            });
+            await taskLog("INFO", `Row filter expression: ${fileMappingProfile.filter_expression}`);
           }
 
           for (let i = 0; i < rows.length; i++) {
             // ── Cancellation checkpoint ──────────────────────────
             if (cancelledRef.current.has(task.id)) {
-              await supabase.from("task_logs").insert({
-                task_id: task.id,
-                action: "WARN",
-                details: "Task cancelled by user.",
-              });
+              await taskLog("WARN", "Task cancelled by user.");
               break;
             }
             const row = rows[i];
@@ -903,11 +905,7 @@ export default function SchedulerClient({
                 fileMappingProfile.filter_expression
               );
               if (error) {
-                await supabase.from("task_logs").insert({
-                  task_id: task.id,
-                  action: "WARN",
-                  details: `Row filter parse error (row ${i + 1}): ${error}`,
-                });
+                await taskLog("WARN", `Row filter parse error (row ${i + 1}): ${error}`);
               }
               if (!pass) {
                 filteredCount++;
@@ -954,11 +952,7 @@ export default function SchedulerClient({
                   const tgtFieldName2 =
                     fileMappingProfile.target_fields.find((f) => f.id === gm.targetFieldId)?.name ?? gm.id;
                   rowWarnCount++;
-                  await supabase.from("task_logs").insert({
-                    task_id: task.id,
-                    action: "WARN",
-                    details: `Row ${i + 1}: AI Guess [${tgtFieldName2}] — no value returned. The field will be omitted from this row's payload. Check the valid values list or add a custom prompt.`,
-                  });
+                  await taskLog("WARN", `Row ${i + 1}: AI Guess [${tgtFieldName2}] — no value returned. The field will be omitted from this row's payload. Check the valid values list or add a custom prompt.`);
                 }
               }
             }
@@ -978,17 +972,10 @@ export default function SchedulerClient({
                 }
               }
               if (nullFields.length > 0) {
-                await supabase.from("task_logs").insert({
-                  task_id: task.id, action: "WARN",
-                  details: `Row ${i + 1}: mapped fields with no source value (will send null): ${nullFields.join(", ")}`,
-                });
+                await taskLog("INFO", `Row ${i + 1}: mapped fields with no source value (will send null): ${nullFields.join(", ")}`);
               }
             }
-            await supabase.from("task_logs").insert({
-              task_id: task.id,
-              action: "ROW",
-              details: `Sending row ${i + 1}/${rows.length}: ${JSON.stringify(payload)}`,
-            });
+            await taskLog("ROW", `Sending row ${i + 1}/${rows.length}: ${JSON.stringify(payload)}`);
 
             // Determine proxy route from the (possibly per-file-overridden) target connection type
             const resolvedConnType = fileTargetConnType;
@@ -1013,7 +1000,10 @@ export default function SchedulerClient({
                 .filter((m) => m.isKey)
                 .map((m) => fileMappingProfile?.target_fields.find((f) => f.id === m.targetFieldId)?.name)
                 .filter((n): n is string => !!n);
-              const skipIfExists = (task.write_mode ?? "upsert") === "create_only";
+              const writeMode = task.write_mode ?? "upsert";
+              const skipIfExists = writeMode === "create_only";
+              const skipIfNotExists = writeMode === "update_only";
+              const isFileM2M = !!(fileMappingProfile?.many_to_many && fileMappingProfile.relationship_name);
               let proxyBody: Record<string, unknown> = {
                 ivantiUrl: effectiveUrl,
                 data: payload,
@@ -1025,6 +1015,11 @@ export default function SchedulerClient({
                 ...(Object.keys(fileLinkFieldLookupFields).length > 0 && { linkFieldLookupFields: fileLinkFieldLookupFields }),
                 ...(fileUpsertKeys.length > 0 && { upsertKeys: fileUpsertKeys }),
                 ...(skipIfExists && { skipIfExists: true }),
+                ...(skipIfNotExists && { skipIfNotExists: true }),
+                ...(isFileM2M && {
+                  manyToMany: true,
+                  relationshipName: fileMappingProfile!.relationship_name,
+                }),
               };
               if (resolvedConnType === "dell") {
                 proxyRoute = "/api/dell-proxy";
@@ -1046,15 +1041,11 @@ export default function SchedulerClient({
               // ── Skipped row (create_only mode — record already existed) ──────
               if (json?.skipped === true) {
                 rowSkipCount++;
-                await supabase.from("task_logs").insert({
-                  task_id: task.id,
-                  action: "SKIP",
-                  details: `Row ${i + 1} → Skipped — ${json.reason ?? "record already exists"}`,
-                });
+                await taskLog("SKIP", `Row ${i + 1} → Skipped — ${json.reason ?? "record already exists"}`);
                 continue;
               }
 
-              if (!res.ok) rowWarnCount++;
+              if (!res.ok) rowErrorCount++;
               // Build a succinct log line with a deep-link to the Ivanti record.
               const _body = (json?.body ?? {}) as Record<string, unknown>;
               const _upsert = (json?.upsert ?? {}) as Record<string, unknown>;
@@ -1068,6 +1059,22 @@ export default function SchedulerClient({
               if (res.ok) {
                 if (_method === "PATCH") rowUpdatedCount++;
                 else rowCreatedCount++;
+
+                // In debug mode: track RecID so Undo can delete by RecID directly (no BO probe needed).
+                const _savedRecId = _recId ?? (_upsert.existingRecId as string | undefined);
+                const _resolvedBoName = json?.resolvedBoName as string | undefined;
+                if (task.debug_mode && _savedRecId && _resolvedBoName && resolvedConnType === "ivanti") {
+                  await supabase.from("task_created_records").insert({
+                    task_id:    task.id,
+                    slot_idx:   slotIdx,
+                    bo_name:    _resolvedBoName,
+                    rec_id:     _savedRecId,
+                    key_desc:   `Row ${i + 1}${_name ? ` — ${_name}` : ""}`,
+                    ivanti_url: effectiveUrl ?? "",
+                    api_key:    effectiveApiKey ?? "",
+                    tenant_id:  effectiveTenantId ?? null,
+                  });
+                }
               }
               const _typeStr = [_ciType, _subtype].filter(Boolean).join(" / ");
               const _base    = (effectiveUrl ?? "").replace(/\/$/, "");
@@ -1078,21 +1085,13 @@ export default function SchedulerClient({
                 _model,
                 _typeStr || undefined,
               ].filter(Boolean).join(" | ");
-              await supabase.from("task_logs").insert({
-                task_id: task.id,
-                action: res.ok ? "SUCCESS" : "WARN",
-                details: `${_label}${_link}`,
-              });
+              await taskLog(res.ok ? "SUCCESS" : "ERROR", `${_label}${_link}`);
 
               // Surface the Ivanti error detail when the row failed
               if (!res.ok) {
                 const _errMsg = json?.error ?? json?.message ?? json?.body?.Message ?? json?.body?.error;
                 const _errBody = _errMsg ? String(_errMsg) : JSON.stringify(json).slice(0, 400);
-                await supabase.from("task_logs").insert({
-                  task_id: task.id,
-                  action: "WARN",
-                  details: `Row ${i + 1} Ivanti response: ${_errBody}`,
-                });
+                await taskLog("ERROR", `Row ${i + 1} Ivanti response: ${_errBody}`);
               }
 
               // If the proxy had to strip validated fields on auto-retry, surface a WARN.
@@ -1103,40 +1102,24 @@ export default function SchedulerClient({
                 const strippedDesc = _strippedFields
                   .map((f: string) => `${f}="${_strippedValues?.[f] ?? ""}"`)
                   .join(", ");
-                await supabase.from("task_logs").insert({
-                  task_id: task.id,
-                  action: "WARN",
-                  details: `Row ${i + 1}: Ivanti rejected validated field(s) — stripped on retry: ${strippedDesc}. Check that these values exist in Ivanti's validation list for this CI type, or update the mapping's valid values.`,
-                });
+                await taskLog("WARN", `Row ${i + 1}: Ivanti rejected validated field(s) — stripped on retry: ${strippedDesc}. Check that these values exist in Ivanti's validation list for this CI type, or update the mapping's valid values.`);
               }
             } catch (rowErr: unknown) {
               // If the task was cancelled, don't log a spurious ERROR for the aborted row.
               if (rowErr instanceof Error && rowErr.name === "AbortError") break;
               rowErrorCount++;
-              await supabase.from("task_logs").insert({
-                task_id: task.id,
-                action: "ERROR",
-                details: `Row ${i + 1} failed: ${
-                  rowErr instanceof Error ? rowErr.message : String(rowErr)
-                }`,
-              });
+              await taskLog("ERROR", `Row ${i + 1} failed: ${
+                rowErr instanceof Error ? rowErr.message : String(rowErr)
+                }`);
             }
           }
 
           // Log filter summary if any rows were skipped
           if (filteredCount > 0) {
-            await supabase.from("task_logs").insert({
-              task_id: task.id,
-              action: "INFO",
-              details: `Row filter: ${filteredCount} of ${rows.length} rows skipped (did not match expression)`,
-            });
+            await taskLog("INFO", `Row filter: ${filteredCount} of ${rows.length} rows skipped (did not match expression)`);
           }
           if (rowSkipCount > 0) {
-            await supabase.from("task_logs").insert({
-              task_id: task.id,
-              action: "INFO",
-              details: `Write mode (create only): ${rowSkipCount} of ${rows.length} rows skipped — record already existed in target.`,
-            });
+            await taskLog("INFO", `Write mode (create only): ${rowSkipCount} of ${rows.length} rows skipped — record already existed in target.`);
           }
           } // end for (fileEntry of fileEntries)
         } else if (sourceConnType === "ivanti") {
@@ -1146,11 +1129,7 @@ export default function SchedulerClient({
 
           const srcConfig = sourceConnRawConfig as { url?: string; api_key?: string; business_object?: string; tenant_id?: string } | null;
 
-          await supabase.from("task_logs").insert({
-            task_id: task.id,
-            action: "INFO",
-            details: `Fetching records from Ivanti business object: ${srcConfig?.business_object ?? "(not set)"}`,
-          });
+          await taskLog("INFO", `Fetching records from Ivanti business object: ${srcConfig?.business_object ?? "(not set)"}`);
 
           const fetchRes = await fetch("/api/ivanti-proxy", {
             method: "PUT",
@@ -1173,27 +1152,15 @@ export default function SchedulerClient({
             count: number;
           };
 
-          await supabase.from("task_logs").insert({
-            task_id: task.id,
-            action: "INFO",
-            details: `Fetched ${count} records from Ivanti`,
-          });
+          await taskLog("INFO", `Fetched ${count} records from Ivanti`);
 
           if (rawRows.length > 0) {
             const firstRowKeys = Object.keys(rawRows[0]);
-            await supabase.from("task_logs").insert({
-              task_id: task.id,
-              action: "INFO",
-              details: `Source fields available: ${firstRowKeys.join(", ")}`,
-            });
+            await taskLog("INFO", `Source fields available: ${firstRowKeys.join(", ")}`);
           }
 
           if (mappingProfile?.filter_expression) {
-            await supabase.from("task_logs").insert({
-              task_id: task.id,
-              action: "INFO",
-              details: `Row filter expression: ${mappingProfile.filter_expression}`,
-            });
+            await taskLog("INFO", `Row filter expression: ${mappingProfile.filter_expression}`);
           }
 
           // Filter raw source rows first (filter uses source field names),
@@ -1208,10 +1175,7 @@ export default function SchedulerClient({
           });
 
           if (ivantiFilteredCount > 0) {
-            await supabase.from("task_logs").insert({
-              task_id: task.id, action: "INFO",
-              details: `Row filter: ${ivantiFilteredCount} of ${count} rows skipped (did not match expression)`,
-            });
+            await taskLog("INFO", `Row filter: ${ivantiFilteredCount} of ${count} rows skipped (did not match expression)`);
           }
 
           // Map the filtered raw rows to target field names
@@ -1277,17 +1241,11 @@ export default function SchedulerClient({
               .createSignedUrl(storagePath, 60 * 60 * 24);
             const downloadUrl = signedData?.signedUrl ?? null;
 
-            await supabase.from("task_logs").insert({
-              task_id: task.id, action: "SUCCESS",
-              details: `Export complete — ${filteredMappedRows.length} records written to "${fileName}" [${fileType.toUpperCase()}]${downloadUrl ? ` — Download: ${downloadUrl}` : ""}`,
-            });
+            await taskLog("SUCCESS", `Export complete — ${filteredMappedRows.length} records written to "${fileName}" [${fileType.toUpperCase()}]${downloadUrl ? ` — Download: ${downloadUrl}` : ""}`);
 
           } else {
             // ── Target is an API endpoint — POST each row to the proxy ──
-            await supabase.from("task_logs").insert({
-              task_id: task.id, action: "INFO",
-              details: `Sending ${filteredMappedRows.length} records to ${targetConnType.toUpperCase()} target`,
-            });
+            await taskLog("INFO", `Sending ${filteredMappedRows.length} records to ${targetConnType.toUpperCase()} target`);
 
             const tgtRaw = targetConnRawConfig as Record<string, string> | null;
             let ivantiRowErrors = 0;
@@ -1296,11 +1254,7 @@ export default function SchedulerClient({
             for (let i = 0; i < filteredMappedRows.length; i++) {
                 // ── Cancellation checkpoint ──────────────────────────
                 if (cancelledRef.current.has(task.id)) {
-                  await supabase.from("task_logs").insert({
-                    task_id: task.id,
-                    action: "WARN",
-                    details: "Task cancelled by user.",
-                  });
+                  await taskLog("WARN", "Task cancelled by user.");
                   break;
                 }
               const payload = filteredMappedRows[i];
@@ -1316,16 +1270,10 @@ export default function SchedulerClient({
                   }
                 }
                 if (nullFields.length > 0) {
-                  await supabase.from("task_logs").insert({
-                    task_id: task.id, action: "WARN",
-                    details: `Row ${i + 1}: mapped fields with no source value (will send null): ${nullFields.join(", ")}`,
-                  });
+                  await taskLog("INFO", `Row ${i + 1}: mapped fields with no source value (will send null): ${nullFields.join(", ")}`);
                 }
               }
-              await supabase.from("task_logs").insert({
-                task_id: task.id, action: "ROW",
-                details: `Sending row ${i + 1}/${filteredMappedRows.length}: ${JSON.stringify(payload)}`,
-              });
+              await taskLog("ROW", `Sending row ${i + 1}/${filteredMappedRows.length}: ${JSON.stringify(payload)}`);
               try {
                 let proxyRoute = "/api/ivanti-proxy";
                 // Collect target field names the user has explicitly marked as Ivanti link fields,
@@ -1346,16 +1294,25 @@ export default function SchedulerClient({
                   .filter((m) => m.isKey)
                   .map((m) => mappingProfile?.target_fields.find((f) => f.id === m.targetFieldId)?.name)
                   .filter((n): n is string => !!n);
+                const isM2M = !!(mappingProfile?.many_to_many && mappingProfile.relationship_name);
                 let proxyBody: Record<string, unknown> = {
                   ivantiUrl: tgtRaw?.url,
                   data: payload,
                   apiKey: tgtRaw?.api_key,
-                  businessObject: tgtRaw?.business_object,
+                  // M2M profiles carry their primary BO in target_business_object;
+                  // normal profiles use the target connection's business_object field.
+                  businessObject: isM2M
+                    ? (mappingProfile!.target_business_object ?? tgtRaw?.business_object)
+                    : tgtRaw?.business_object,
                   tenantId: tgtRaw?.tenant_id,
                   ...(linkFieldNames.length > 0 && { linkFieldNames }),
                   ...(Object.keys(linkFieldBoNames).length > 0 && { linkFieldBoNames }),
                   ...(Object.keys(linkFieldLookupFields).length > 0 && { linkFieldLookupFields }),
                   ...(upsertKeys.length > 0 && { upsertKeys }),
+                  ...(isM2M && {
+                    manyToMany: true,
+                    relationshipName: mappingProfile!.relationship_name,
+                  }),
                 };
                 if (targetConnType === "dell") {
                   proxyRoute = "/api/dell-proxy";
@@ -1371,17 +1328,11 @@ export default function SchedulerClient({
                   body: JSON.stringify(proxyBody),
                 });
                 const json = await res.json();
-                if (!res.ok) ivantiRowWarns++;
-                await supabase.from("task_logs").insert({
-                  task_id: task.id, action: res.ok ? "SUCCESS" : "WARN",
-                  details: `Row ${i + 1} response: ${JSON.stringify(json)}`,
-                });
+                if (!res.ok) ivantiRowErrors++;
+                await taskLog(res.ok ? "SUCCESS" : "ERROR", `Row ${i + 1} response: ${JSON.stringify(json)}`);
               } catch (rowErr: unknown) {
                 ivantiRowErrors++;
-                await supabase.from("task_logs").insert({
-                  task_id: task.id, action: "ERROR",
-                  details: `Row ${i + 1} failed: ${rowErr instanceof Error ? rowErr.message : String(rowErr)}`,
-                });
+                await taskLog("ERROR", `Row ${i + 1} failed: ${rowErr instanceof Error ? rowErr.message : String(rowErr)}`);
               }
             }
             rowErrorCount += ivantiRowErrors;
@@ -1404,14 +1355,8 @@ export default function SchedulerClient({
           const neuronsBaseNorm = (srcNeurons?.base_url ?? "").replace(/\/$/, "");
           const neuronsInventoryUrl = (neuronsBaseNorm.includes(neuronsApiPath) ? neuronsBaseNorm : neuronsBaseNorm + neuronsApiPath) + `/${neuronsDataset}`;
 
-          await supabase.from("task_logs").insert({
-            task_id: task.id, action: "INFO",
-            details: `Fetching Ivanti Neurons ${neuronsDataset} inventory records`,
-          });
-          await supabase.from("task_logs").insert({
-            task_id: task.id, action: "INFO",
-            details: `Neurons API URL: ${neuronsInventoryUrl}`,
-          });
+          await taskLog("INFO", `Fetching Ivanti Neurons ${neuronsDataset} inventory records`);
+          await taskLog("INFO", `Neurons API URL: ${neuronsInventoryUrl}`);
 
           const neuronsRes = await fetch("/api/ivanti-neurons-proxy", {
             method: "PUT",
@@ -1438,24 +1383,15 @@ export default function SchedulerClient({
             count: number;
           };
 
-          await supabase.from("task_logs").insert({
-            task_id: task.id, action: "INFO",
-            details: `Fetched ${neuronsCount} Neurons ${neuronsDataset} record(s)`,
-          });
+          await taskLog("INFO", `Fetched ${neuronsCount} Neurons ${neuronsDataset} record(s)`);
 
           if (neuronsRawRows.length > 0) {
             const firstKeys = Object.keys(neuronsRawRows[0]);
-            await supabase.from("task_logs").insert({
-              task_id: task.id, action: "INFO",
-              details: `Source fields available: ${firstKeys.join(", ")}`,
-            });
+            await taskLog("INFO", `Source fields available: ${firstKeys.join(", ")}`);
           }
 
           if (mappingProfile?.filter_expression) {
-            await supabase.from("task_logs").insert({
-              task_id: task.id, action: "INFO",
-              details: `Row filter expression: ${mappingProfile.filter_expression}`,
-            });
+            await taskLog("INFO", `Row filter expression: ${mappingProfile.filter_expression}`);
           }
 
           let neuronsFilteredCount = 0;
@@ -1468,10 +1404,7 @@ export default function SchedulerClient({
           });
 
           if (neuronsFilteredCount > 0) {
-            await supabase.from("task_logs").insert({
-              task_id: task.id, action: "INFO",
-              details: `Row filter: ${neuronsFilteredCount} of ${neuronsCount} rows skipped (did not match expression)`,
-            });
+            await taskLog("INFO", `Row filter: ${neuronsFilteredCount} of ${neuronsCount} rows skipped (did not match expression)`);
           }
 
           const neuronsFilteredMapped = neuronsFilteredRaw.map((row) =>
@@ -1533,29 +1466,19 @@ export default function SchedulerClient({
               .createSignedUrl(storagePath, 60 * 60 * 24);
             const downloadUrl = signedData?.signedUrl ?? null;
 
-            await supabase.from("task_logs").insert({
-              task_id: task.id, action: "SUCCESS",
-              details: `Export complete — ${neuronsFilteredMapped.length} records written to "${fileName}" [${fileType.toUpperCase()}]${downloadUrl ? ` — Download: ${downloadUrl}` : ""}`,
-            });
+            await taskLog("SUCCESS", `Export complete — ${neuronsFilteredMapped.length} records written to "${fileName}" [${fileType.toUpperCase()}]${downloadUrl ? ` — Download: ${downloadUrl}` : ""}`);
 
           } else if (targetConnType === "ivanti") {
             // Push each Neurons record to an Ivanti ITSM business object
             const tgtRaw = targetConnRawConfig as Record<string, string> | null;
-            await supabase.from("task_logs").insert({
-              task_id: task.id, action: "INFO",
-              details: `Sending ${neuronsFilteredMapped.length} records to Ivanti ITSM target`,
-            });
+            await taskLog("INFO", `Sending ${neuronsFilteredMapped.length} records to Ivanti ITSM target`);
 
             let nRowErrors = 0;
             let nRowWarns = 0;
             for (let i = 0; i < neuronsFilteredMapped.length; i++) {
                 // ── Cancellation checkpoint ──────────────────────────
                 if (cancelledRef.current.has(task.id)) {
-                  await supabase.from("task_logs").insert({
-                    task_id: task.id,
-                    action: "WARN",
-                    details: "Task cancelled by user.",
-                  });
+                  await taskLog("WARN", "Task cancelled by user.");
                   break;
                 }
               const payload = neuronsFilteredMapped[i];
@@ -1573,37 +1496,24 @@ export default function SchedulerClient({
                   }),
                 });
                 const json = await res.json();
-                if (!res.ok) nRowWarns++;
-                await supabase.from("task_logs").insert({
-                  task_id: task.id, action: res.ok ? "SUCCESS" : "WARN",
-                  details: `Row ${i + 1} response: ${JSON.stringify(json)}`,
-                });
+                if (!res.ok) nRowErrors++;
+                await taskLog(res.ok ? "SUCCESS" : "ERROR", `Row ${i + 1} response: ${JSON.stringify(json)}`);
               } catch (rowErr: unknown) {
                 nRowErrors++;
-                await supabase.from("task_logs").insert({
-                  task_id: task.id, action: "ERROR",
-                  details: `Row ${i + 1} failed: ${rowErr instanceof Error ? rowErr.message : String(rowErr)}`,
-                });
+                await taskLog("ERROR", `Row ${i + 1} failed: ${rowErr instanceof Error ? rowErr.message : String(rowErr)}`);
               }
             }
             rowErrorCount += nRowErrors;
             rowWarnCount  += nRowWarns;
 
           } else {
-            await supabase.from("task_logs").insert({
-              task_id: task.id, action: "INFO",
-              details: `Neurons source → ${targetConnType} target: no handler configured for this target type`,
-            });
+            await taskLog("INFO", `Neurons source → ${targetConnType} target: no handler configured for this target type`);
           }
 
         } else {
-          await supabase.from("task_logs").insert({
-            task_id: task.id,
-            action: "INFO",
-            details: sourceConnType
-              ? `Source is a ${sourceConnType.toUpperCase()} endpoint — no handler configured for this source type`
-              : "No source file attached — task completed with no data sent",
-          });
+          await taskLog("INFO", sourceConnType
+            ? `Source is a ${sourceConnType.toUpperCase()} endpoint — no handler configured for this source type`
+            : "No source file attached — task completed with no data sent");
         }
 
         } // end for (slot of slots)
@@ -1622,6 +1532,13 @@ export default function SchedulerClient({
           : rowWarnCount > 0
           ? "completed_with_warnings"
           : "completed";
+        resolvedFinalStatus = finalStatus;
+        // Record the terminal status so fetchTasks() (in both finally and the
+        // polling loop) won't overwrite the badge with stale "active" DB data.
+        recentlyFinishedRef.current.set(task.id, {
+          status: finalStatus as import("@/lib/types").TaskStatus,
+          finishedAt: Date.now(),
+        });
 
         const statusLabel = wasCancelled
           ? "Cancelled by user"
@@ -1657,18 +1574,10 @@ export default function SchedulerClient({
             summaryParts.push(`Token Cost: $${tokenCost.toFixed(4)}`);
           }
 
-          await supabase.from("task_logs").insert({
-            task_id: task.id,
-            action: "SUMMARY",
-            details: summaryParts.join(" | "),
-          });
+          await taskLog("SUMMARY", summaryParts.join(" | "));
         }
 
-        await supabase.from("task_logs").insert({
-          task_id: task.id,
-          action: "COMPLETED",
-          details: `${statusLabel} at ${new Date().toISOString()}`,
-        });
+        await taskLog("COMPLETED", `${statusLabel} at ${new Date().toISOString()}`);
 
         // Always store the final run result so the user can see it.
         // For recurring tasks also advance start_date_time to the next interval;
@@ -1684,11 +1593,7 @@ export default function SchedulerClient({
             .from("scheduled_tasks")
             .update({ status: finalStatus, start_date_time: next.toISOString() })
             .eq("id", task.id);
-          await supabase.from("task_logs").insert({
-            task_id: task.id,
-            action: "INFO",
-            details: `Next run scheduled for ${next.toLocaleString()} (${task.recurrence})`,
-          });
+          await taskLog("INFO", `Next run scheduled for ${next.toLocaleString()} (${task.recurrence})`);
         } else if (!wasCancelled) {
           await supabase
             .from("scheduled_tasks")
@@ -1706,11 +1611,7 @@ export default function SchedulerClient({
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[Execute] Task "${task.task_name}" failed:`, msg);
 
-        await supabase.from("task_logs").insert({
-          task_id: task.id,
-          action: "ERROR",
-          details: msg,
-        });
+        await taskLog("ERROR", msg);
 
         await supabase
           .from("scheduled_tasks")
@@ -1731,6 +1632,13 @@ export default function SchedulerClient({
           return next;
         });
         await fetchTasks();
+        // Re-apply the known final status after fetchTasks — fetchTasks may
+        // return stale "active" data if the DB update hasn't propagated yet.
+        if (resolvedFinalStatus) {
+          setTasks((prev) =>
+            prev.map((t) => t.id === task.id ? { ...t, status: resolvedFinalStatus! as import("@/lib/types").TaskStatus } : t)
+          );
+        }
       }
     },
     [supabase, fetchTasks]
@@ -2074,6 +1982,202 @@ export default function SchedulerClient({
     setTasks((p) => p.filter((t) => t.id !== id));
   }
 
+  // ── Reset: delete all Ivanti records in reverse slot order ───────────────
+  const resetTask = useCallback(async (task: ScheduledTask) => {
+    if (!window.confirm(`This will DELETE all Ivanti records created by "${task.task_name}" in reverse slot order. Continue?`)) return;
+    if (executingRef.current.has(task.id)) { alert("Task is currently running. Cancel it first."); return; }
+    executingRef.current.add(task.id);
+    setResetingTasks((p) => new Set(p).add(task.id));
+    const startTime = Date.now();
+
+    try {
+      await supabase.from("task_logs").delete().eq("task_id", task.id);
+      await supabase.from("task_logs").insert({
+        task_id: task.id, action: "STARTED",
+        details: `Reset of "${task.task_name}" started at ${new Date().toISOString()}`,
+      });
+
+      let deletedCount = 0;
+      let skippedCount = 0;
+      let errorCount = 0;
+
+      // ── Fast path: delete by stored RecIDs (set during the last run) ─────────
+      // This is reliable because it uses the exact RecID returned by Ivanti at
+      // create/update time — no BO name probe, no upsert key lookup, no cache.
+      const { data: storedRecords } = await supabase
+        .from("task_created_records")
+        .select("*")
+        .eq("task_id", task.id)
+        .order("slot_idx", { ascending: false })
+        .order("created_at", { ascending: false });
+
+      if (storedRecords && storedRecords.length > 0) {
+        await supabase.from("task_logs").insert({
+          task_id: task.id, action: "INFO",
+          details: `Deleting ${storedRecords.length} tracked record(s) by RecID (fast path)`,
+        });
+
+        for (const record of storedRecords) {
+          const { bo_name, rec_id, ivanti_url, api_key, tenant_id, key_desc } = record as {
+            id: string; bo_name: string; rec_id: string; ivanti_url: string;
+            api_key: string; tenant_id: string | null; key_desc: string | null;
+          };
+
+          try {
+            const proxyRes = await fetch("/api/ivanti-proxy", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                ivantiUrl:    ivanti_url,
+                apiKey:       api_key,
+                tenantId:     tenant_id ?? undefined,
+                data:         {},
+                method:       "DELETE",
+                directRecId:  rec_id,
+                directBoName: bo_name,
+              }),
+            });
+            const json = await proxyRes.json();
+            if (json.deleted) {
+              deletedCount++;
+              await supabase.from("task_logs").insert({
+                task_id: task.id, action: "INFO",
+                details: `Deleted: ${key_desc ?? rec_id}`,
+              });
+              await supabase.from("task_created_records").delete().eq("id", record.id);
+            } else if (json.skipped) {
+              skippedCount++;
+              await supabase.from("task_created_records").delete().eq("id", record.id);
+            } else {
+              errorCount++;
+              await supabase.from("task_logs").insert({
+                task_id: task.id, action: "WARN",
+                details: `Delete error [${key_desc ?? rec_id}]: ${JSON.stringify(json).slice(0, 300)}`,
+              });
+            }
+          } catch (e) {
+            errorCount++;
+            await supabase.from("task_logs").insert({
+              task_id: task.id, action: "WARN",
+              details: `Delete failed [${key_desc ?? rec_id}]: ${e instanceof Error ? e.message : String(e)}`,
+            });
+          }
+        }
+
+      } else {
+        // ── Fallback: upsert-key lookup approach (for tasks run before RecID tracking) ──
+        await supabase.from("task_logs").insert({
+          task_id: task.id, action: "INFO",
+          details: `No tracked RecIDs found — falling back to upsert-key lookup`,
+        });
+
+        const rawSlots = (task.mapping_slots ?? []) as MappingSlot[];
+        const slots: MappingSlot[] = rawSlots.length > 0
+          ? rawSlots
+          : [{ id: "default-reset", mapping_profile_id: task.mapping_profile_id ?? null }];
+        const reversedSlots = [...slots].reverse();
+
+        for (let slotIdx = 0; slotIdx < reversedSlots.length; slotIdx++) {
+          const slot = reversedSlots[slotIdx];
+          if (!slot.mapping_profile_id) continue;
+
+          const { data: mpData } = await supabase
+            .from("mapping_profiles").select("*").eq("id", slot.mapping_profile_id).single();
+          if (!mpData) continue;
+          const mappingProfile = mpData as MappingProfile;
+          const slotLabel = slot.label ?? mappingProfile.name;
+
+          await supabase.from("task_logs").insert({
+            task_id: task.id, action: "INFO",
+            details: `── Reset ${slotIdx + 1}/${reversedSlots.length}: ${slotLabel} ──`,
+          });
+
+          const srcConnId = mappingProfile.source_connection_id;
+          if (!srcConnId) continue;
+          const { data: srcConnData } = await supabase.from("endpoint_connections").select("*").eq("id", srcConnId).single();
+          if (!srcConnData) continue;
+          const srcConn = srcConnData as EndpointConnection;
+          if (srcConn.type !== "file") continue;
+          const srcConfig = srcConn.config as { file_path?: string; file_name?: string };
+
+          const taskDir = task.source_file_path?.trim().replace(/\/$/, "") ?? null;
+          const connFileName = srcConfig.file_name ?? null;
+          const connFilePath = srcConfig.file_path ?? null;
+          const resolvedSourceFilePath = connFilePath || (taskDir && connFileName ? `${taskDir}/${connFileName}` : null);
+          if (!resolvedSourceFilePath) continue;
+
+          const { data: fileData, error: dlError } = await supabase.storage.from("task_files").download(resolvedSourceFilePath);
+          if (dlError || !fileData) {
+            await supabase.from("task_logs").insert({ task_id: task.id, action: "WARN", details: `File not found: ${resolvedSourceFilePath} — skipping slot` });
+            continue;
+          }
+          const wb = XLSX.read(await fileData.arrayBuffer(), { type: "array" });
+          const sheetName = wb.SheetNames[0];
+          const rows: Record<string, unknown>[] = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: null });
+          if (rows.length === 0) continue;
+
+          const tgtConnId = task.target_connection_id ?? mappingProfile.target_connection_id;
+          if (!tgtConnId) continue;
+          const { data: tgtConnData } = await supabase.from("endpoint_connections").select("*").eq("id", tgtConnId).single();
+          if (!tgtConnData) continue;
+          const tgtConn = tgtConnData as EndpointConnection;
+          if (tgtConn.type !== "ivanti") {
+            await supabase.from("task_logs").insert({ task_id: task.id, action: "INFO", details: `Target is ${tgtConn.type} — skipping DELETE for this slot` });
+            continue;
+          }
+          const ivCfg = tgtConn.config as import("@/lib/types").IvantiConfig;
+          const targetBO = mappingProfile.target_business_object ?? ivCfg.business_object;
+
+          const keyTargetFieldNames = mappingProfile.mappings
+            .filter((m) => m.isKey)
+            .map((m) => mappingProfile.target_fields.find((f) => f.id === m.targetFieldId)?.name)
+            .filter((n): n is string => !!n);
+          if (keyTargetFieldNames.length === 0) keyTargetFieldNames.push("Name");
+
+          for (const row of rows) {
+            const mapped = applyMappingProfile(row, mappingProfile);
+            const proxyBody: Record<string, unknown> = {
+              ivantiUrl: ivCfg.url,
+              data: mapped,
+              apiKey: ivCfg.api_key,
+              businessObject: targetBO,
+              upsertKeys: keyTargetFieldNames,
+              method: "DELETE",
+            };
+            if (ivCfg.tenant_id) proxyBody.tenantId = ivCfg.tenant_id;
+
+            try {
+              const res = await fetch("/api/ivanti-proxy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(proxyBody) });
+              const json = await res.json();
+              if (json.deleted) {
+                deletedCount++;
+                await supabase.from("task_logs").insert({ task_id: task.id, action: "INFO", details: `Deleted: ${json.keyDesc}` });
+              } else if (json.skipped) {
+                skippedCount++;
+              } else {
+                errorCount++;
+                await supabase.from("task_logs").insert({ task_id: task.id, action: "WARN", details: `Delete error: ${JSON.stringify(json).slice(0, 400)}` });
+              }
+            } catch (e) {
+              errorCount++;
+              await supabase.from("task_logs").insert({ task_id: task.id, action: "WARN", details: `Delete request failed: ${e instanceof Error ? e.message : String(e)}` });
+            }
+          }
+        }
+      }
+
+      const duration = Math.round((Date.now() - startTime) / 1000);
+      await supabase.from("task_logs").insert({
+        task_id: task.id, action: "SUMMARY",
+        details: `Reset complete | Duration: ${duration}s | Deleted: ${deletedCount} | Not found: ${skippedCount} | Errors: ${errorCount}`,
+      });
+    } finally {
+      executingRef.current.delete(task.id);
+      setResetingTasks((p) => { const n = new Set(p); n.delete(task.id); return n; });
+      await fetchTasks();
+    }
+  }, [supabase, fetchTasks]);
+
   // ── DateTime quick-pick helper ────────────────────────────
   function toDateTimeLocal(date: Date): string {
     const pad = (n: number) => String(n).padStart(2, "0");
@@ -2094,10 +2198,11 @@ export default function SchedulerClient({
       mappingSlots: ((task.mapping_slots ?? []) as MappingSlot[]).length > 0
         ? (task.mapping_slots as MappingSlot[])
         : [{ id: "slot-edit-0", mapping_profile_id: task.mapping_profile_id ?? null }],
-      writeMode: (task.write_mode ?? "upsert") as "upsert" | "create_only",
+      writeMode: (task.write_mode ?? "upsert") as "upsert" | "create_only" | "update_only",
       customerId: task.customer_id ?? null,
       targetConnectionId: task.target_connection_id ?? null,
       sourceDirectory: task.source_file_path ?? "",
+      debugMode: task.debug_mode ?? false,
     });
   }
 
@@ -2128,6 +2233,7 @@ export default function SchedulerClient({
           status: "waiting",
           write_mode: editForm.writeMode ?? "upsert",
           customer_id: editForm.customerId ?? null,
+          debug_mode: editForm.debugMode ?? false,
         })
         .eq("id", editTask.id)
         .select("id");
@@ -2311,23 +2417,57 @@ export default function SchedulerClient({
 
 {/* Mapping Profiles — multi-slot */}
                 <div className="md:col-span-2">
-                    <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                      <GitMerge className="w-3 h-3 text-purple-400" />
-                      Mapping Profiles
+                    <div className="flex items-center mb-2">
+                      <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-1.5 flex-1">
+                        <GitMerge className="w-3 h-3 text-purple-400" />
+                        Mapping Profiles
+                        {form.mappingSlots.length > 1 && (
+                          <span className="ml-1 text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded-full">
+                            {form.mappingSlots.length} slots
+                          </span>
+                        )}
+                      </label>
                       {form.mappingSlots.length > 1 && (
-                        <span className="ml-1 text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded-full">
-                          {form.mappingSlots.length} slots
-                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const allEnabled = form.mappingSlots.every((s) => s.enabled !== false);
+                            setForm((p) => ({
+                              ...p,
+                              mappingSlots: p.mappingSlots.map((s) => ({ ...s, enabled: !allEnabled })),
+                            }));
+                          }}
+                          className="text-[11px] text-gray-500 hover:text-purple-400 transition-colors"
+                        >
+                          {form.mappingSlots.every((s) => s.enabled !== false) ? "Disable All" : "Enable All"}
+                        </button>
                       )}
-                    </label>
+                    </div>
                     <div className="space-y-2">
                       {form.mappingSlots.map((slot, slotIdx) => (
-                        <div key={slot.id} className="flex gap-2 items-start">
-                          {/* Slot number */}
+                        <div key={slot.id} className={`flex gap-2 items-start transition-opacity ${slot.enabled === false ? "opacity-40" : ""}`}>
+                          {/* Enable/disable toggle + slot number */}
                           {form.mappingSlots.length > 1 && (
-                            <span className="text-xs text-gray-600 w-5 shrink-0 text-center font-mono pt-3.5">
-                              {slotIdx + 1}.
-                            </span>
+                            <div className="flex flex-col items-center gap-0.5 shrink-0 pt-2.5">
+                              <button
+                                type="button"
+                                onClick={() => setForm((p) => ({
+                                  ...p,
+                                  mappingSlots: p.mappingSlots.map((s, i) =>
+                                    i === slotIdx ? { ...s, enabled: s.enabled === false ? true : false } : s
+                                  ),
+                                }))}
+                                title={slot.enabled === false ? "Enable slot" : "Disable slot"}
+                                className={`w-4 h-4 rounded-full border-2 transition-all flex items-center justify-center ${
+                                  slot.enabled === false
+                                    ? "border-gray-600 bg-transparent"
+                                    : "border-emerald-500 bg-emerald-500/30"
+                                }`}
+                              >
+                                {slot.enabled !== false && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 block" />}
+                              </button>
+                              <span className="text-[11px] text-indigo-400 font-bold font-mono leading-none">{slotIdx + 1}</span>
+                            </div>
                           )}
                           {/* Select + optional label stacked */}
                           <div className="flex-1 min-w-0 flex flex-col gap-1">
@@ -2457,15 +2597,33 @@ export default function SchedulerClient({
                     onChange={(e) =>
                       setForm((p) => ({
                         ...p,
-                        writeMode: e.target.value as "upsert" | "create_only",
+                        writeMode: e.target.value as "upsert" | "create_only" | "update_only",
                       }))
                     }
                     className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                   >
                     <option value="upsert">Upsert — create or update</option>
                     <option value="create_only">Create only — skip if exists</option>
+                    <option value="update_only">Update only — skip if not exists</option>
                   </select>
                 </div>
+
+                {/* Debug Mode — admin only */}
+                {isAdmin && (
+                  <div className="flex items-center justify-between p-3 bg-gray-800/60 border border-gray-700 rounded-xl">
+                    <div>
+                      <div className="text-sm font-medium text-gray-200">Debug Mode</div>
+                      <div className="text-xs text-gray-500 mt-0.5">Tracks RecIDs on each run, enabling the Undo button to delete by RecID directly.</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setForm((p) => ({ ...p, debugMode: !p.debugMode }))}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${form.debugMode ? "bg-orange-500" : "bg-gray-600"}`}
+                    >
+                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${form.debugMode ? "translate-x-6" : "translate-x-1"}`} />
+                    </button>
+                  </div>
+                )}
 
                 {/* Source Directory */}
                 <div>
@@ -2726,7 +2884,7 @@ export default function SchedulerClient({
 
                               <button
                                 onClick={() => executeTask(task)}
-                                disabled={isRunning}
+                                disabled={isRunning || resetingTasks.has(task.id)}
                                 className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 text-emerald-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
                               >
                                 {isRunning ? (
@@ -2736,6 +2894,43 @@ export default function SchedulerClient({
                                 )}
                                 {isRunning ? "Running…" : "Run Now"}
                               </button>
+
+                              {task.debug_mode && isAdmin && (
+                                <>
+                                  <button
+                                    onClick={() => setExpandedDebug((prev) => {
+                                      const next = new Set(prev);
+                                      if (next.has(task.id)) next.delete(task.id);
+                                      else next.add(task.id);
+                                      return next;
+                                    })}
+                                    className={`flex items-center gap-1.5 px-3 py-1.5 border rounded-lg text-xs font-medium transition-all ${
+                                      expandedDebug.has(task.id)
+                                        ? "bg-orange-500/20 border-orange-500/40 text-orange-300"
+                                        : "bg-orange-500/10 hover:bg-orange-500/20 border-orange-500/25 text-orange-400"
+                                    }`}
+                                    title="Debug mode — click to show Undo"
+                                  >
+                                    <Bug className="w-3 h-3" />
+                                    Debug
+                                  </button>
+                                  {expandedDebug.has(task.id) && (
+                                    <button
+                                      onClick={() => resetTask(task)}
+                                      disabled={isRunning || resetingTasks.has(task.id) || (trackedCounts.get(task.id) ?? 0) === 0}
+                                      className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-400 rounded-lg text-xs font-medium transition-all disabled:opacity-40"
+                                      title={(trackedCounts.get(task.id) ?? 0) === 0 ? "No records to undo — run the task first in debug mode" : "Undo: delete all Ivanti records created by this run"}
+                                    >
+                                      {resetingTasks.has(task.id) ? (
+                                        <Loader2 className="w-3 h-3 animate-spin" />
+                                      ) : (
+                                        <Trash2 className="w-3 h-3" />
+                                      )}
+                                      {resetingTasks.has(task.id) ? "Undoing…" : `Undo (${trackedCounts.get(task.id) ?? 0})`}
+                                    </button>
+                                  )}
+                                </>
+                              )}
 
                               {(() => {
                                 const isCancelling = cancellingTasks.has(task.id);
@@ -2915,32 +3110,38 @@ export default function SchedulerClient({
                                 );
                               }
 
+                              // Extract optional [Sxx/yy] slot prefix from details for badge rendering.
+                              const rawDetails = log.details ?? "";
+                              const slotMatch  = rawDetails.match(/^\[S(\d+)\/(\d+)\]\s*/);
+                              const slotNum    = slotMatch ? slotMatch[1] : null;
+                              const slotTotal  = slotMatch ? slotMatch[2] : null;
+                              const bodyText   = slotMatch ? rawDetails.slice(slotMatch[0].length) : rawDetails;
+
                               return (
-                                <div key={log.id} className="flex gap-3">
-                                  <span className="text-gray-600 shrink-0">
-                                    {new Date(
-                                      log.created_at
-                                    ).toLocaleTimeString()}
+                                <div key={log.id} className="flex gap-2 items-baseline">
+                                  <span className="text-gray-600 shrink-0 text-[11px]">
+                                    {new Date(log.created_at).toLocaleTimeString()}
                                   </span>
-                                  <span
-                                    className={`shrink-0 font-bold ${color}`}
-                                  >
+                                  <span className={`shrink-0 font-bold text-[11px] ${color}`}>
                                     [{log.action}]
                                   </span>
-                                  <span className="text-gray-300 break-all">
+                                  {slotNum && (
+                                    <span className="shrink-0 inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-indigo-900/60 text-indigo-300 border border-indigo-700/50 leading-none">
+                                      {slotNum}<span className="text-indigo-500 font-normal">/{slotTotal}</span>
+                                    </span>
+                                  )}
+                                  <span className="text-gray-300 break-all text-[12px]">
                                     {(() => {
                                       // Render clickable links for "— Download: <url>" and "— Details: <url>".
-                                      // All other text (including bare URLs in INFO lines) stays as plain text.
-                                      const details = log.details ?? "";
-                                      const lnkMatch = details.match(/— (Download|Details): (https?:\/\/\S+)/);
+                                      const lnkMatch = bodyText.match(/— (Download|Details): (https?:\/\/\S+)/);
                                       if (lnkMatch) {
                                         const fullMarker = lnkMatch[0];
                                         const label = lnkMatch[1] === "Download" ? "Download" : "View Record";
                                         const url = lnkMatch[2];
-                                        const before = details.slice(0, details.indexOf(fullMarker));
+                                        const before = bodyText.slice(0, bodyText.indexOf(fullMarker));
                                         return <>{before}<a href={url} target="_blank" rel="noopener noreferrer" className="underline text-indigo-400 hover:text-indigo-300">{label}</a></>;
                                       }
-                                      return <>{details}</>;
+                                      return <>{bodyText}</>;
                                     })()}
                                   </span>
                                 </div>
@@ -3102,12 +3303,46 @@ export default function SchedulerClient({
                 {/* Run Now */}
                 <button
                   onClick={() => fsTask && executeTask(fsTask)}
-                  disabled={fsIsRunning}
+                  disabled={fsIsRunning || (fsTask ? resetingTasks.has(fsTask.id) : false)}
                   className="flex items-center gap-1 px-2.5 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 text-emerald-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
                 >
                   {fsIsRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
                   {fsIsRunning ? "Running…" : "Run Now"}
                 </button>
+
+                {/* Debug — debug mode only, admin only */}
+                {fsTask?.debug_mode && isAdmin && (
+                  <>
+                    <button
+                      onClick={() => fsTask && setExpandedDebug((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(fsTask.id)) next.delete(fsTask.id);
+                        else next.add(fsTask.id);
+                        return next;
+                      })}
+                      className={`flex items-center gap-1 px-2.5 py-1 border rounded-lg text-xs font-medium transition-all ${
+                        fsTask && expandedDebug.has(fsTask.id)
+                          ? "bg-orange-500/20 border-orange-500/40 text-orange-300"
+                          : "bg-orange-500/10 hover:bg-orange-500/20 border-orange-500/25 text-orange-400"
+                      }`}
+                      title="Debug mode — click to show Undo"
+                    >
+                      <Bug className="w-3 h-3" />
+                      Debug
+                    </button>
+                    {fsTask && expandedDebug.has(fsTask.id) && (
+                      <button
+                        onClick={() => fsTask && resetTask(fsTask)}
+                        disabled={fsIsRunning || (fsTask ? resetingTasks.has(fsTask.id) : false) || (fsTask ? (trackedCounts.get(fsTask.id) ?? 0) === 0 : true)}
+                        className="flex items-center gap-1 px-2.5 py-1 bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-400 rounded-lg text-xs font-medium transition-all disabled:opacity-40"
+                        title={(fsTask && (trackedCounts.get(fsTask.id) ?? 0) === 0) ? "No records to undo — run the task first in debug mode" : "Undo: delete all Ivanti records created by this run"}
+                      >
+                        {fsTask && resetingTasks.has(fsTask.id) ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                        {fsTask && resetingTasks.has(fsTask.id) ? "Undoing…" : `Undo (${fsTask ? (trackedCounts.get(fsTask.id) ?? 0) : 0})`}
+                      </button>
+                    )}
+                  </>
+                )}
 
                 {/* Cancel */}
                 <button
@@ -3358,23 +3593,57 @@ export default function SchedulerClient({
 
 {/* Mapping Profiles — multi-slot */}
                 <div className="md:col-span-2">
-                    <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                      <GitMerge className="w-3 h-3 text-purple-400" />
-                      Mapping Profiles
+                    <div className="flex items-center mb-2">
+                      <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-1.5 flex-1">
+                        <GitMerge className="w-3 h-3 text-purple-400" />
+                        Mapping Profiles
+                        {editForm.mappingSlots.length > 1 && (
+                          <span className="ml-1 text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded-full">
+                            {editForm.mappingSlots.length} slots
+                          </span>
+                        )}
+                      </label>
                       {editForm.mappingSlots.length > 1 && (
-                        <span className="ml-1 text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded-full">
-                          {editForm.mappingSlots.length} slots
-                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const allEnabled = editForm.mappingSlots.every((s) => s.enabled !== false);
+                            setEditForm((p) => ({
+                              ...p,
+                              mappingSlots: p.mappingSlots.map((s) => ({ ...s, enabled: !allEnabled })),
+                            }));
+                          }}
+                          className="text-[11px] text-gray-500 hover:text-purple-400 transition-colors"
+                        >
+                          {editForm.mappingSlots.every((s) => s.enabled !== false) ? "Disable All" : "Enable All"}
+                        </button>
                       )}
-                    </label>
+                    </div>
                     <div className="space-y-2">
                       {editForm.mappingSlots.map((slot, slotIdx) => (
-                        <div key={slot.id} className="flex gap-2 items-start">
-                          {/* Slot number */}
+                        <div key={slot.id} className={`flex gap-2 items-start transition-opacity ${slot.enabled === false ? "opacity-40" : ""}`}>
+                          {/* Enable/disable toggle + slot number */}
                           {editForm.mappingSlots.length > 1 && (
-                            <span className="text-xs text-gray-600 w-5 shrink-0 text-center font-mono pt-3.5">
-                              {slotIdx + 1}.
-                            </span>
+                            <div className="flex flex-col items-center gap-0.5 shrink-0 pt-2.5">
+                              <button
+                                type="button"
+                                onClick={() => setEditForm((p) => ({
+                                  ...p,
+                                  mappingSlots: p.mappingSlots.map((s, i) =>
+                                    i === slotIdx ? { ...s, enabled: s.enabled === false ? true : false } : s
+                                  ),
+                                }))}
+                                title={slot.enabled === false ? "Enable slot" : "Disable slot"}
+                                className={`w-4 h-4 rounded-full border-2 transition-all flex items-center justify-center ${
+                                  slot.enabled === false
+                                    ? "border-gray-600 bg-transparent"
+                                    : "border-emerald-500 bg-emerald-500/30"
+                                }`}
+                              >
+                                {slot.enabled !== false && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 block" />}
+                              </button>
+                              <span className="text-[11px] text-indigo-400 font-bold font-mono leading-none">{slotIdx + 1}</span>
+                            </div>
                           )}
                           {/* Select + optional label stacked */}
                           <div className="flex-1 min-w-0 flex flex-col gap-1">

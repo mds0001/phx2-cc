@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## ⚠️ File Writing Rules (CRITICAL — READ FIRST)
+
+- **ALWAYS** use the `Write` or `Edit` tools to create and modify files
+- **NEVER** use bash `cat >>`, heredocs, or `echo` commands to write file content — these cause file truncation and corruption on the Windows/Linux VM boundary
+- **NEVER** truncate file content with placeholders like `// ... rest of file` or `// existing code` — always write the complete content
+- When editing an existing file: **Read it first**, then make targeted changes with the `Edit` tool
+- When rewriting a file completely: use the `Write` tool with the full content
+
 ## Commands
 
 ```bash
@@ -78,12 +86,6 @@ When a task runs in `SchedulerClient`, it reads Excel source data, applies the m
 - Icons from `lucide-react`
 - Tailwind CSS for all styling
 - No UI component library — all components are hand-rolled
-
-## File Writing Rules
-
-- ALWAYS use the Write or Edit tools to create and modify files — never use bash heredocs or echo commands to write file content
-- Never truncate file content with placeholders like `// ... rest of file` or `// existing code`
-- When editing a file, read it first, then make targeted edits with the Edit tool
 
 ## Shell Command Formatting
 
