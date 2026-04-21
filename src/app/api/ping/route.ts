@@ -4,47 +4,96 @@ import { NextResponse } from "next/server";
  * Dial-tone / heartbeat endpoint.
  *
  * Purpose: a stable, self-hosted "I'm here" endpoint that Cloud Weaver owns.
- * Used as a reachable target for external systems that validate URLs on save
- * (e.g. Ivanti NFSM Web Service Connection Manager validates a Service
- * Reference base URL by calling it during Save; it parses the response as
- * XML). Also useful as a reusable probe for Postman/curl/monitoring checks
- * and recorded demos.
+ * Used as a reachable target for SOAP/.NET validators that parse the
+ * response as a WSDL document (e.g. Ivanti NFSM Web Service Connection
+ * Manager rejects non-WSDL XML with "Invalid Web Service Description").
  *
- * Design goals:
+ * Returns a minimal valid WSDL describing a single no-op "Ping" operation.
+ * NFSM-style validators should accept this and populate their method list
+ * with "Ping". Actual SOAP invocation is not implemented — this endpoint is
+ * a placeholder to get a Service Reference saved; the real script inside
+ * the Integration/Quick Action is expected to do its own work without
+ * calling the ping operation.
+ *
+ * Design:
  * - Accepts any HTTP verb — validators vary in which method they use.
- * - ALWAYS returns a minimal XML document, regardless of Accept header or
- *   query string. We tried content negotiation (XML on ?format=xml or
- *   Accept: application/xml) but NFSM's validator strips query strings and
- *   sends GET without an XML-specific Accept header, so the fallback still
- *   served JSON and tripped "Data at the root level is invalid." Always-XML
- *   removes all guesswork.
- * - Permissive CORS so browser-based testers can hit it.
- * - No auth, no body parsing. Zero attack surface.
- * - No caching so each call is fresh (timestamp is useful for debugging).
+ * - ALWAYS returns the same WSDL body regardless of Accept/query.
+ * - Permissive CORS. No auth. Zero attack surface.
+ * - No caching so the timestamp in the WSDL comment is fresh per call
+ *   (useful when debugging whether a request actually reached this route).
  */
 
-const XML_HEADERS: Record<string, string> = {
-  "Content-Type": "application/xml; charset=utf-8",
+const WSDL_HEADERS: Record<string, string> = {
+  "Content-Type": "text/xml; charset=utf-8",
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS",
   "Access-Control-Allow-Headers": "*",
   "Cache-Control": "no-store",
 };
 
-function xmlBody(method: string): string {
-  return (
-    `<?xml version="1.0" encoding="UTF-8"?>\n` +
-    `<ping>` +
-    `<ok>true</ok>` +
-    `<message>I'm here</message>` +
-    `<method>${method}</method>` +
-    `<receivedAt>${new Date().toISOString()}</receivedAt>` +
-    `</ping>`
-  );
+function wsdlBody(method: string): string {
+  const stamp = new Date().toISOString();
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!-- Cloud Weaver ping WSDL. method=${method} receivedAt=${stamp} -->
+<wsdl:definitions
+    xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
+    xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    xmlns:tns="http://cloudweavr.com/ping/"
+    targetNamespace="http://cloudweavr.com/ping/"
+    name="PingService">
+  <wsdl:types>
+    <xs:schema targetNamespace="http://cloudweavr.com/ping/" elementFormDefault="qualified">
+      <xs:element name="Ping">
+        <xs:complexType>
+          <xs:sequence/>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="PingResponse">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="ok" type="xs:boolean"/>
+            <xs:element name="message" type="xs:string"/>
+            <xs:element name="receivedAt" type="xs:string"/>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+    </xs:schema>
+  </wsdl:types>
+  <wsdl:message name="PingSoapIn">
+    <wsdl:part name="parameters" element="tns:Ping"/>
+  </wsdl:message>
+  <wsdl:message name="PingSoapOut">
+    <wsdl:part name="parameters" element="tns:PingResponse"/>
+  </wsdl:message>
+  <wsdl:portType name="PingSoap">
+    <wsdl:operation name="Ping">
+      <wsdl:input message="tns:PingSoapIn"/>
+      <wsdl:output message="tns:PingSoapOut"/>
+    </wsdl:operation>
+  </wsdl:portType>
+  <wsdl:binding name="PingSoap" type="tns:PingSoap">
+    <soap:binding transport="http://schemas.xmlsoap.org/soap/http" style="document"/>
+    <wsdl:operation name="Ping">
+      <soap:operation soapAction="http://cloudweavr.com/ping/Ping"/>
+      <wsdl:input>
+        <soap:body use="literal"/>
+      </wsdl:input>
+      <wsdl:output>
+        <soap:body use="literal"/>
+      </wsdl:output>
+    </wsdl:operation>
+  </wsdl:binding>
+  <wsdl:service name="PingService">
+    <wsdl:port name="PingSoap" binding="tns:PingSoap">
+      <soap:address location="https://threads.cloudweavr.com/api/ping"/>
+    </wsdl:port>
+  </wsdl:service>
+</wsdl:definitions>`;
 }
 
 function respond(method: string) {
-  return new NextResponse(xmlBody(method), { status: 200, headers: XML_HEADERS });
+  return new NextResponse(wsdlBody(method), { status: 200, headers: WSDL_HEADERS });
 }
 
 export async function GET() {
@@ -68,7 +117,7 @@ export async function PATCH() {
 }
 
 export async function HEAD() {
-  return new NextResponse(null, { status: 200, headers: XML_HEADERS });
+  return new NextResponse(null, { status: 200, headers: WSDL_HEADERS });
 }
 
 export async function OPTIONS() {
