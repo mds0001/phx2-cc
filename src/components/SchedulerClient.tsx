@@ -3000,26 +3000,17 @@ export default function SchedulerClient({
                                 Use as Template
                               </button>
                             )}
-                            {/* Admin-only: edit + demote */}
+                            {/* Admin-only: demote only (edit requires demoting first) */}
                             {isAdmin && (
-                              <>
-                                <button
-                                  onClick={() => openEdit(task)}
-                                  className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg text-xs font-medium transition-all"
-                                >
-                                  <Edit2 className="w-3 h-3" />
-                                  Edit
-                                </button>
-                                <button
-                                  onClick={() => handleDemote(task.id)}
-                                  disabled={promoting === task.id}
-                                  className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-gray-300 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
-                                  title="Remove from System"
-                                >
-                                  <ShieldOff className="w-3 h-3" />
-                                  Demote
-                                </button>
-                              </>
+                              <button
+                                onClick={() => handleDemote(task.id)}
+                                disabled={promoting === task.id}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-gray-300 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
+                                title="Demote to regular task before editing"
+                              >
+                                <ShieldOff className="w-3 h-3" />
+                                Demote to Edit
+                              </button>
                             )}
                           </>
                         ) : (
