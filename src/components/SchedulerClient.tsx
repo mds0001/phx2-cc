@@ -2418,7 +2418,8 @@ export default function SchedulerClient({
       setEditTask(null);
       await fetchTasks();
     } catch (err: unknown) {
-      alert(err instanceof Error ? err.message : "Failed to save task");
+      const msg = err instanceof Error ? err.message : (err && typeof err === "object" && "message" in err) ? String((err as {message:unknown}).message) : JSON.stringify(err);
+      alert("Failed to save task: " + msg);
     } finally {
       setEditSubmitting(false);
     }
