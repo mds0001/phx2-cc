@@ -118,15 +118,6 @@ export interface ScheduledTask {
   /** When true, every successful create/update stores the Ivanti RecID in
    *  task_created_records, enabling the Undo button to delete by RecID directly. */
   debug_mode?: boolean;
-  /** When true, the scheduler is in "Run Until Fixed" mode.  The UI will
-   *  auto-re-run the task after each completion and wait for an AI_ANALYSIS
-   *  entry in task_logs before deciding whether to continue or stop. */
-  ai_fix_mode?: boolean;
-  /** SMTP EndpointConnection to use for fixed/stuck notification emails. */
-  ai_fix_smtp_connection_id?: string | null;
-  /** Recipient email address for fix notifications.  Defaults to the
-   *  logged-in user's email if left blank. */
-  ai_fix_email?: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;

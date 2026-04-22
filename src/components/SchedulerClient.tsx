@@ -5,7 +5,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase-browser";
 import * as XLSX from "xlsx";
 import {
-  ArrowLeft,
   Plus,
   Play,
   Trash2,
@@ -27,8 +26,6 @@ import {
   Minimize2,
   Save,
   Bug,
-  RotateCcw,
-  Bell,
 } from "lucide-react";
 import type {
   Profile,
@@ -137,10 +134,6 @@ interface FormState {
    *  e.g. "mikeco" → resolves Assets.xlsx as "mikeco/Assets.xlsx" */
   sourceDirectory: string;
   debugMode: boolean;
-  /** Run Until Fixed — SMTP connection for notifications */
-  aiFixSmtpConnectionId: string | null;
-  /** Run Until Fixed — override recipient email */
-  aiFixEmail: string;
 }
 
 const EMPTY_FORM: FormState = {
@@ -154,8 +147,6 @@ const EMPTY_FORM: FormState = {
   targetConnectionId: null,
   sourceDirectory: "",
   debugMode: false,
-  aiFixSmtpConnectionId: null,
-  aiFixEmail: "",
 };
 
 // ─── Component ───────────────────────────────────────────────
@@ -249,11 +240,6 @@ export default function SchedulerClient({
   const [runningTasks, setRunningTasks] = useState<Set<string>>(new Set());
   const [cancellingTasks, setCancellingTasks] = useState<Set<string>>(new Set());
   const [resetingTasks, setResetingTasks] = useState<Set<string>>(new Set());
-  // ── Run Until Fixed state ─────────────────────────────────
-  const [aiFixRunning, setAiFixRunning] = useState<Set<string>>(new Set());
-  const [aiFixIterCounts, setAiFixIterCounts] = useState<Map<string, number>>(new Map());
-  const aiFixModeRef = useRef<Set<string>>(new Set());
-  const aiFixIterationsRef = useRef<Map<string, number>>(new Map());
   // Debug mode expand/collapse per task, and tracked RecID counts from DB
   const [expandedDebug, setExpandedDebug] = useState<Set<string>>(new Set());
   const [trackedCounts, setTrackedCounts] = useState<Map<string, number>>(new Map());
@@ -2362,182 +2348,6 @@ export default function SchedulerClient({
     );
   }
 
-  // ── Run Until Fixed (Claude-driven) ──────────────────────
-  const MAX_AI_FIX_ITER = 10;
-
-  async function startRunUntilFixed(task: ScheduledTask) {
-    if (aiFixModeRef.current.has(task.id)) return; // already looping
-    aiFixModeRef.current.add(task.id);
-    aiFixIterationsRef.current.set(task.id, 0);
-    setAiFixRunning((p) => { const n = new Set(p); n.add(task.id); return n; });
-    setAiFixIterCounts((p) => { const n = new Map(p); n.set(task.id, 0); return n; });
-
-    await supabase
-      .from("scheduled_tasks")
-      .update({ ai_fix_mode: true })
-      .eq("id", task.id);
-
-    let iter = 0;
-    let lastAnalysis = "";
-    let lastSuggestion = "";
-
-    while (aiFixModeRef.current.has(task.id) && iter < MAX_AI_FIX_ITER) {
-      iter++;
-      aiFixIterationsRef.current.set(task.id, iter);
-      setAiFixIterCounts((p) => { const n = new Map(p); n.set(task.id, iter); return n; });
-
-      // ── Log that we're starting this attempt ────────────────
-      await supabase.from("task_logs").insert({
-        task_id: task.id,
-        action: "AI_FIX",
-        details: `🔄 Run Until Fixed — attempt ${iter} of ${MAX_AI_FIX_ITER}`,
-      });
-
-      // ── Clear server dev-log before firing so we only capture this run ──
-      await fetch("/api/dev-log", { method: "DELETE" }).catch(() => {});
-
-      // ── Fire the task ───────────────────────────────────────
-      await executeTask(task);
-      if (!aiFixModeRef.current.has(task.id)) break; // cancelled mid-run
-
-      // ── Fetch fresh status + recent logs + server dev-log ──
-      const [{ data: fresh }, { data: recentLogs }, devLogRes] = await Promise.all([
-        supabase
-          .from("scheduled_tasks")
-          .select("status")
-          .eq("id", task.id)
-          .single(),
-        supabase
-          .from("task_logs")
-          .select("action, details, created_at")
-          .eq("task_id", task.id)
-          .order("created_at", { ascending: false })
-          .limit(80),
-        fetch("/api/dev-log").then((r) => r.ok ? r.json() : null).catch(() => null),
-      ]);
-
-      const finalStatus = fresh?.status ?? "unknown";
-      const logs = (recentLogs ?? []).reverse();
-      const serverTelemetry = devLogRes ?? [];
-      const isFixed = finalStatus === "completed";
-
-      // ── If fixed, celebrate and stop ───────────────────────
-      if (isFixed) {
-        await fetch("/api/send-notification", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            taskId: task.id,
-            status: "fixed",
-            message: `Task resolved after ${iter} attempt${iter !== 1 ? "s" : ""}.`,
-            iterations: iter,
-          }),
-        }).catch(() => {});
-        await supabase.from("task_logs").insert({
-          task_id: task.id,
-          action: "AI_FIXED",
-          details: `✅ Resolved after ${iter} attempt${iter !== 1 ? "s" : ""}.`,
-        });
-        break;
-      }
-
-      // ── Not fixed — signal Claude in Cowork to analyse & fix ─
-      // Write AI_FIX_NEEDED with full telemetry payload so Claude can read it,
-      // edit the proxy code, then write AI_FIX_APPLIED to resume the loop.
-      await supabase.from("task_logs").insert({
-        task_id: task.id,
-        action: "AI_FIX_NEEDED",
-        details: JSON.stringify({
-          iteration: iter,
-          maxIterations: MAX_AI_FIX_ITER,
-          finalStatus,
-          taskName: task.task_name,
-          logs: logs.slice(-60),
-          serverTelemetry,
-        }),
-      });
-
-      await supabase.from("task_logs").insert({
-        task_id: task.id,
-        action: "AI_ANALYSIS",
-        details: `⏳ Waiting for Claude to analyse telemetry and apply a fix… (attempt ${iter}/${MAX_AI_FIX_ITER})`,
-      });
-
-      // ── Wait for Claude to write AI_FIX_APPLIED or AI_FIX_STUCK ─────────
-      // Poll task_logs every 5s for up to 10 minutes.
-      const CLAUDE_TIMEOUT_MS = 10 * 60 * 1000;
-      const POLL_INTERVAL_MS  = 5_000;
-      const waitStart = Date.now();
-      let claudeSignal: "retry" | "stop" | null = null;
-
-      while (Date.now() - waitStart < CLAUDE_TIMEOUT_MS) {
-        if (!aiFixModeRef.current.has(task.id)) break; // user cancelled
-        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-        const { data: signals } = await supabase
-          .from("task_logs")
-          .select("action, details, created_at")
-          .eq("task_id", task.id)
-          .in("action", ["AI_FIX_APPLIED", "AI_FIX_STUCK"])
-          .order("created_at", { ascending: false })
-          .limit(1);
-        if (signals && signals.length > 0) {
-          claudeSignal = signals[0].action === "AI_FIX_APPLIED" ? "retry" : "stop";
-          break;
-        }
-      }
-
-      if (!aiFixModeRef.current.has(task.id)) break; // cancelled while waiting
-
-      if (claudeSignal === "stop" || claudeSignal === null) {
-        const reason = claudeSignal === null ? "Timed out waiting for Claude response." : "Claude determined the issue cannot be fixed automatically.";
-        await fetch("/api/send-notification", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            taskId: task.id,
-            status: "stuck",
-            message: reason,
-            iterations: iter,
-          }),
-        }).catch(() => {});
-        await supabase.from("task_logs").insert({
-          task_id: task.id,
-          action: "AI_STUCK",
-          details: `⚠️ ${reason}`,
-        });
-        break;
-      }
-
-      // claudeSignal === "retry" — loop back and fire the task again
-    }
-
-    // ── Cleanup ─────────────────────────────────────────────
-    aiFixModeRef.current.delete(task.id);
-    aiFixIterationsRef.current.delete(task.id);
-    setAiFixRunning((p) => { const n = new Set(p); n.delete(task.id); return n; });
-    setAiFixIterCounts((p) => { const n = new Map(p); n.delete(task.id); return n; });
-    await supabase
-      .from("scheduled_tasks")
-      .update({ ai_fix_mode: false })
-      .eq("id", task.id);
-  }
-
-  async function cancelRunUntilFixed(taskId: string) {
-    aiFixModeRef.current.delete(taskId);
-    aiFixIterationsRef.current.delete(taskId);
-    setAiFixRunning((p) => { const n = new Set(p); n.delete(taskId); return n; });
-    setAiFixIterCounts((p) => { const n = new Map(p); n.delete(taskId); return n; });
-
-    await supabase.from("task_logs").insert({
-      task_id: taskId,
-      action: "AI_CANCELLED",
-      details: "Run Until Fixed cancelled by user.",
-    });
-    await supabase
-      .from("scheduled_tasks")
-      .update({ ai_fix_mode: false })
-      .eq("id", taskId);
-  }
 
   // ── Open edit modal ───────────────────────────────────────
   function openEdit(task: ScheduledTask) {
@@ -2555,8 +2365,6 @@ export default function SchedulerClient({
       targetConnectionId: task.target_connection_id ?? null,
       sourceDirectory: task.source_file_path ?? "",
       debugMode: task.debug_mode ?? false,
-      aiFixSmtpConnectionId: task.ai_fix_smtp_connection_id ?? null,
-      aiFixEmail: task.ai_fix_email ?? "",
     });
   }
 
@@ -2588,8 +2396,6 @@ export default function SchedulerClient({
           write_mode: editForm.writeMode ?? "upsert",
           customer_id: editForm.customerId ?? null,
           debug_mode: editForm.debugMode ?? false,
-          ai_fix_smtp_connection_id: editForm.aiFixSmtpConnectionId ?? null,
-          ai_fix_email: editForm.aiFixEmail.trim() || null,
         })
         .eq("id", editTask.id)
         .select("id");
@@ -2631,14 +2437,6 @@ export default function SchedulerClient({
       <header className="sticky top-0 z-50 bg-gray-900/80 backdrop-blur-xl border-b border-gray-800">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <button
-              onClick={() => router.push("/dashboard")}
-              className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors text-sm"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              Back to Dashboard
-            </button>
-            <span className="text-gray-700">|</span>
             <div className="flex items-center gap-2">
               <div className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center">
                 <Zap className="w-3.5 h-3.5 text-white" />
@@ -3236,7 +3034,7 @@ export default function SchedulerClient({
 
                               <button
                                 onClick={() => executeTask(task)}
-                                disabled={isRunning || resetingTasks.has(task.id) || aiFixRunning.has(task.id)}
+                                disabled={isRunning || resetingTasks.has(task.id)}
                                 className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 text-emerald-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
                               >
                                 {isRunning ? (
@@ -3246,33 +3044,6 @@ export default function SchedulerClient({
                                 )}
                                 {isRunning ? "Running…" : "Run Now"}
                               </button>
-
-                              {/* Run Until Fixed — card button */}
-                              {!aiFixRunning.has(task.id) ? (
-                                <button
-                                  onClick={() => startRunUntilFixed(task)}
-                                  disabled={isRunning || resetingTasks.has(task.id)}
-                                  className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-500/10 hover:bg-violet-500/20 border border-violet-500/25 text-violet-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
-                                  title="Auto-retry until the task completes without errors (max 10 attempts)"
-                                >
-                                  <RotateCcw className="w-3 h-3" />
-                                  Run Until Fixed
-                                </button>
-                              ) : (
-                                <>
-                                  <span className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-500/10 border border-violet-500/25 text-violet-300 rounded-lg text-xs font-medium select-none">
-                                    <Loader2 className="w-3 h-3 animate-spin" />
-                                    Attempt {aiFixIterCounts.get(task.id) ?? 0}/{MAX_AI_FIX_ITER}
-                                  </span>
-                                  <button
-                                    onClick={() => cancelRunUntilFixed(task.id)}
-                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/25 text-orange-400 rounded-lg text-xs font-medium transition-all"
-                                  >
-                                    <X className="w-3 h-3" />
-                                    Stop Auto-Fix
-                                  </button>
-                                </>
-                              )}
 
                               {task.debug_mode && isAdmin && (
                                 <>
@@ -3704,41 +3475,12 @@ export default function SchedulerClient({
                 {/* Run Now */}
                 <button
                   onClick={() => fsTask && executeTask(fsTask)}
-                  disabled={fsIsRunning || (fsTask ? resetingTasks.has(fsTask.id) : false) || (fsTask ? aiFixRunning.has(fsTask.id) : false)}
+                  disabled={fsIsRunning || (fsTask ? resetingTasks.has(fsTask.id) : false)}
                   className="flex items-center gap-1 px-2.5 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 text-emerald-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
                 >
                   {fsIsRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
                   {fsIsRunning ? "Running…" : "Run Now"}
                 </button>
-
-                {/* Run Until Fixed */}
-                {fsTask && !aiFixRunning.has(fsTask.id) && (
-                  <button
-                    onClick={() => fsTask && startRunUntilFixed(fsTask)}
-                    disabled={fsIsRunning}
-                    className="flex items-center gap-1 px-2.5 py-1 bg-violet-500/10 hover:bg-violet-500/20 border border-violet-500/25 text-violet-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
-                    title="Automatically re-run this task until it completes without errors (max 10 attempts)"
-                  >
-                    <RotateCcw className="w-3 h-3" />
-                    Run Until Fixed
-                  </button>
-                )}
-                {fsTask && aiFixRunning.has(fsTask.id) && (
-                  <>
-                    <span className="flex items-center gap-1 px-2.5 py-1 bg-violet-500/10 border border-violet-500/25 text-violet-300 rounded-lg text-xs font-medium select-none">
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                      Attempt {aiFixIterCounts.get(fsTask.id) ?? 0}/{MAX_AI_FIX_ITER}
-                    </span>
-                    <button
-                      onClick={() => fsTask && cancelRunUntilFixed(fsTask.id)}
-                      className="flex items-center gap-1 px-2.5 py-1 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/25 text-orange-400 rounded-lg text-xs font-medium transition-all"
-                    >
-                      <X className="w-3 h-3" />
-                      Stop Auto-Fix
-                    </button>
-                  </>
-                )}
-
                 {/* Debug — debug mode only, admin only */}
                 {fsTask?.debug_mode && isAdmin && (
                   <>
@@ -4240,51 +3982,6 @@ export default function SchedulerClient({
                   </div>
 
                 </div>
-
-              {/* Run Until Fixed — Notification Settings */}
-              <div className="border border-violet-500/20 bg-violet-500/5 rounded-2xl p-5">
-                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-1.5">
-                  <Bell className="w-3 h-3 text-violet-400" />
-                  Run Until Fixed — Notifications
-                  <span className="text-gray-600 normal-case font-normal ml-1">(optional)</span>
-                </label>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1.5">SMTP Connection</label>
-                    <select
-                      value={editForm.aiFixSmtpConnectionId ?? ""}
-                      onChange={(e) => setEditForm((p) => ({ ...p, aiFixSmtpConnectionId: e.target.value || null }))}
-                      className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
-                    >
-                      <option value="">— No notifications —</option>
-                      {endpointConnections
-                        .filter((c) => c.type === "smtp")
-                        .map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                          </option>
-                        ))}
-                    </select>
-                    {endpointConnections.filter((c) => c.type === "smtp").length === 0 && (
-                      <p className="text-xs text-gray-600 mt-1">No SMTP connections configured yet.</p>
-                    )}
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1.5">Recipient Email</label>
-                    <input
-                      type="email"
-                      value={editForm.aiFixEmail}
-                      onChange={(e) => setEditForm((p) => ({ ...p, aiFixEmail: e.target.value }))}
-                      placeholder="Leave blank to use your profile email"
-                      className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 placeholder-gray-600"
-                    />
-                  </div>
-                </div>
-                <p className="text-xs text-gray-600 mt-3">
-                  An email is sent when the task resolves ✅ or gets stuck after {MAX_AI_FIX_ITER} attempts ⚠️.
-                </p>
-              </div>
-
               <p className="text-xs text-yellow-400/70 bg-yellow-500/10 border border-yellow-500/20 rounded-xl px-4 py-3">
                 ⚠️ Saving will reset this task&apos;s status back to
                 &quot;Waiting&quot;.

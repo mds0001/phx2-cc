@@ -49,7 +49,7 @@ function NavItem({
       <span className={`shrink-0 ${active ? "text-indigo-400" : "text-gray-600"}`}>
         {icon}
       </span>
-      <span className="text-[12px] font-medium flex-1">{label}</span>
+      <span className="text-[15.5px] font-medium flex-1">{label}</span>
       {badge && badge > 0 && (
         <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-red-500/15 border border-red-500/30 text-red-400">
           {badge}
@@ -63,7 +63,7 @@ function NavItem({
 function SectionHeader({ label }: { label: string }) {
   return (
     <div className="px-3 pt-1 pb-0.5">
-      <span className="text-[10px] font-semibold text-gray-700 uppercase tracking-widest">
+      <span className="text-[12.5px] font-semibold text-gray-700 uppercase tracking-widest">
         {label}
       </span>
     </div>
@@ -145,12 +145,12 @@ export default function GlobalShell() {
         {/* Brand */}
         <div className="px-4 py-4 border-b border-gray-800 shrink-0">
           <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center shrink-0">
-              <Activity className="w-4 h-4 text-white" />
+            <div className="w-[36px] h-[36px] rounded-lg bg-indigo-600 flex items-center justify-center shrink-0">
+              <Activity className="w-[20px] h-[20px] text-white" />
             </div>
             <div className="min-w-0">
-              <div className="text-[13px] font-semibold text-gray-100 leading-tight">Threads</div>
-              <div className="text-[10px] text-gray-600 leading-tight">by Cloud Weaver</div>
+              <div className="text-[21px] font-semibold text-gray-100 leading-tight">Threads</div>
+              <div className="text-[16px] text-gray-600 leading-tight">by Cloud Weaver</div>
             </div>
           </div>
         </div>
@@ -226,7 +226,7 @@ export default function GlobalShell() {
             className="w-full flex items-center gap-2.5 px-3 py-1.5 rounded-md text-left text-gray-600 hover:text-red-400 hover:bg-gray-800/60 transition-all group"
           >
             <LogOut className="w-4 h-4 shrink-0" />
-            <span className="text-[12px] font-medium">Sign out</span>
+            <span className="text-[15.5px] font-medium">Sign out</span>
           </button>
         </div>
       </div>
