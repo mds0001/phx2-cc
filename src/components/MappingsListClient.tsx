@@ -4,7 +4,7 @@ import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase-browser";
 import {
-  ArrowLeft, Plus, GitMerge, Trash2, Edit2, Copy,
+  Plus, GitMerge, Trash2, Edit2, Copy,
   Lock, Shield, ShieldOff, Building2, Search, ChevronRight,
 } from "lucide-react";
 import type { MappingProfile } from "@/lib/types";
@@ -109,14 +109,6 @@ export default function MappingsListClient({
       <header className="sticky top-0 z-50 bg-gray-900/80 backdrop-blur-xl border-b border-gray-800">
         <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center gap-4">
-            <button
-              onClick={() => router.push("/dashboard")}
-              className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors text-sm"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              Dashboard
-            </button>
-            <span className="text-gray-700">|</span>
             <div className="flex items-center gap-2">
               <div className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center">
                 <GitMerge className="w-3.5 h-3.5 text-white" />
