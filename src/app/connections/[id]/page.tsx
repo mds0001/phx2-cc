@@ -25,10 +25,10 @@ export default async function ConnectionEditorPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ from?: string }>;
+  searchParams: Promise<{ from?: string; returnTo?: string }>;
 }) {
   const { id } = await params;
-  const { from } = await searchParams;
+  const { from, returnTo } = await searchParams;
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
@@ -91,6 +91,7 @@ export default async function ConnectionEditorPage({
       isAdmin={isAdmin}
       customers={customersResult.data ?? []}
       scopedCustomerId={userProfile?.role === "schedule_administrator" ? (userProfile?.customer_id ?? null) : null}
+      returnTo={returnTo ?? null}
     />
   );
 }

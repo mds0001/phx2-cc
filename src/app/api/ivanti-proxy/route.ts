@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { pushBinaryRow, type StrategyAttempt } from "@/lib/dev-log";
 
 const FALLBACK_API_KEY = "251E668B0B42478EB3DA9D6E8446CA0B";
 
@@ -661,7 +662,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { ivantiUrl, data, apiKey, businessObject, tenantId, linkFieldNames, linkFieldBoNames, linkFieldLookupFields, upsertKey, upsertKeys, skipIfExists, skipIfNotExists, method, directRecId, directBoName, binaryFields } = body as {
+    const { ivantiUrl, data, apiKey, businessObject, tenantId, linkFieldNames, linkFieldBoNames, linkFieldLookupFields, upsertKey, upsertKeys, skipIfExists, skipIfNotExists, method, directRecId, directBoName, binaryFields, loginUsername, loginPassword } = body as {
       ivantiUrl: string;
       data: Record<string, unknown>;
       apiKey?: string;
@@ -692,6 +693,11 @@ export async function POST(request: NextRequest) {
        *  Ivanti REST API rejects base64 strings for varbinary columns in JSON payloads.
        *  Each entry: fieldName → { base64: string, mimeType: string } */
       binaryFields?: Record<string, { base64: string; mimeType: string }>;
+      /** Optional web-UI credentials for binary-field uploads via ASHX.
+       *  When present, the proxy performs a form-based login to obtain an authenticated
+       *  web session (SID + AFT cookies) before uploading to UploadImageHandler.ashx. */
+      loginUsername?: string;
+      loginPassword?: string;
     };
 
     // ── Direct DELETE by known RecID (fast path used by resetTask) ───────────
@@ -925,6 +931,18 @@ export async function POST(request: NextRequest) {
       sendPayload = patchPayload;
     }
 
+    // Strip binary fields (and any null/undefined values for them) from the main OData
+    // PATCH payload -- they are handled separately by the binary upload pipeline below.
+    // Sending ivnt_CatalogImage:null in the PATCH would clear the field every run.
+    if (binaryFields && Object.keys(binaryFields).length > 0) {
+      for (const bfKey of Object.keys(binaryFields)) {
+        if (bfKey in sendPayload) {
+          console.log(`[ivanti-proxy] Stripping binary field "${bfKey}" from PATCH payload (handled by binary pipeline)`);
+          delete (sendPayload as Record<string, unknown>)[bfKey];
+        }
+      }
+    }
+
     let { res: response, body: responseBody } = await sendRequest(sendPayload);
 
     // Auto-retry: if Ivanti returns 400 UndefinedValidatedValue, strip the offending
@@ -1027,214 +1045,245 @@ export async function POST(request: NextRequest) {
     //          → response: { success: true, id: "GUID", ... }
     //  Step 2: POST to /Services/Save.asmx/SaveDataExecuteAction with temp GUID
     //          in both values.{fieldName} and uploadedImageIds.{fieldName}.
+    // Stable ID shared across all rows in one task-run POST sequence.
+    // Derived from the request timestamp so Claude can correlate rows.
+    const devLogRunId = `run_${Date.now().toString(36)}`;
+    let devLogRowIndex = 0;
+
     const binaryUploadResults: Record<string, string> = {};
     if (binaryFields && Object.keys(binaryFields).length > 0 && (response.ok || response.status === 204)) {
       const finalRecId = existingRecId ?? (responseBody as Record<string, unknown> | null)?.RecId as string | undefined;
       if (finalRecId) {
-        // ── Establish session + capture CSRF token ────────────────────────────
-        // UploadImageHandler.ashx requires an ASP.NET session with a valid CSRF token.
-        // OData (api_key only) doesn't create a browser session, so we must fetch
-        // the HEAT main page first — that sets ASP.NET_SessionId and the CSRF cookie.
-        const capturedBinaryCookies: string[] = [];
-        const captureBinaryCookies = (setCookieHeader: string | null) => {
-          if (!setCookieHeader) return;
-          const pairs = setCookieHeader.split(/,(?=[^;]+=[^;]+;)/);
-          for (const pair of pairs) {
-            const nv = pair.split(";")[0].trim();
-            if (nv && !capturedBinaryCookies.includes(nv)) capturedBinaryCookies.push(nv);
-          }
-        };
-
-        // Try fetching the HEAT UI page to establish a session + get CSRF token.
-        // Then also probe the OData endpoint to pick up any API-key session cookies.
-        let csrfToken = "";
-        const sessionProbeUrls = [
-          `${base}/HEAT`,
-          `${base}/`,
-          `${base}/HEAT/`,
-        ];
-        for (const probeUrl of sessionProbeUrls) {
-          try {
-            const probeRes = await fetch(probeUrl, {
-              method: "GET",
-              headers: {
-                Accept: "text/html,application/xhtml+xml,*/*",
-                Authorization: `rest_api_key=${resolvedKey}`,
-                ...(tenantId ? { "X-Tenant-Id": tenantId } : {}),
-              },
-              redirect: "follow",
-            });
-            captureBinaryCookies(probeRes.headers.get("set-cookie"));
-            const html = await probeRes.text().catch(() => "");
-            // Extract CSRF token from common Ivanti/ASP.NET meta/input patterns
-            const tokenMatch =
-              html.match(/name="__RequestVerificationToken"[^>]+value="([^"]+)"/) ??
-              html.match(/name="_csrfToken"[^>]+value="([^"]+)"/) ??
-              html.match(/"csrfToken"\s*:\s*"([^"]+)"/) ??
-              html.match(/"_csrfToken"\s*:\s*"([^"]+)"/);
-            if (tokenMatch?.[1]) {
-              csrfToken = tokenMatch[1];
-              console.log(`[ivanti-proxy] CSRF from page ${probeUrl}: ${csrfToken.slice(0, 8)}...`);
-              break;
-            }
-            if (capturedBinaryCookies.length > 0) {
-              console.log(`[ivanti-proxy] Session probe ${probeUrl}: ${capturedBinaryCookies.length} cookie(s), no inline CSRF`);
-              break;
-            }
-          } catch (e) {
-            console.warn(`[ivanti-proxy] Session probe ${probeUrl} error:`, e);
-          }
-        }
-
-        // Also probe OData to merge in any API-key session cookies
-        try {
-          const odataProbeRes = await fetch(`${endpoint}?$top=0`, {
-            method: "GET",
-            headers: {
-              Authorization: `rest_api_key=${resolvedKey}`,
-              Accept: "application/json",
-              ...(tenantId ? { "X-Tenant-Id": tenantId } : {}),
-            },
-          });
-          captureBinaryCookies(odataProbeRes.headers.get("set-cookie"));
-        } catch { /* non-fatal */ }
-
-        // Try to find CSRF token in cookies if page parsing didn't yield one
-        if (!csrfToken) {
-          const csrfEntry = capturedBinaryCookies.find(
-            (c) => /^(__RequestVerificationToken|csrf|_csrf|csrfToken|CSRF|XSRF|xsrf)/i.test(c)
-          );
-          csrfToken = csrfEntry ? (csrfEntry.split("=")[1] ?? "") : "";
-        }
-        console.log(`[ivanti-proxy] CSRF token: ${csrfToken ? csrfToken.slice(0, 8) + "..." : "(none found)"}`);
-        console.log(`[ivanti-proxy] Session cookies (${capturedBinaryCookies.length}): ${capturedBinaryCookies.map(c => c.split("=")[0]).join(", ")}`);
-
-        const cookieHeader = capturedBinaryCookies.join("; ");
-
         // SaveDataExecuteAction objectType uses Ivanti's '#' namespace separator.
-        // Config stores it as '__' (e.g. CI__Computers → CI#Computers) or already with '#'.
         const saveObjectType = effectiveObject.includes("#")
           ? effectiveObject
           : effectiveObject.replace(/__/g, "#");
+
+        const binaryAuthHeaders: Record<string, string> = {
+          Authorization: `rest_api_key=${resolvedKey}`,
+          Accept: "application/json, text/plain, */*",
+          ...(tenantId ? { "X-Tenant-Id": tenantId } : {}),
+        };
 
         for (const [fieldName, { base64, mimeType }] of Object.entries(binaryFields)) {
           const bytes = Buffer.from(base64, "base64");
           const sizeKB = Math.round(bytes.byteLength / 1024);
           const ext = mimeType.split("/")[1]?.split("+")[0] ?? "png";
-          const fileName = `image.${ext}`;
+          // Use a timestamp suffix so repeated task runs don't hit Ivanti's
+          // "file already attached" duplicate-name error (HTTP 300).
+          const fileName = `catalog_${Date.now()}.${ext}`;
           let uploaded = false;
           let lastErr = "";
+          const devLogAttempts: StrategyAttempt[] = [];
 
-          // ── Step 1: POST to UploadImageHandler.ashx ─────────────────────────
-          let tempImageId: string | null = null;
-          try {
-            const uploadUrl = `${base}/handlers/SessionStorage/UploadImageHandler.ashx`;
-            const uploadIdentifier = Date.now().toString(16).toUpperCase().padStart(8, "0");
-            const form = new FormData();
-            form.append("APC_UPLOAD_PROGRESS", uploadIdentifier);
-            form.append("UPLOAD_IDENTIFIER", uploadIdentifier);
-            form.append("MAX_FILE_SIZE", "104857600");
-            form.append("_csrfToken", csrfToken);
-            form.append("path", "");
-            form.append("files", "");
-            form.append("multiplefiles", "false");
-            form.append("cmd", "upload");
-            form.append("dir", ".");
-            form.append("file", new Blob([bytes], { type: mimeType }), fileName);
-
-            const uploadHeaders: Record<string, string> = {
-              Authorization: `rest_api_key=${resolvedKey}`,
-              Accept: "application/json, text/plain, */*",
-              ...(tenantId ? { "X-Tenant-Id": tenantId } : {}),
-              ...(cookieHeader ? { Cookie: cookieHeader } : {}),
-            };
-
-            console.log(`[ivanti-proxy] Binary step1 upload: POST ${uploadUrl} (${mimeType}, ${sizeKB}KB)`);
-            const uploadRes = await fetch(uploadUrl, { method: "POST", headers: uploadHeaders, body: form });
-            const uploadText = await uploadRes.text().catch(() => "");
-            console.log(`[ivanti-proxy] Binary step1 ${fieldName}: HTTP ${uploadRes.status} ${uploadText.slice(0, 300)}`);
-
-            if (uploadRes.ok) {
-              try {
-                const uploadJson = JSON.parse(uploadText) as { success?: boolean; id?: string };
-                if (uploadJson.success && uploadJson.id) {
-                  tempImageId = uploadJson.id;
-                  console.log(`[ivanti-proxy] Binary step1 got tempId: ${tempImageId}`);
-                } else {
-                  lastErr = `Upload handler returned no id: ${uploadText.slice(0, 200)}`;
-                }
-              } catch {
-                lastErr = `Could not parse upload response: ${uploadText.slice(0, 200)}`;
-              }
-            } else {
-              lastErr = `Upload handler HTTP ${uploadRes.status}: ${uploadText.slice(0, 200)}`;
-            }
-          } catch (e) {
-            lastErr = `Step1 error: ${e instanceof Error ? e.message : String(e)}`;
-            console.warn(`[ivanti-proxy] Binary step1 error:`, lastErr);
-          }
-
-          // ── Step 2: SaveDataExecuteAction with temp GUID ─────────────────────
-          if (tempImageId) {
+          // ── Strategy H: SOAP UpdateObject via FRSHEATIntegration.asmx ──────────────
+          // Writes image bytes via SOAP AddAttachment (creates attachment row) then links the
+          // returned attachment RecId into ivnt_ImageRecId via UpdateObject.
+          // ivnt_CatalogImage (varbinary) is deprecated — the portal tile renderer uses ivnt_ImageRecId.
+          if (!uploaded && loginUsername && loginPassword) {
             try {
-              const saveUrl = `${base}/Services/Save.asmx/SaveDataExecuteAction`;
-              const saveBody = {
-                shouldSave: true,
-                data: {
-                  [finalRecId]: {
-                    op:                  "update",
-                    objectId:            finalRecId,
-                    objectType:          saveObjectType,
-                    values:              { [fieldName]: tempImageId },
-                    valuesOrder:         { [fieldName]: 0 },
-                    forceAutoFill:       {},
-                    originalValues:      { [fieldName]: "" },
-                    pureOriginalValues:  {},
-                    attachementCacheIds: {},
-                    uploadedImageIds:    { [fieldName]: tempImageId },
-                    textFields:          [],
-                  },
-                },
-                actionParams: {
-                  FormParams: {
-                    objectId:   finalRecId,
-                    formNames:  [],
-                    clientData: { Objects: {}, ObjectRelationships: {} },
-                  },
-                },
-                promptParams: null,
-              };
+              const hNs = "SaaS.Services/";
+              // Try multiple endpoint paths — SaaS vs on-prem Ivanti differ
+              const hEndpoints = [
+                `${base}/ServiceAPI/FRSHEATIntegration.asmx`,
+                `${base}/HEAT/api/FRSHEATIntegration.asmx`,
+                `${base}/api/FRSHEATIntegration.asmx`,
+                `${base}/HEAT/FRSHEATIntegration.asmx`,
+                `${base}/FRSHEATIntegration.asmx`,
+              ];
+              // tenantId is the full hostname per Ivanti SaaS tenant config.
+              const hFullHost = new URL(base).hostname; // e.g. cleardata-stg.saasit.com
+              const hHostSub = hFullHost.split(".")[0];  // e.g. cleardata-stg
+              // Try full hostname first (confirmed correct), then subdomain fallback.
+              const hTenantCandidates = [hFullHost, hHostSub];
+              const hTenant = hTenantCandidates[0]; // used for GRFU probe
+              let hConnTenant = hTenant; // will be overwritten with the winning tenantId
+              const hBo = saveObjectType.replace(/#.*$/, "");
 
-              const saveHeaders: Record<string, string> = {
-                Authorization: `rest_api_key=${resolvedKey}`,
-                "Content-Type": "application/json",
-                Accept: "application/json, text/plain, */*",
-                ...(tenantId ? { "X-Tenant-Id": tenantId } : {}),
-                ...(cookieHeader ? { Cookie: cookieHeader } : {}),
-              };
+              // Pre-step: call GetRolesForUser to discover roles assigned to this user.
+              // Connect 500s with "Unhandled system exception: ." when the role string
+              // does not exactly match an internal role name on the user's record.
+              const hRoleCandidates: string[] = [];
+              try {
+                const hGrfuRes = await fetch(`${base}/ServiceAPI/FRSHEATIntegration.asmx`, {
+                  method: "POST",
+                  headers: { "Content-Type": "text/xml; charset=utf-8", SOAPAction: `"SaaS.Services/GetRolesForUser"` },
+                  body: `<?xml version="1.0" encoding="utf-8"?>` +
+                    `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:tns="SaaS.Services">` +
+                    `<soap:Body><tns:GetRolesForUser>` +
+                    `<tns:sessionKey></tns:sessionKey>` +
+                    `<tns:tenantId>${hTenant}</tns:tenantId>` +
+                    `<tns:userName>${loginUsername}</tns:userName>` +
+                    `</tns:GetRolesForUser></soap:Body></soap:Envelope>`,
+                  signal: AbortSignal.timeout(10_000),
+                });
+                const hGrfuText = await hGrfuRes.text().catch(() => "");
+                console.log(`[ivanti-proxy] Binary H GetRolesForUser: HTTP ${hGrfuRes.status} ${hGrfuText.slice(0, 1000)}`);
+                const hGrfuNames = [...hGrfuText.matchAll(/<[^:>]*:?Name[^>]*>([^<]+)<\/[^:>]*:?Name>/g)].map((m: RegExpMatchArray) => m[1]);
+                for (const r of hGrfuNames) if (!hRoleCandidates.includes(r)) hRoleCandidates.push(r);
+              } catch { /* ignore */ }
+              // Fallback role candidates in case GetRolesForUser fails or needs a session
+              for (const r of ["ivnt_AssetAdministrator", "Admin", "Administrator", "ServiceDeskAnalyst", "SelfService"]) {
+                if (!hRoleCandidates.includes(r)) hRoleCandidates.push(r);
+              }
 
-              console.log(`[ivanti-proxy] Binary step2 SaveDataExecuteAction: POST ${saveUrl}`);
-              console.log(`[ivanti-proxy] Binary step2 objectType=${saveObjectType} recId=${finalRecId} field=${fieldName} tempId=${tempImageId}`);
-              const saveRes = await fetch(saveUrl, { method: "POST", headers: saveHeaders, body: JSON.stringify(saveBody) });
-              const saveText = saveRes.status === 204 ? "" : await saveRes.text().catch(() => "");
-              console.log(`[ivanti-proxy] Binary step2 ${fieldName}: HTTP ${saveRes.status} ${saveText.slice(0, 300)}`);
+              const hConnXmlFor = (role: string, tid: string) =>
+                `<?xml version="1.0" encoding="utf-8"?>` +
+                `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:tns="SaaS.Services">` +
+                `<soap:Body><tns:Connect>` +
+                `<tns:userName>${loginUsername}</tns:userName>` +
+                `<tns:password>${loginPassword}</tns:password>` +
+                `<tns:tenantId>${tid}</tns:tenantId>` +
+                `<tns:role>${role}</tns:role>` +
+                `</tns:Connect></soap:Body></soap:Envelope>`;
 
-              if (saveRes.ok || saveRes.status === 204) {
-                binaryUploadResults[fieldName] = "ok";
-                uploaded = true;
+              let hEp = "";
+              let hCText = "";
+              let hCStatus = 0;
+              let hSkM: RegExpMatchArray | null = null;
+              let hConnOk = false;
+              let hConnCookies: string[] = []; // ASP.NET session cookies from SOAP Connect response
+              let hSaUsed = `"${hNs}Connect"`; // track which SOAPAction worked
+              const hSoapActions = [
+                `"SaaS.Services/Connect"`,                     // WSDL-confirmed SOAPAction for SaaS Ivanti
+              ];
+              outer: for (const hTenantId of hTenantCandidates) {
+                for (const ep of hEndpoints) {
+                for (const hSa of hSoapActions) {
+                  for (const hRole of hRoleCandidates) {
+                    try {
+                      const hCRes = await fetch(ep, {
+                        method: "POST",
+                        headers: {
+                          "Content-Type": "text/xml; charset=utf-8",
+                          SOAPAction: hSa,
+                          // No Authorization header — FRSHEATIntegration.asmx uses SOAP session auth;
+                          // rest_api_key trips the integration filter before role-check runs.
+                        },
+                        body: hConnXmlFor(hRole, hTenantId), signal: AbortSignal.timeout(15_000),
+                      });
+                      hCText = await hCRes.text().catch(() => "");
+                      hCStatus = hCRes.status;
+                      console.log(`[ivanti-proxy] Binary H Connect (${ep} SA=${hSa} tenant=${hTenantId} role=${hRole}): HTTP ${hCRes.status} ${hCText.slice(0, 500)}`);
+                      hSkM =
+                        hCText.match(/<[^>]*:?sessionKey[^>]*>([^<]+)<\/[^>:]*:?sessionKey>/);
+                      const hConnStatus = (hCText.match(/<[^>]*:?connectionStatus[^>]*>([^<]+)<\/[^>:]*:?connectionStatus>/) ?? [])[1] ?? "";
+                      if (hCRes.ok && (hConnStatus.toLowerCase().includes("success") || hCText.toLowerCase().includes(">success<")) && hSkM?.[1]) {
+                        hEp = ep;
+                        hSaUsed = hSa;
+                        hConnTenant = hTenantId;
+                        hConnOk = true;
+                        // Capture ASP.NET_SessionId set by Connect resp -- UploadImageHandler.ashx validates against it
+                        {
+                          const hCcRaw: string[] =
+                            (hCRes.headers as unknown as { getSetCookie?: () => string[] }).getSetCookie?.() ??
+                            (hCRes.headers.get("set-cookie") ?? "").split(/,(?=[^;]+=)/).filter(Boolean);
+                          for (const hCc of hCcRaw) {
+                            const nv = hCc.split(";")[0].trim();
+                            if (nv) hConnCookies.push(nv);
+                          }
+                          console.log(`[ivanti-proxy] Binary H Connect set-cookie: ${hConnCookies.map(c => c.split("=")[0]).join(",")}`);
+                        }
+                        break outer;
+                      }
+                      // 404 = endpoint not live; skip to next endpoint
+                      if (!hCRes.ok && hCRes.status !== 500) continue outer;
+                      // 500 = endpoint live but Connect failed (wrong role/tenantId) — try next
+                    } catch (ce) {
+                      hCText = ce instanceof Error ? ce.message : String(ce);
+                      hCStatus = 0;
+                    }
+                  }
+                }
+                } // end ep loop
+              }
+
+              if (!hConnOk) {
+                lastErr += ` | H Connect failed HTTP ${hCStatus}: ${hCText.slice(0, 400)}`;
+                devLogAttempts.push({ strategy: "H", detail: "SOAP Connect (all endpoints)", status: hCStatus, result: hCText.slice(0, 800), ok: false });
               } else {
-                lastErr = `Step2 SaveDataExecuteAction HTTP ${saveRes.status}: ${saveText.slice(0, 200)}`;
+                const hSk = hSkM![1];
+                const hDisc = async () => {
+                  try {
+                    await fetch(hEp, {
+                      method: "POST",
+                      headers: { "Content-Type": "text/xml; charset=utf-8", SOAPAction: hSaUsed.replace("Connect", "Disconnect") },
+                      body: `<?xml version="1.0" encoding="utf-8"?>` +
+                        `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:tns="SaaS.Services">` +
+                        `<soap:Body><tns:Disconnect><tns:sessionKey>${hSk}</tns:sessionKey><tns:tenantId>${hConnTenant}</tns:tenantId></tns:Disconnect></soap:Body></soap:Envelope>`,
+                      signal: AbortSignal.timeout(10_000),
+                    });
+                  } catch { /* best-effort */ }
+                };
+                try {
+                  // SOAP UpdateObject with BinaryData -- proven approach per one_shot_key_learning.md
+                  // No web login, no UploadImageHandler. Direct binary write via SOAP.
+                  const hB64Clean = base64.replace(/\s+/g, "");
+                  const hUpdateEnv =
+                    `<?xml version="1.0" encoding="utf-8"?>` +
+                    `<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:tns="SaaS.Services">` +
+                    `<soap:Body><tns:UpdateObject>` +
+                    `<tns:sessionKey>${hSk}</tns:sessionKey>` +
+                    `<tns:tenantId>${hConnTenant}</tns:tenantId>` +
+                    `<tns:commandData>` +
+                    `<tns:ObjectId>${finalRecId}</tns:ObjectId>` +
+                    `<tns:ObjectType>${saveObjectType}</tns:ObjectType>` +
+                    `<tns:Fields>` +
+                    `<tns:ObjectCommandDataFieldValue>` +
+                    `<tns:Name>${fieldName}</tns:Name>` +
+                    `<tns:BinaryData>${hB64Clean}</tns:BinaryData>` +
+                    `</tns:ObjectCommandDataFieldValue>` +
+                    `</tns:Fields>` +
+                    `</tns:commandData>` +
+                    `</tns:UpdateObject></soap:Body></soap:Envelope>`;
+                  const hUpdateRes = await fetch(hEp, {
+                    method: "POST",
+                    headers: {
+                      "Content-Type": "text/xml; charset=utf-8",
+                      SOAPAction: '"SaaS.Services/UpdateObject"',
+                    },
+                    body: hUpdateEnv,
+                    signal: AbortSignal.timeout(60_000),
+                  }).catch(() => null);
+                  const hUpdateText = await hUpdateRes?.text().catch(() => "") ?? "";
+                  const hUpdateOk   = (hUpdateRes?.ok ?? false) && !hUpdateText.toLowerCase().includes("fault");
+                  console.log(`[ivanti-proxy] Binary H SOAP UpdateObject BinaryData: HTTP ${hUpdateRes?.status ?? "ERR"} ok=${hUpdateOk} ${hUpdateText.slice(0, 500)}`);
+                  devLogAttempts.push({ strategy: "H", detail: "SOAP UpdateObject BinaryData", status: hUpdateRes?.status ?? 0, result: hUpdateText.slice(0, 500), ok: hUpdateOk });
+                  if (hUpdateOk) {
+                    binaryUploadResults[fieldName] = "ok (H: SOAP UpdateObject BinaryData)";
+                    uploaded = true;
+                  } else {
+                    lastErr += ` | H UpdateObject HTTP ${hUpdateRes?.status ?? "ERR"}: ${hUpdateText.slice(0, 200)}`;
+                  }
+                } finally {
+                  await hDisc();
+                }
               }
             } catch (e) {
-              lastErr = `Step2 error: ${e instanceof Error ? e.message : String(e)}`;
-              console.warn(`[ivanti-proxy] Binary step2 error:`, lastErr);
+              const msg = e instanceof Error ? e.message : String(e);
+              lastErr += ` | H exception: ${msg}`;
+              devLogAttempts.push({ strategy: "H", detail: "REST Attachment upload exception", status: null, result: msg, ok: false });
             }
           }
 
           if (!uploaded) {
-            binaryUploadResults[fieldName] = lastErr || "upload failed";
+            binaryUploadResults[fieldName] = lastErr || "upload failed (all strategies)";
             console.warn(`[ivanti-proxy] Binary upload failed for ${fieldName}: ${lastErr}`);
           }
+
+          // ── Dev-log push ──────────────────────────────────────────────────────
+          pushBinaryRow({
+            runId:       devLogRunId,
+            ts:          new Date().toISOString(),
+            rowIndex:    devLogRowIndex++,
+            recId:       finalRecId,
+            field:       fieldName,
+            sizeKB,
+            mimeType,
+            attempts:    devLogAttempts,
+            uploaded,
+            finalResult: binaryUploadResults[fieldName] ?? (uploaded ? "ok" : "unknown"),
+          });
         }
       } else {
         console.warn("[ivanti-proxy] Binary fields present but no RecId available for upload");

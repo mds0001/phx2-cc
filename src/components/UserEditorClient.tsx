@@ -15,6 +15,9 @@ import {
   Upload,
   Trash2,
   Loader2,
+  KeyRound,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
 import type { Profile, UserRole } from "@/lib/types";
@@ -64,6 +67,9 @@ export default function UserEditorClient({ user, isNew, currentUserId, customers
   const [lastName, setLastName] = useState(user?.last_name ?? "");
   const [role, setRole] = useState<UserRole>(user?.role ?? "schedule_administrator");
   const [scopedCustomerId, setScopedCustomerId] = useState<string | null>(user?.customer_id ?? null);
+
+  const [newPassword, setNewPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -150,6 +156,7 @@ export default function UserEditorClient({ user, isNew, currentUserId, customers
             last_name: lastName.trim() || null,
             role,
             customer_id: role === "schedule_administrator" ? (scopedCustomerId ?? null) : null,
+            ...(newPassword.trim() ? { password: newPassword.trim() } : {}),
           }),
         });
       }
@@ -330,6 +337,34 @@ export default function UserEditorClient({ user, isNew, currentUserId, customers
             </div>
           </div>
         </div>
+
+        {/* Password — edit mode only */}
+        {!isNew && (
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <KeyRound className="w-4 h-4 text-indigo-400" />
+              <h3 className="text-sm font-semibold text-white">Set Password</h3>
+              <span className="ml-auto text-xs text-gray-600">Leave blank to keep current password</span>
+            </div>
+            <div className="relative">
+              <input
+                type={showPassword ? "text" : "password"}
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="New password (min 6 characters)"
+                autoComplete="new-password"
+                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 pr-11 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-gray-600"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((p) => !p)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors"
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Role */}
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-4">

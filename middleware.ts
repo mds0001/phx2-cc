@@ -33,7 +33,7 @@ export async function middleware(request: NextRequest) {
 
   if (pathname === "/login") {
     if (user) {
-      return NextResponse.redirect(new URL("/dashboard", request.url));
+      return NextResponse.redirect(new URL("/scheduler", request.url));
     }
     return supabaseResponse;
   }

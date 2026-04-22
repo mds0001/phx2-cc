@@ -27,6 +27,8 @@ import {
   Minimize2,
   Save,
   Bug,
+  RotateCcw,
+  Bell,
 } from "lucide-react";
 import type {
   Profile,
@@ -39,7 +41,7 @@ import type {
 } from "@/lib/types";
 import { applyMappingProfile, MappingSlot } from "@/lib/types";
 import { evaluateFilter } from "@/lib/filterExpression";
-import { GitMerge, Plug, BookOpen, Building2, Lock, Shield, ShieldOff } from "lucide-react";
+import { GitMerge, Plug, BookOpen, Building2, Lock, Shield, ShieldOff, ExternalLink, ChevronRight } from "lucide-react";
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -135,6 +137,10 @@ interface FormState {
    *  e.g. "mikeco" → resolves Assets.xlsx as "mikeco/Assets.xlsx" */
   sourceDirectory: string;
   debugMode: boolean;
+  /** Run Until Fixed — SMTP connection for notifications */
+  aiFixSmtpConnectionId: string | null;
+  /** Run Until Fixed — override recipient email */
+  aiFixEmail: string;
 }
 
 const EMPTY_FORM: FormState = {
@@ -148,6 +154,8 @@ const EMPTY_FORM: FormState = {
   targetConnectionId: null,
   sourceDirectory: "",
   debugMode: false,
+  aiFixSmtpConnectionId: null,
+  aiFixEmail: "",
 };
 
 // ─── Component ───────────────────────────────────────────────
@@ -241,6 +249,11 @@ export default function SchedulerClient({
   const [runningTasks, setRunningTasks] = useState<Set<string>>(new Set());
   const [cancellingTasks, setCancellingTasks] = useState<Set<string>>(new Set());
   const [resetingTasks, setResetingTasks] = useState<Set<string>>(new Set());
+  // ── Run Until Fixed state ─────────────────────────────────
+  const [aiFixRunning, setAiFixRunning] = useState<Set<string>>(new Set());
+  const [aiFixIterCounts, setAiFixIterCounts] = useState<Map<string, number>>(new Map());
+  const aiFixModeRef = useRef<Set<string>>(new Set());
+  const aiFixIterationsRef = useRef<Map<string, number>>(new Map());
   // Debug mode expand/collapse per task, and tracked RecID counts from DB
   const [expandedDebug, setExpandedDebug] = useState<Set<string>>(new Set());
   const [trackedCounts, setTrackedCounts] = useState<Map<string, number>>(new Map());
@@ -249,6 +262,13 @@ export default function SchedulerClient({
   const [promoting, setPromoting] = useState<string | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [showSystem, setShowSystem] = useState(false);
+
+  // Pipeline slide-over panel — shows mapping/connection details in-context
+  const [pipelinePanel, setPipelinePanel] = useState<{
+    type: "mapping" | "connection";
+    id: string;
+    taskId: string;
+  } | null>(null);
 
   // Fetch log counts for the initial task list on mount (tasks are SSR'd, counts are not)
   useEffect(() => {
@@ -454,6 +474,16 @@ export default function SchedulerClient({
       // with stale "active" data if the DB update hasn't propagated yet.
       let resolvedFinalStatus: string | null = null;
 
+      // Slot tracking for log prefix — defined before try so catch can also call taskLog
+      let _logSlot = 0;
+      let _slotTotal = 1;
+      const taskLog = (action: string, details: string) =>
+        supabase.from("task_logs").insert({
+          task_id: task.id,
+          action,
+          details: _logSlot > 0 ? `[S${_logSlot}/${_slotTotal}] ${details}` : details,
+        });
+
       try {
         // ── Build slot list — multi-slot tasks override the legacy single profile ──
         const rawSlots = (task.mapping_slots ?? []) as MappingSlot[];
@@ -461,15 +491,7 @@ export default function SchedulerClient({
           ? rawSlots
           : [{ id: "legacy", mapping_profile_id: task.mapping_profile_id, label: undefined }];
         const isMultiSlot = slots.length > 1;
-
-        // Slot tracking for log prefix: 0 = task-level (STARTED/SUMMARY), >0 = slot number
-        let _logSlot = 0;
-        const taskLog = (action: string, details: string) =>
-          supabase.from("task_logs").insert({
-            task_id: task.id,
-            action,
-            details: _logSlot > 0 ? `[S${_logSlot}/${slots.length}] ${details}` : details,
-          });
+        _slotTotal = slots.length;
 
         await taskLog("STARTED", `Task "${task.task_name}" started at ${new Date().toISOString()}`);
 
@@ -507,14 +529,8 @@ export default function SchedulerClient({
           // Check cancellation before starting each slot
           if (cancelledRef.current.has(task.id)) break;
 
-          // Skip disabled slots
-          if (slot.enabled === false) {
-            if (isMultiSlot) {
-              const slotLabel = slot.label ? `: ${slot.label}` : "";
-              await taskLog("INFO", `── Slot ${slotIdx + 1} of ${slots.length}${slotLabel} — SKIPPED (disabled) ──`);
-            }
-            continue;
-          }
+          // Skip disabled slots silently (no log entry — reduces noise in AI_FIX_NEEDED)
+          if (slot.enabled === false) continue;
 
           if (isMultiSlot) {
             const slotLabel = slot.label ? `: ${slot.label}` : "";
@@ -669,10 +685,13 @@ export default function SchedulerClient({
           let embeddedImageMap: Map<number, { base64: string; mimeType: string }> | null = null;
           if (hasImageMapping && resolvedSourceFilePath) {
             try {
+              // Send the already-downloaded xlsx bytes directly -- avoids a
+              // redundant server-side Supabase storage download that can time out.
+              const xlsxBase64 = Buffer.from(arrayBuffer).toString("base64");
               const imgRes = await fetch("/api/extract-xlsx-images", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ storageKey: resolvedSourceFilePath }),
+                body: JSON.stringify({ xlsxBase64 }),
               });
               if (imgRes.ok) {
                 const { images, zipKeys } = await imgRes.json() as {
@@ -704,6 +723,8 @@ export default function SchedulerClient({
           // connection's default BO, which could silently write to the wrong object.
           const effectiveBusinessObject = (fileMappingProfile as unknown as { target_business_object?: string })?.target_business_object?.trim() || undefined;
           const effectiveTenantId       = fileTargetConnection?.tenant_id       ?? undefined;
+          const effectiveLoginUsername  = fileTargetConnection?.login_username  ?? undefined;
+          const effectiveLoginPassword  = fileTargetConnection?.login_password  ?? undefined;
 
           if (!effectiveBusinessObject && (fileTargetConnType === "ivanti" || fileTargetConnType === "ivanti_neurons")) {
             await taskLog("ERROR", `Mapping profile "${fileMappingProfile?.name ?? slot.mapping_profile_id}" has no Business Object set. Open the mapping editor and set the target Business Object before running this task.`);
@@ -1117,6 +1138,9 @@ export default function SchedulerClient({
                 // Binary fields (e.g. ivnt_CatalogImage) are uploaded separately after
                 // the main record write via PUT to the OData property endpoint.
                 ...(binaryFieldsForProxy && { binaryFields: binaryFieldsForProxy }),
+                // Web-UI credentials for ASHX binary upload (when configured on the connection).
+                ...(effectiveLoginUsername && { loginUsername: effectiveLoginUsername }),
+                ...(effectiveLoginPassword && { loginPassword: effectiveLoginPassword }),
               };
               if (resolvedConnType === "dell") {
                 proxyRoute = "/api/dell-proxy";
@@ -1189,10 +1213,11 @@ export default function SchedulerClient({
               if (res.ok && json?.binaryUploadResults) {
                 const binResults = json.binaryUploadResults as Record<string, string>;
                 for (const [field, result] of Object.entries(binResults)) {
-                  if (result === "ok") {
-                    await taskLog("INFO", `Row ${i + 1}: Binary field "${field}" uploaded successfully`);
+                  if (result === "ok" || result.startsWith("ok ") || result.startsWith("ok(")) {
+                    await taskLog("INFO", `Row ${i + 1}: Binary field "${field}" uploaded successfully (${result})`);
                   } else {
-                    await taskLog("WARN", `Row ${i + 1}: Binary field "${field}" upload failed: ${result}`);
+                    rowErrorCount++;
+                    await taskLog("ERROR", `Row ${i + 1}: Binary field "${field}" upload failed: ${result}`);
                   }
                 }
               }
@@ -1204,13 +1229,12 @@ export default function SchedulerClient({
                 await taskLog("ERROR", `Row ${i + 1} Ivanti response: ${_errBody}`);
               }
 
-              // ── Attachment upload: check connection's attachment_rules ───────
-              // If the target Ivanti connection has attachment rules and this row
-              // matched a rule, upload the configured image to the written record.
+              // ── Attachment upload: check mapping profile's attachment_rules ──
+              // If the mapping profile has attachment rules and this row matched a
+              // rule, upload the configured image to the written Ivanti record.
               if (res.ok && resolvedConnType === "ivanti") {
                 const _savedRecId = _recId ?? (_upsert.existingRecId as string | undefined);
-                const _attachRules = ((fileTargetConnection as unknown as Record<string, unknown>)
-                  ?.attachment_rules as AttachmentRule[] | undefined) ?? [];
+                const _attachRules = (fileMappingProfile?.attachment_rules as AttachmentRule[] | undefined) ?? [];
                 if (_savedRecId && _attachRules.length > 0 && effectiveBusinessObject) {
                   for (const _rule of _attachRules) {
                     const _fieldVal = String(payload[_rule.matchField] ?? "").trim();
@@ -1221,8 +1245,9 @@ export default function SchedulerClient({
                           headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({
                             ivantiUrl:      effectiveUrl,
-                            apiKey:         effectiveApiKey,
-                            tenantId:       effectiveTenantId,
+                            username:       effectiveLoginUsername,
+                            password:       effectiveLoginPassword,
+                            tenant:         effectiveTenantId ?? "",
                             businessObject: effectiveBusinessObject,
                             recordRecId:    _savedRecId,
                             storageKey:     _rule.storageKey,
@@ -2337,6 +2362,183 @@ export default function SchedulerClient({
     );
   }
 
+  // ── Run Until Fixed (Claude-driven) ──────────────────────
+  const MAX_AI_FIX_ITER = 10;
+
+  async function startRunUntilFixed(task: ScheduledTask) {
+    if (aiFixModeRef.current.has(task.id)) return; // already looping
+    aiFixModeRef.current.add(task.id);
+    aiFixIterationsRef.current.set(task.id, 0);
+    setAiFixRunning((p) => { const n = new Set(p); n.add(task.id); return n; });
+    setAiFixIterCounts((p) => { const n = new Map(p); n.set(task.id, 0); return n; });
+
+    await supabase
+      .from("scheduled_tasks")
+      .update({ ai_fix_mode: true })
+      .eq("id", task.id);
+
+    let iter = 0;
+    let lastAnalysis = "";
+    let lastSuggestion = "";
+
+    while (aiFixModeRef.current.has(task.id) && iter < MAX_AI_FIX_ITER) {
+      iter++;
+      aiFixIterationsRef.current.set(task.id, iter);
+      setAiFixIterCounts((p) => { const n = new Map(p); n.set(task.id, iter); return n; });
+
+      // ── Log that we're starting this attempt ────────────────
+      await supabase.from("task_logs").insert({
+        task_id: task.id,
+        action: "AI_FIX",
+        details: `🔄 Run Until Fixed — attempt ${iter} of ${MAX_AI_FIX_ITER}`,
+      });
+
+      // ── Clear server dev-log before firing so we only capture this run ──
+      await fetch("/api/dev-log", { method: "DELETE" }).catch(() => {});
+
+      // ── Fire the task ───────────────────────────────────────
+      await executeTask(task);
+      if (!aiFixModeRef.current.has(task.id)) break; // cancelled mid-run
+
+      // ── Fetch fresh status + recent logs + server dev-log ──
+      const [{ data: fresh }, { data: recentLogs }, devLogRes] = await Promise.all([
+        supabase
+          .from("scheduled_tasks")
+          .select("status")
+          .eq("id", task.id)
+          .single(),
+        supabase
+          .from("task_logs")
+          .select("action, details, created_at")
+          .eq("task_id", task.id)
+          .order("created_at", { ascending: false })
+          .limit(80),
+        fetch("/api/dev-log").then((r) => r.ok ? r.json() : null).catch(() => null),
+      ]);
+
+      const finalStatus = fresh?.status ?? "unknown";
+      const logs = (recentLogs ?? []).reverse();
+      const serverTelemetry = devLogRes ?? [];
+      const isFixed = finalStatus === "completed";
+
+      // ── If fixed, celebrate and stop ───────────────────────
+      if (isFixed) {
+        await fetch("/api/send-notification", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            taskId: task.id,
+            status: "fixed",
+            message: `Task resolved after ${iter} attempt${iter !== 1 ? "s" : ""}.`,
+            iterations: iter,
+          }),
+        }).catch(() => {});
+        await supabase.from("task_logs").insert({
+          task_id: task.id,
+          action: "AI_FIXED",
+          details: `✅ Resolved after ${iter} attempt${iter !== 1 ? "s" : ""}.`,
+        });
+        break;
+      }
+
+      // ── Not fixed — signal Claude in Cowork to analyse & fix ─
+      // Write AI_FIX_NEEDED with full telemetry payload so Claude can read it,
+      // edit the proxy code, then write AI_FIX_APPLIED to resume the loop.
+      await supabase.from("task_logs").insert({
+        task_id: task.id,
+        action: "AI_FIX_NEEDED",
+        details: JSON.stringify({
+          iteration: iter,
+          maxIterations: MAX_AI_FIX_ITER,
+          finalStatus,
+          taskName: task.task_name,
+          logs: logs.slice(-60),
+          serverTelemetry,
+        }),
+      });
+
+      await supabase.from("task_logs").insert({
+        task_id: task.id,
+        action: "AI_ANALYSIS",
+        details: `⏳ Waiting for Claude to analyse telemetry and apply a fix… (attempt ${iter}/${MAX_AI_FIX_ITER})`,
+      });
+
+      // ── Wait for Claude to write AI_FIX_APPLIED or AI_FIX_STUCK ─────────
+      // Poll task_logs every 5s for up to 10 minutes.
+      const CLAUDE_TIMEOUT_MS = 10 * 60 * 1000;
+      const POLL_INTERVAL_MS  = 5_000;
+      const waitStart = Date.now();
+      let claudeSignal: "retry" | "stop" | null = null;
+
+      while (Date.now() - waitStart < CLAUDE_TIMEOUT_MS) {
+        if (!aiFixModeRef.current.has(task.id)) break; // user cancelled
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+        const { data: signals } = await supabase
+          .from("task_logs")
+          .select("action, details, created_at")
+          .eq("task_id", task.id)
+          .in("action", ["AI_FIX_APPLIED", "AI_FIX_STUCK"])
+          .order("created_at", { ascending: false })
+          .limit(1);
+        if (signals && signals.length > 0) {
+          claudeSignal = signals[0].action === "AI_FIX_APPLIED" ? "retry" : "stop";
+          break;
+        }
+      }
+
+      if (!aiFixModeRef.current.has(task.id)) break; // cancelled while waiting
+
+      if (claudeSignal === "stop" || claudeSignal === null) {
+        const reason = claudeSignal === null ? "Timed out waiting for Claude response." : "Claude determined the issue cannot be fixed automatically.";
+        await fetch("/api/send-notification", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            taskId: task.id,
+            status: "stuck",
+            message: reason,
+            iterations: iter,
+          }),
+        }).catch(() => {});
+        await supabase.from("task_logs").insert({
+          task_id: task.id,
+          action: "AI_STUCK",
+          details: `⚠️ ${reason}`,
+        });
+        break;
+      }
+
+      // claudeSignal === "retry" — loop back and fire the task again
+    }
+
+    // ── Cleanup ─────────────────────────────────────────────
+    aiFixModeRef.current.delete(task.id);
+    aiFixIterationsRef.current.delete(task.id);
+    setAiFixRunning((p) => { const n = new Set(p); n.delete(task.id); return n; });
+    setAiFixIterCounts((p) => { const n = new Map(p); n.delete(task.id); return n; });
+    await supabase
+      .from("scheduled_tasks")
+      .update({ ai_fix_mode: false })
+      .eq("id", task.id);
+  }
+
+  async function cancelRunUntilFixed(taskId: string) {
+    aiFixModeRef.current.delete(taskId);
+    aiFixIterationsRef.current.delete(taskId);
+    setAiFixRunning((p) => { const n = new Set(p); n.delete(taskId); return n; });
+    setAiFixIterCounts((p) => { const n = new Map(p); n.delete(taskId); return n; });
+
+    await supabase.from("task_logs").insert({
+      task_id: taskId,
+      action: "AI_CANCELLED",
+      details: "Run Until Fixed cancelled by user.",
+    });
+    await supabase
+      .from("scheduled_tasks")
+      .update({ ai_fix_mode: false })
+      .eq("id", taskId);
+  }
+
   // ── Open edit modal ───────────────────────────────────────
   function openEdit(task: ScheduledTask) {
     setEditTask(task);
@@ -2353,6 +2555,8 @@ export default function SchedulerClient({
       targetConnectionId: task.target_connection_id ?? null,
       sourceDirectory: task.source_file_path ?? "",
       debugMode: task.debug_mode ?? false,
+      aiFixSmtpConnectionId: task.ai_fix_smtp_connection_id ?? null,
+      aiFixEmail: task.ai_fix_email ?? "",
     });
   }
 
@@ -2384,6 +2588,8 @@ export default function SchedulerClient({
           write_mode: editForm.writeMode ?? "upsert",
           customer_id: editForm.customerId ?? null,
           debug_mode: editForm.debugMode ?? false,
+          ai_fix_smtp_connection_id: editForm.aiFixSmtpConnectionId ?? null,
+          ai_fix_email: editForm.aiFixEmail.trim() || null,
         })
         .eq("id", editTask.id)
         .select("id");
@@ -2974,15 +3180,11 @@ export default function SchedulerClient({
                           })()}
                         </div>
                         <p className="text-xs text-gray-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
-                          {task.mapping_profile_id && (
-                            <GitMerge className="w-3 h-3 text-purple-400 shrink-0" />
-                          )}
-                          <span>{mappingProfiles.find(m => m.id === task.mapping_profile_id)?.name ?? "No mapping"}</span>
-                          <span>&bull;</span>
                           <span>{task.recurrence.charAt(0).toUpperCase() + task.recurrence.slice(1)}</span>
                           <span>&bull;</span>
                           <span>{formatLocalDateTime(task.start_date_time)}</span>
                         </p>
+
                       </div>
 
                       {/* Actions */}
@@ -3034,7 +3236,7 @@ export default function SchedulerClient({
 
                               <button
                                 onClick={() => executeTask(task)}
-                                disabled={isRunning || resetingTasks.has(task.id)}
+                                disabled={isRunning || resetingTasks.has(task.id) || aiFixRunning.has(task.id)}
                                 className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 text-emerald-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
                               >
                                 {isRunning ? (
@@ -3044,6 +3246,33 @@ export default function SchedulerClient({
                                 )}
                                 {isRunning ? "Running…" : "Run Now"}
                               </button>
+
+                              {/* Run Until Fixed — card button */}
+                              {!aiFixRunning.has(task.id) ? (
+                                <button
+                                  onClick={() => startRunUntilFixed(task)}
+                                  disabled={isRunning || resetingTasks.has(task.id)}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-500/10 hover:bg-violet-500/20 border border-violet-500/25 text-violet-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
+                                  title="Auto-retry until the task completes without errors (max 10 attempts)"
+                                >
+                                  <RotateCcw className="w-3 h-3" />
+                                  Run Until Fixed
+                                </button>
+                              ) : (
+                                <>
+                                  <span className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-500/10 border border-violet-500/25 text-violet-300 rounded-lg text-xs font-medium select-none">
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                    Attempt {aiFixIterCounts.get(task.id) ?? 0}/{MAX_AI_FIX_ITER}
+                                  </span>
+                                  <button
+                                    onClick={() => cancelRunUntilFixed(task.id)}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/25 text-orange-400 rounded-lg text-xs font-medium transition-all"
+                                  >
+                                    <X className="w-3 h-3" />
+                                    Stop Auto-Fix
+                                  </button>
+                                </>
+                              )}
 
                               {task.debug_mode && isAdmin && (
                                 <>
@@ -3280,7 +3509,7 @@ export default function SchedulerClient({
                                       {slotNum}<span className="text-indigo-500 font-normal">/{slotTotal}</span>
                                     </span>
                                   )}
-                                  <span className="text-gray-300 break-all text-[12px]">
+                                  <span className="text-gray-300 break-all text-[12px] flex-1">
                                     {(() => {
                                       // Render clickable links for "— Download: <url>" and "— Details: <url>".
                                       const lnkMatch = bodyText.match(/— (Download|Details): (https?:\/\/\S+)/);
@@ -3294,6 +3523,21 @@ export default function SchedulerClient({
                                       return <>{bodyText}</>;
                                     })()}
                                   </span>
+                                  {/* For ERROR logs — quick link to edit the mapping */}
+                                  {log.action === "ERROR" && (() => {
+                                    const activeSlots = (task.mapping_slots ?? []).filter(s => s.mapping_profile_id);
+                                    const mpId = activeSlots[0]?.mapping_profile_id ?? task.mapping_profile_id;
+                                    const mp = mappingProfiles.find(m => m.id === mpId);
+                                    if (!mp) return null;
+                                    return (
+                                      <button
+                                        onClick={() => setPipelinePanel({ type: "mapping", id: mp.id, taskId: task.id })}
+                                        className="shrink-0 ml-2 text-[10px] text-indigo-400 hover:text-indigo-300 underline underline-offset-2 whitespace-nowrap"
+                                      >
+                                        → edit mapping
+                                      </button>
+                                    );
+                                  })()}
                                 </div>
                               );
                             })
@@ -3397,6 +3641,13 @@ export default function SchedulerClient({
           STARTED: "text-indigo-400",
           EDITED: "text-purple-400",
           SUMMARY: "text-violet-400",
+          AI_FIX: "text-violet-300",
+          AI_ANALYSIS: "text-sky-300",
+          AI_FIX_NEEDED: "text-yellow-300",
+          AI_FIX_APPLIED: "text-emerald-300",
+          AI_FIXED: "text-emerald-300",
+          AI_STUCK: "text-orange-400",
+          AI_CANCELLED: "text-gray-500",
         };
         const fsCreated = fsLogs.filter(l => l.action === "SUCCESS" && !(l.details ?? "").includes("Updated")).length;
         const fsUpdated = fsLogs.filter(l => l.action === "SUCCESS" && (l.details ?? "").includes("Updated")).length;
@@ -3453,12 +3704,40 @@ export default function SchedulerClient({
                 {/* Run Now */}
                 <button
                   onClick={() => fsTask && executeTask(fsTask)}
-                  disabled={fsIsRunning || (fsTask ? resetingTasks.has(fsTask.id) : false)}
+                  disabled={fsIsRunning || (fsTask ? resetingTasks.has(fsTask.id) : false) || (fsTask ? aiFixRunning.has(fsTask.id) : false)}
                   className="flex items-center gap-1 px-2.5 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 text-emerald-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
                 >
                   {fsIsRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
                   {fsIsRunning ? "Running…" : "Run Now"}
                 </button>
+
+                {/* Run Until Fixed */}
+                {fsTask && !aiFixRunning.has(fsTask.id) && (
+                  <button
+                    onClick={() => fsTask && startRunUntilFixed(fsTask)}
+                    disabled={fsIsRunning}
+                    className="flex items-center gap-1 px-2.5 py-1 bg-violet-500/10 hover:bg-violet-500/20 border border-violet-500/25 text-violet-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
+                    title="Automatically re-run this task until it completes without errors (max 10 attempts)"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    Run Until Fixed
+                  </button>
+                )}
+                {fsTask && aiFixRunning.has(fsTask.id) && (
+                  <>
+                    <span className="flex items-center gap-1 px-2.5 py-1 bg-violet-500/10 border border-violet-500/25 text-violet-300 rounded-lg text-xs font-medium select-none">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Attempt {aiFixIterCounts.get(fsTask.id) ?? 0}/{MAX_AI_FIX_ITER}
+                    </span>
+                    <button
+                      onClick={() => fsTask && cancelRunUntilFixed(fsTask.id)}
+                      className="flex items-center gap-1 px-2.5 py-1 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/25 text-orange-400 rounded-lg text-xs font-medium transition-all"
+                    >
+                      <X className="w-3 h-3" />
+                      Stop Auto-Fix
+                    </button>
+                  </>
+                )}
 
                 {/* Debug — debug mode only, admin only */}
                 {fsTask?.debug_mode && isAdmin && (
@@ -3962,6 +4241,50 @@ export default function SchedulerClient({
 
                 </div>
 
+              {/* Run Until Fixed — Notification Settings */}
+              <div className="border border-violet-500/20 bg-violet-500/5 rounded-2xl p-5">
+                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-1.5">
+                  <Bell className="w-3 h-3 text-violet-400" />
+                  Run Until Fixed — Notifications
+                  <span className="text-gray-600 normal-case font-normal ml-1">(optional)</span>
+                </label>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1.5">SMTP Connection</label>
+                    <select
+                      value={editForm.aiFixSmtpConnectionId ?? ""}
+                      onChange={(e) => setEditForm((p) => ({ ...p, aiFixSmtpConnectionId: e.target.value || null }))}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+                    >
+                      <option value="">— No notifications —</option>
+                      {endpointConnections
+                        .filter((c) => c.type === "smtp")
+                        .map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                    </select>
+                    {endpointConnections.filter((c) => c.type === "smtp").length === 0 && (
+                      <p className="text-xs text-gray-600 mt-1">No SMTP connections configured yet.</p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1.5">Recipient Email</label>
+                    <input
+                      type="email"
+                      value={editForm.aiFixEmail}
+                      onChange={(e) => setEditForm((p) => ({ ...p, aiFixEmail: e.target.value }))}
+                      placeholder="Leave blank to use your profile email"
+                      className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 placeholder-gray-600"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-gray-600 mt-3">
+                  An email is sent when the task resolves ✅ or gets stuck after {MAX_AI_FIX_ITER} attempts ⚠️.
+                </p>
+              </div>
+
               <p className="text-xs text-yellow-400/70 bg-yellow-500/10 border border-yellow-500/20 rounded-xl px-4 py-3">
                 ⚠️ Saving will reset this task&apos;s status back to
                 &quot;Waiting&quot;.
@@ -3990,6 +4313,151 @@ export default function SchedulerClient({
           </div>
         </div>
       )}
+
+      {/* ── Pipeline Slide-over Panel ── */}
+      {pipelinePanel && (() => {
+        const isMapping = pipelinePanel.type === "mapping";
+        const mp  = isMapping ? mappingProfiles.find(m => m.id === pipelinePanel.id) : null;
+        const con = !isMapping ? endpointConnections.find(c => c.id === pipelinePanel.id) : null;
+        const task = tasks.find(t => t.id === pipelinePanel.taskId);
+
+        // Resolve sibling connections when showing a mapping
+        const srcConn = mp ? endpointConnections.find(c => c.id === mp.source_connection_id) : null;
+        const tgtConn = mp ? endpointConnections.find(c => c.id === (task?.target_connection_id ?? mp.target_connection_id)) : null;
+
+        const mappings = mp?.mappings ?? [];
+
+        const editUrl = isMapping
+          ? `/mappings/${pipelinePanel.id}?returnTo=scheduler`
+          : `/connections/${pipelinePanel.id}?returnTo=scheduler`;
+
+        return (
+          <>
+            {/* Backdrop */}
+            <div
+              className="fixed inset-0 z-40 bg-black/30 backdrop-blur-[1px]"
+              onClick={() => setPipelinePanel(null)}
+            />
+            {/* Panel */}
+            <div className="fixed top-0 right-0 bottom-0 z-50 w-[400px] bg-gray-900 border-l border-gray-800 shadow-2xl flex flex-col">
+              {/* Header */}
+              <div className="flex items-start justify-between px-5 py-4 border-b border-gray-800 shrink-0">
+                <div>
+                  <div className="flex items-center gap-2">
+                    {isMapping
+                      ? <GitMerge className="w-4 h-4 text-purple-400" />
+                      : <Plug className="w-4 h-4 text-sky-400" />}
+                    <span className="text-sm font-semibold text-white">
+                      {isMapping ? "Mapping Profile" : "Endpoint"}
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-0.5 ml-6">
+                    {mp?.name ?? con?.name ?? "\u2014"}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setPipelinePanel(null)}
+                  className="text-gray-600 hover:text-gray-400 transition-colors mt-0.5"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+                {isMapping && mp ? (
+                  <>
+                    {/* Connected endpoints */}
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-gray-800 border border-gray-700 text-gray-400">
+                        <Plug className="w-3 h-3 text-sky-400" />
+                        {srcConn?.name ?? <span className="text-gray-600">No source</span>}
+                      </span>
+                      <ChevronRight className="w-3 h-3 text-gray-700 shrink-0" />
+                      <span className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-gray-800 border border-gray-700 text-gray-400">
+                        <Plug className="w-3 h-3 text-emerald-400" />
+                        {tgtConn?.name ?? <span className="text-gray-600">No target</span>}
+                      </span>
+                    </div>
+
+                    {/* Field mappings */}
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+                          Field Mappings ({mappings.length})
+                        </span>
+                      </div>
+                      <div className="space-y-1">
+                        {mappings.slice(0, 20).map((m, i) => {
+                          const srcName = mp!.source_fields.find(f => f.id === m.sourceFieldId)?.name ?? m.sourceFieldId;
+                          const tgtName = mp!.target_fields.find(f => f.id === m.targetFieldId)?.name ?? m.targetFieldId;
+                          return (
+                            <div key={i} className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-gray-800/60 border border-gray-700/50 text-[11px]">
+                              <span className="text-gray-400 truncate flex-1">{srcName}</span>
+                              <ChevronRight className="w-3 h-3 text-gray-700 shrink-0" />
+                              <span className="text-gray-300 truncate flex-1 text-right">{tgtName}</span>
+                              {m.transform && m.transform !== "none" && (
+                                <span className="shrink-0 px-1 py-0.5 rounded bg-indigo-900/40 border border-indigo-700/30 text-indigo-400 text-[10px]">
+                                  {m.transform}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                        {mappings.length > 20 && (
+                          <p className="text-[11px] text-gray-600 pl-1">+{mappings.length - 20} more\u2026</p>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                ) : con ? (
+                  <>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-gray-800/60 border border-gray-700/50">
+                        <span className="text-[11px] text-gray-500">Type</span>
+                        <span className="text-[11px] text-gray-300 font-medium capitalize">{con.type}</span>
+                      </div>
+                      {!!(con.config as unknown as Record<string, unknown>)?.url && (
+                        <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-gray-800/60 border border-gray-700/50">
+                          <span className="text-[11px] text-gray-500">URL</span>
+                          <span className="text-[11px] text-gray-300 font-medium truncate max-w-[240px]">
+                            {String((con.config as unknown as Record<string, unknown>).url)}
+                          </span>
+                        </div>
+                      )}
+                      {!!(con.config as unknown as Record<string, unknown>)?.file_path && (
+                        <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-gray-800/60 border border-gray-700/50">
+                          <span className="text-[11px] text-gray-500">File</span>
+                          <span className="text-[11px] text-gray-300 font-medium truncate max-w-[240px]">
+                            {String((con.config as unknown as Record<string, unknown>).file_path)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : null}
+              </div>
+
+              {/* Footer */}
+              <div className="px-5 py-4 border-t border-gray-800 shrink-0 flex gap-2">
+                <button
+                  onClick={() => { router.push(editUrl); setPipelinePanel(null); }}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-semibold transition-all"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  Open Full Editor
+                </button>
+                <button
+                  onClick={() => setPipelinePanel(null)}
+                  className="px-4 py-2.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 rounded-xl text-sm font-medium transition-all"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </>
+        );
+      })()}
     </div>
   );
 }

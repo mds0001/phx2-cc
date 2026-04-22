@@ -28,6 +28,8 @@ import {
   ChevronUp,
   ChevronDown as ChevronDownIcon,
   PenLine,
+  ImageIcon,
+  Loader2,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
 import { validateFilterExpression } from "@/lib/filterExpression";
@@ -40,6 +42,7 @@ import type {
   EndpointConnection,
   ConnectionType,
   IvantiConfig,
+  AttachmentRule,
 } from "@/lib/types";
 
 // ── Ivanti CI preset destination fields ────────────────────────────
@@ -113,6 +116,155 @@ function rulesToExpression(rules: FilterRule[]): string {
   }).join("");
 }
 
+// ── Attachment Rules Editor ────────────────────────────────────
+// Shown in the mapping profile editor when the target is an Ivanti connection.
+// Rules define which static image to attach to a record when a field matches a value.
+function AttachmentRulesEditor({
+  rules,
+  onChange,
+}: {
+  rules: AttachmentRule[];
+  onChange: (rules: AttachmentRule[]) => void;
+}) {
+  const supabase = createClient();
+  const [uploading, setUploading] = useState<string | null>(null);
+
+  function addRule() {
+    onChange([
+      ...rules,
+      { id: crypto.randomUUID(), matchField: "Name", matchValue: "", storageKey: "", fileName: "" },
+    ]);
+  }
+
+  function removeRule(id: string) {
+    onChange(rules.filter((r) => r.id !== id));
+  }
+
+  function updateRule(id: string, patch: Partial<AttachmentRule>) {
+    onChange(rules.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  }
+
+  async function handleImageUpload(ruleId: string, file: File | undefined) {
+    if (!file) return;
+    setUploading(ruleId);
+    try {
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const path = `attachment-images/${crypto.randomUUID()}_${safeName}`;
+      const { error } = await supabase.storage.from("task_files").upload(path, file, { upsert: true });
+      if (error) throw error;
+      updateRule(ruleId, { storageKey: path, fileName: file.name });
+    } catch (err) {
+      alert("Image upload failed: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setUploading(null);
+    }
+  }
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+            <ImageIcon className="w-4 h-4 text-orange-400" />
+            Attachment Rules
+          </h3>
+          <p className="text-xs text-gray-500 mt-1">
+            Images to attach to matching Ivanti records (e.g. catalog entry icons).
+            When a written record&apos;s field equals the match value, the uploaded image
+            is attached. PNG, 150×150 px recommended.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={addRule}
+          className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/30 text-orange-300 text-xs font-semibold rounded-lg transition-all"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          Add Rule
+        </button>
+      </div>
+
+      {rules.length === 0 && (
+        <p className="text-xs text-gray-600 italic">No attachment rules — add one above to link images to catalog entries.</p>
+      )}
+
+      <div className="flex flex-col gap-3">
+        {rules.map((rule) => (
+          <div key={rule.id} className="bg-gray-800/60 border border-gray-700 rounded-xl p-4 flex flex-col gap-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-medium text-gray-400 mb-1 block">Match Field</label>
+                <input
+                  type="text"
+                  value={rule.matchField}
+                  onChange={(e) => updateRule(rule.id, { matchField: e.target.value })}
+                  placeholder="e.g. Name"
+                  className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white placeholder-gray-600 text-sm focus:outline-none focus:ring-1 focus:ring-orange-500"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-400 mb-1 block">Match Value</label>
+                <input
+                  type="text"
+                  value={rule.matchValue}
+                  onChange={(e) => updateRule(rule.id, { matchValue: e.target.value })}
+                  placeholder="e.g. New Laptop Request"
+                  className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white placeholder-gray-600 text-sm focus:outline-none focus:ring-1 focus:ring-orange-500"
+                />
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex-1">
+                {rule.fileName ? (
+                  <div className="flex items-center gap-2 px-3 py-2 bg-gray-900 border border-orange-500/30 rounded-lg">
+                    <ImageIcon className="w-4 h-4 text-orange-400 shrink-0" />
+                    <span className="text-sm text-white truncate flex-1">{rule.fileName}</span>
+                    <button
+                      type="button"
+                      onClick={() => updateRule(rule.id, { storageKey: "", fileName: "" })}
+                      className="shrink-0 text-gray-500 hover:text-red-400 transition-colors"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ) : (
+                  <label className="cursor-pointer block">
+                    <div className={`flex items-center gap-2 px-3 py-2 border border-dashed rounded-lg transition-colors ${
+                      uploading === rule.id ? "border-orange-500/60 bg-orange-500/5" : "border-gray-600 hover:border-orange-500/50 hover:bg-gray-800"
+                    }`}>
+                      {uploading === rule.id
+                        ? <Loader2 className="w-3.5 h-3.5 text-orange-400 animate-spin" />
+                        : <Upload className="w-3.5 h-3.5 text-gray-400" />}
+                      <span className="text-xs text-gray-400">
+                        {uploading === rule.id ? "Uploading…" : "Upload image (PNG, 150×150 px)"}
+                      </span>
+                    </div>
+                    <input
+                      type="file"
+                      accept=".png,.jpg,.jpeg,.gif,.svg,.webp"
+                      className="hidden"
+                      disabled={uploading !== null}
+                      onChange={(e) => handleImageUpload(rule.id, e.target.files?.[0])}
+                    />
+                  </label>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => removeRule(rule.id)}
+                className="shrink-0 p-2 text-gray-500 hover:text-red-400 transition-colors"
+                title="Remove rule"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Props ──────────────────────────────────────────────────────
 
 const sortByName = <T extends { name: string }>(arr: T[]): T[] =>
@@ -168,6 +320,9 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
   );
   const [filterExpression, setFilterExpression] = useState<string>(
     profile?.filter_expression ?? ""
+  );
+  const [attachmentRules, setAttachmentRules] = useState<AttachmentRule[]>(
+    profile?.attachment_rules ?? []
   );
   const [filterError, setFilterError] = useState<string | null>(null);
   const [filterMode, setFilterMode] = useState<"builder" | "expression">(
@@ -601,6 +756,7 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
         relationship_name: manyToMany ? (relationshipName.trim() || null) : null,
         many_to_many: manyToMany,
         filter_expression: filterExpression.trim() || null,
+        attachment_rules: attachmentRules,
         created_by: userId,
         customer_id: customerId ?? null,
       };
@@ -643,7 +799,7 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
     }
   }, [
     name, description, sourceFields, targetFields, mappings,
-    sourceConnectionId, targetConnectionId, filterExpression,
+    sourceConnectionId, targetConnectionId, filterExpression, attachmentRules,
     userId, isNew, profile, supabase, router, targetBusinessObject, customerId,
   ]);
 
@@ -759,7 +915,7 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center gap-4 shrink-0">
             <button
-              onClick={() => router.push("/mappings")}
+              onClick={() => router.push(returnTo === "scheduler" ? "/scheduler" : "/mappings")}
               className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors text-sm"
             >
               <ArrowLeft className="w-4 h-4" />
@@ -1042,6 +1198,18 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
             </p>
           )}
         </div>
+
+        {/* ── Attachment Rules (Ivanti target only) ── */}
+        {(() => {
+          const tgt = targetConnectionId ? connections.find((c) => c.id === targetConnectionId) : null;
+          if (!tgt || tgt.type !== "ivanti") return null;
+          return (
+            <AttachmentRulesEditor
+              rules={attachmentRules}
+              onChange={setAttachmentRules}
+            />
+          );
+        })()}
 
         {/* ── Row Filter ── */}
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">

@@ -103,12 +103,13 @@ export async function POST(request: NextRequest) {
 
       // ── Ivanti ───────────────────────────────────────────────
       case "ivanti": {
-        const { url, api_key, business_object, tenant_id } = config;
+        const { url, api_key, business_object, tenant_id, login_username, login_password } = config;
         if (!url)     return result(false, "No URL configured");
         if (!api_key) return result(false, "No API key configured");
 
-        const obj      = business_object || "CI__Computers";
-        const endpoint = `${url.replace(/\/$/, "")}/api/odata/businessobject/${obj}?$top=1`;
+        const base = url.replace(/\/$/, "");
+        const obj  = business_object || "CI__Computers";
+        const odataEndpoint = `${base}/api/odata/businessobject/${obj}?$top=1`;
 
         const headers: Record<string, string> = {
           Authorization: `rest_api_key=${api_key}`,
@@ -116,8 +117,10 @@ export async function POST(request: NextRequest) {
         };
         if (tenant_id) headers["X-Tenant-Id"] = tenant_id;
 
+        // Step 1: verify REST API key via OData
+        let apiMessage = "";
         try {
-          const res = await fetch(endpoint, {
+          const res = await fetch(odataEndpoint, {
             method: "GET",
             headers,
             signal: AbortSignal.timeout(10000),
@@ -126,14 +129,107 @@ export async function POST(request: NextRequest) {
           if (res.ok) {
             const data = await res.json().catch(() => ({}));
             const count = Array.isArray(data?.value) ? data.value.length : "?";
-            return result(true, `Connected — ${count} record(s) returned from ${obj}`);
+            apiMessage = `API key OK — ${count} record(s) from ${obj}`;
+          } else {
+            const body = await res.text().catch(() => "");
+            return result(false, `API key check failed — HTTP ${res.status}: ${body.slice(0, 200) || res.statusText}`);
           }
-
-          const body = await res.text().catch(() => "");
-          return result(false, `HTTP ${res.status}: ${body.slice(0, 200) || res.statusText}`);
         } catch (e) {
           return result(false, `Unreachable: ${e instanceof Error ? e.message : String(e)}`);
         }
+
+        // Step 2: if web UI credentials are configured, verify them via form login.
+        // Ivanti SaaS (saasit.com) uses ASP.NET WebForms at Default.aspx.
+        if (login_username && login_password) {
+          try {
+            // Use the known SaaS login URL directly; fall back to root for on-prem.
+            const logonUrl = `${base}/Default.aspx?NoDefaultProvider=True`;
+
+            // Collect cookies across requests (merge by name).
+            const cookies: string[] = [];
+            const captureCookies = (h: string | null) => {
+              if (!h) return;
+              for (const pair of h.split(/,(?=[^;]+=[^;]+)/)) {
+                const nv = pair.split(";")[0].trim();
+                if (!nv) continue;
+                const name = nv.split("=")[0];
+                const idx = cookies.findIndex(c => c.split("=")[0] === name);
+                if (idx >= 0) cookies[idx] = nv; else cookies.push(nv);
+              }
+            };
+
+            // GET login page — extract ASP.NET WebForms hidden fields and input names.
+            const pageRes = await fetch(logonUrl, {
+              method: "GET",
+              headers: { Accept: "text/html,application/xhtml+xml,*/*", "User-Agent": "Mozilla/5.0" },
+              redirect: "follow",
+              signal: AbortSignal.timeout(8000),
+            });
+            captureCookies(pageRes.headers.get("set-cookie"));
+            const html = await pageRes.text().catch(() => "");
+
+            // ASP.NET WebForms hidden fields.
+            const viewState          = (html.match(/(?:id|name)="__VIEWSTATE"[^>]+value="([^"]*)"/)          ?? html.match(/value="([^"]*)"[^>]*(?:id|name)="__VIEWSTATE"/))?.[1]          ?? "";
+            const eventValidation    = (html.match(/(?:id|name)="__EVENTVALIDATION"[^>]+value="([^"]*)"/)    ?? html.match(/value="([^"]*)"[^>]*(?:id|name)="__EVENTVALIDATION"/))?.[1]    ?? "";
+            const viewStateGenerator = (html.match(/(?:id|name)="__VIEWSTATEGENERATOR"[^>]+value="([^"]*)"/) ?? html.match(/value="([^"]*)"[^>]*(?:id|name)="__VIEWSTATEGENERATOR"/))?.[1] ?? "";
+
+            // Dynamically find username / password / submit field names.
+            const userField = (html.match(/<input[^>]+type=["']?text["']?[^>]+name="([^"]+)"/i)      ?? html.match(/<input[^>]+name="([^"]+)"[^>]+type=["']?text["']?/i))?.[1]     ?? "UserName";
+            const passField = (html.match(/<input[^>]+type=["']?password["']?[^>]+name="([^"]+)"/i)  ?? html.match(/<input[^>]+name="([^"]+)"[^>]+type=["']?password["']?/i))?.[1] ?? "Password";
+            const btnField  = (html.match(/<input[^>]+type=["']?submit["']?[^>]+name="([^"]+)"/i)    ?? html.match(/<input[^>]+name="([^"]+)"[^>]+type=["']?submit["']?/i))?.[1];
+            const btnValue  = btnField ? ((html.match(new RegExp(`name="${btnField}"[^>]+value="([^"]+)"`)) ?? html.match(new RegExp(`value="([^"]+)"[^>]*name="${btnField}"`)  ))?.[1] ?? "Login") : undefined;
+
+            // Build form POST body.
+            const loginParams = new URLSearchParams();
+            if (viewState)          loginParams.set("__VIEWSTATE",          viewState);
+            if (eventValidation)    loginParams.set("__EVENTVALIDATION",    eventValidation);
+            if (viewStateGenerator) loginParams.set("__VIEWSTATEGENERATOR", viewStateGenerator);
+            loginParams.set(userField, login_username);
+            loginParams.set(passField, login_password);
+            if (btnField && btnValue) loginParams.set(btnField, btnValue);
+            if (tenant_id) loginParams.set("TenantId", tenant_id);
+
+            const loginRes = await fetch(logonUrl, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "User-Agent": "Mozilla/5.0",
+                Accept: "text/html,application/xhtml+xml,*/*",
+                ...(cookies.length > 0 ? { Cookie: cookies.join("; ") } : {}),
+              },
+              body: loginParams.toString(),
+              redirect: "manual",
+              signal: AbortSignal.timeout(10000),
+            });
+            captureCookies(loginRes.headers.get("set-cookie"));
+
+            const location = loginRes.headers.get("location") ?? "";
+            const hasSid   = cookies.some(c => c.startsWith("SID="));
+
+            // Success: redirect after POST (login accepted) or SID cookie returned.
+            if (loginRes.status === 302 || loginRes.status === 301) {
+              if (hasSid) {
+                return result(true, `${apiMessage}; web login OK — SID cookie received, redirect to ${location || "(app)"}`);
+              }
+              // Redirect without SID — may be SSO handoff; flag as partial.
+              return result(false, `${apiMessage}; web login redirected (HTTP ${loginRes.status}) but no SID cookie — instance may use SSO/SAML. Location: ${location || "(none)"}`);
+            }
+            if (hasSid) {
+              return result(true, `${apiMessage}; web login OK — SID cookie received (HTTP ${loginRes.status})`);
+            }
+            // HTTP 200 = login page returned again = wrong credentials.
+            if (loginRes.status === 200) {
+              const hasViewStateInReply = (await loginRes.text().catch(() => "")).includes("__VIEWSTATE");
+              return result(false, `${apiMessage}; web login failed — credentials rejected${hasViewStateInReply ? " (login form returned again)" : ""}. Login URL: ${logonUrl}, user field: ${userField}, __VIEWSTATE found: ${!!viewState}`);
+            }
+            const loginSetCookie = loginRes.headers.get("set-cookie") ?? "";
+            return result(false, `${apiMessage}; web login failed — HTTP ${loginRes.status} from ${logonUrl}. Set-Cookie: ${loginSetCookie.slice(0, 80) || "(none)"}`);
+          } catch (e) {
+            return result(false, `${apiMessage}; web login error — ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+
+        return result(true, apiMessage);
       }
 
       // ── Dell Premier ─────────────────────────────────────────

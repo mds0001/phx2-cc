@@ -4,11 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## ⚠️ File Writing Rules (CRITICAL — READ FIRST)
 
-- **ALWAYS** use the `Write` or `Edit` tools to create and modify files
 - **NEVER** use bash `cat >>`, heredocs, or `echo` commands to write file content — these cause file truncation and corruption on the Windows/Linux VM boundary
 - **NEVER** truncate file content with placeholders like `// ... rest of file` or `// existing code` — always write the complete content
-- When editing an existing file: **Read it first**, then make targeted changes with the `Edit` tool
-- When rewriting a file completely: use the `Write` tool with the full content
+
+### Small files (< 200 lines)
+- Use the `Edit` tool for targeted changes, or `Write` for full rewrites
+- Always `Read` the file first before editing
+
+### Large files (>= 200 lines) — PYTHON ONLY
+- **NEVER** use the `Edit` or `Write` tools on files with 200+ lines — they silently truncate the file, corrupting it
+- **ALWAYS** use Python byte-level replacement via `mcp__workspace__bash`:
+  ```python
+  with open('file.ts', 'rb') as f: content = f.read()
+  content = content.replace(b'old string', b'new string')
+  with open('file.ts', 'wb') as f: f.write(content)
+  ```
+- Check line count first if unsure: `wc -l filename`
+- This rule applies to ALL large files without exception — no matter how small the change
 
 ## Commands
 

@@ -558,7 +558,12 @@ function AzureForm({ config, onChange }: { config: Record<string, string>; onCha
   );
 }
 
-function IvantiForm({ config, onChange }: { config: Record<string, string>; onChange: (k: string, v: string) => void }) {
+function IvantiForm({
+  config, onChange,
+}: {
+  config: Record<string, string>;
+  onChange: (k: string, v: string) => void;
+}) {
   return (
     <>
       <div className="flex items-center gap-2 px-4 py-3 bg-orange-500/10 border border-orange-500/20 rounded-xl">
@@ -604,6 +609,34 @@ function IvantiForm({ config, onChange }: { config: Record<string, string>; onCh
           placeholder="Leave blank if not required"
         />
       </Field>
+
+      <div className="flex items-center gap-2 px-4 py-3 bg-yellow-500/10 border border-yellow-500/20 rounded-xl">
+        <span className="text-xs text-yellow-300">
+          <strong>Binary field uploads</strong> (e.g. <code>ivnt_CatalogImage</code>) require an authenticated web session.
+          Enter admin credentials below to enable image uploads via the Ivanti UI upload handler.
+          Leave blank if you are not uploading images.
+        </span>
+      </div>
+
+      <Field label="Login Username (optional)">
+        <TextInput
+          value={config.login_username ?? ""}
+          onChange={(v) => onChange("login_username", v)}
+          placeholder="admin@example.com"
+        />
+        <p className="text-xs text-gray-500 mt-1">
+          Ivanti web UI username — used only for binary field (image) uploads
+        </p>
+      </Field>
+
+      <Field label="Login Password (optional)">
+        <PasswordInput
+          value={config.login_password ?? ""}
+          onChange={(v) => onChange("login_password", v)}
+          placeholder="Web UI password"
+        />
+      </Field>
+
     </>
   );
 }
@@ -822,6 +855,7 @@ export default function ConnectionEditorClient({
   isAdmin = false,
   customers = [],
   scopedCustomerId = null,
+  returnTo = null,
 }: {
   connection: EndpointConnection | null;
   isNew: boolean;
@@ -831,6 +865,8 @@ export default function ConnectionEditorClient({
   customers?: CustomerOption[];
   /** When set, this user is a schedule_administrator scoped to one customer. */
   scopedCustomerId?: string | null;
+  /** When "scheduler", the back button returns to /scheduler instead of /connections. */
+  returnTo?: string | null;
 }) {
   const router = useRouter();
   const supabase = createClient();
@@ -937,7 +973,7 @@ export default function ConnectionEditorClient({
         <div className="max-w-2xl mx-auto px-6 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center gap-4 shrink-0">
             <button
-              onClick={() => router.push("/connections")}
+              onClick={() => router.push(returnTo === "scheduler" ? "/scheduler" : "/connections")}
               className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors text-sm"
             >
               <ArrowLeft className="w-4 h-4" />
@@ -1116,7 +1152,7 @@ export default function ConnectionEditorClient({
         <div className="flex justify-end gap-3 pb-8">
           <button
             type="button"
-            onClick={() => router.push("/connections")}
+            onClick={() => router.push(returnTo === "scheduler" ? "/scheduler" : "/connections")}
             className="px-5 py-2.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-xl text-sm font-medium transition-all"
           >
             Cancel

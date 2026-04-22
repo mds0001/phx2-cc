@@ -118,6 +118,15 @@ export interface ScheduledTask {
   /** When true, every successful create/update stores the Ivanti RecID in
    *  task_created_records, enabling the Undo button to delete by RecID directly. */
   debug_mode?: boolean;
+  /** When true, the scheduler is in "Run Until Fixed" mode.  The UI will
+   *  auto-re-run the task after each completion and wait for an AI_ANALYSIS
+   *  entry in task_logs before deciding whether to continue or stop. */
+  ai_fix_mode?: boolean;
+  /** SMTP EndpointConnection to use for fixed/stuck notification emails. */
+  ai_fix_smtp_connection_id?: string | null;
+  /** Recipient email address for fix notifications.  Defaults to the
+   *  logged-in user's email if left blank. */
+  ai_fix_email?: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -202,6 +211,8 @@ export interface MappingProfile {
    *  via `relationship_name` on the target BO. */
   many_to_many?: boolean | null;
   filter_expression?: string | null;
+  /** Per-record attachment rules — images to attach to matching Ivanti records. */
+  attachment_rules?: AttachmentRule[];
   customer_id?: string | null;
   /** When true, this is a locked system-provided template. Admins can promote/demote;
    *  all users can clone it via "Use as Template". */
@@ -238,11 +249,28 @@ export interface CloudConfig  { url: string; customer_id: string; customer_secre
 export interface SmtpConfig   { server: string; port: string; login_name: string; password: string; from_address?: string }
 export interface OdbcConfig   { server_name: string; login_name: string; password: string; port: string }
 export interface PortalConfig { url: string; login_name: string; password: string }
+/** A single attachment rule on an Ivanti connection.
+ *  When a task writes a record whose `matchField` equals `matchValue`,
+ *  Threads will upload the stored image as an attachment to that record. */
+export interface AttachmentRule {
+  id: string;           // stable local UUID (UI key)
+  matchField: string;   // Ivanti target field name to match, e.g. "Name"
+  matchValue: string;   // value to match, e.g. "New Laptop Request"
+  storageKey: string;   // path in the task_files Supabase Storage bucket
+  fileName: string;     // original filename shown in UI and sent to Ivanti
+}
+
 export interface IvantiConfig {
   url: string;
   api_key: string;
   business_object: string;
   tenant_id?: string;
+  /** Optional web-UI credentials for binary-field uploads (e.g. ivnt_CatalogImage).
+   *  The Ivanti REST API cannot write to varbinary columns; the only supported path
+   *  is the ASHX image-upload handler, which requires an authenticated web session.
+   *  When set, the proxy performs a form-based login before the ASHX upload. */
+  login_username?: string;
+  login_password?: string;
 }
 
 export interface IvantiNeuronsConfig {

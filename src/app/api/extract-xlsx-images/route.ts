@@ -31,31 +31,38 @@ import JSZip from "jszip";
  */
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json() as { storageKey?: string };
-    const { storageKey } = body;
+    const body = await request.json() as { storageKey?: string; xlsxBase64?: string };
+    const { storageKey, xlsxBase64 } = body;
 
-    if (!storageKey) {
-      return NextResponse.json({ error: "Missing storageKey" }, { status: 400 });
-    }
+    let buffer: ArrayBuffer;
 
-    // ── Download xlsx from Supabase Storage ───────────────────────────────────
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!
-    );
-
-    const { data: fileBlob, error: dlErr } = await supabase.storage
-      .from("task_files")
-      .download(storageKey);
-
-    if (dlErr || !fileBlob) {
-      return NextResponse.json(
-        { error: `Failed to download file: ${dlErr?.message ?? "no data"}` },
-        { status: 500 }
+    if (xlsxBase64) {
+      // Client already has the file buffer -- accept it directly to avoid a
+      // redundant server-side Supabase storage download.
+      console.log("[extract-xlsx-images] Using client-provided xlsxBase64 payload");
+      const bytes = Buffer.from(xlsxBase64, "base64");
+      buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+    } else if (storageKey) {
+      // Fallback: download from Supabase Storage server-side.
+      console.log("[extract-xlsx-images] Downloading from storage:", storageKey);
+      const supabase = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY!
       );
+      const { data: fileBlob, error: dlErr } = await supabase.storage
+        .from("task_files")
+        .download(storageKey);
+      if (dlErr || !fileBlob) {
+        console.error("[extract-xlsx-images] Storage download failed:", dlErr?.message ?? "no data");
+        return NextResponse.json(
+          { error: `Failed to download file: ${dlErr?.message ?? "no data"}` },
+          { status: 500 }
+        );
+      }
+      buffer = await fileBlob.arrayBuffer();
+    } else {
+      return NextResponse.json({ error: "Missing storageKey or xlsxBase64" }, { status: 400 });
     }
-
-    const buffer = await fileBlob.arrayBuffer();
     const zip    = await JSZip.loadAsync(buffer);
 
     const allZipKeys = Object.keys(zip.files);

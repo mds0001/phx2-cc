@@ -28,6 +28,7 @@ export async function PATCH(
       last_name?: string;
       role?: "administrator" | "schedule_administrator" | "basic";
       customer_id?: string | null;
+      password?: string;
     };
 
     // Prevent the last administrator from demoting themselves
@@ -60,12 +61,27 @@ export async function PATCH(
 
     // Use admin client to bypass RLS for profile updates
     const adminClient = createAdminClient();
-    const { error } = await adminClient
-      .from("profiles")
-      .update(patch)
-      .eq("id", id);
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+    // Update password if provided
+    if (body.password) {
+      if (body.password.length < 6) {
+        return NextResponse.json({ error: "Password must be at least 6 characters." }, { status: 400 });
+      }
+      const { error: pwErr } = await adminClient.auth.admin.updateUserById(id, {
+        password: body.password,
+      });
+      if (pwErr) return NextResponse.json({ error: pwErr.message }, { status: 400 });
+    }
+
+    // Update profile fields (skip if nothing to patch)
+    if (Object.keys(patch).length > 0) {
+      const { error } = await adminClient
+        .from("profiles")
+        .update(patch)
+        .eq("id", id);
+      if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+
     return NextResponse.json({ success: true });
   } catch (err: unknown) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
