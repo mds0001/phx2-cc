@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
-import GlobalShell from "@/components/GlobalShell";
+import ShellWrapper from "@/components/ShellWrapper";
 
 export const metadata: Metadata = {
   title: "Threads by Cloud Weaver — Weaves your cloud data",
@@ -22,10 +22,7 @@ export default function RootLayout({
           enableSystem={false}
           disableTransitionOnChange={false}
         >
-          <div className="pl-[220px] pb-[44px]">
-            {children}
-          </div>
-          <GlobalShell />
+          <ShellWrapper>{children}</ShellWrapper>
         </ThemeProvider>
       </body>
     </html>
