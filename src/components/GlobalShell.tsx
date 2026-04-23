@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase-browser";
 import {
   CalendarClock, GitMerge, Plug, Building2, Users,
-  FileText, BarChart3, Activity, ShieldCheck, LogOut,
+  FileText, BarChart3, Activity, ShieldCheck, LogOut, Bot,
 } from "lucide-react";
 
 // Types
@@ -215,6 +215,12 @@ export default function GlobalShell() {
               href="/users"
               active={pathname?.startsWith("/users") === true}
             />
+            <NavItem
+              icon={<Bot className="w-4 h-4" />}
+              label="Agents"
+              href="/agents"
+              active={pathname?.startsWith("/agents") === true}
+            />
           </div>
 
         </nav>
@@ -239,7 +245,7 @@ export default function GlobalShell() {
             <span className={`text-sm font-bold tabular-nums ${s.color}`}>{s.value}</span>
             <span className="text-[11px] text-gray-600 ml-0.5">{s.label}</span>
           </div>
-        ))}
+               ))}
         <div className="ml-auto flex items-center gap-1.5">
           <BarChart3 className="w-3 h-3 text-gray-700" />
           <span className="text-[10px] text-gray-700">task stats</span>
