@@ -1029,6 +1029,39 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Post-create PATCH for resolved link fields on successful POST:
+    // Ivanti sometimes silently accepts a display value on POST (returns 201) but
+    // stores it as a plain string rather than resolving it to the linked record.
+    // To guarantee correctness, always PATCH the newly created record with _RecID
+    // for every link field we resolved, regardless of whether the POST errored.
+    if (!existingRecId && (response.ok || response.status === 201 || response.status === 204)) {
+      const resolvedLinksForPost = resolveLog.filter(
+        (e): e is { field: string; value: string; recId: string } => "recId" in e
+      );
+      if (resolvedLinksForPost.length > 0) {
+        const newRecIdForLinks = (responseBody as Record<string, unknown> | null)?.RecId as string | undefined;
+        if (newRecIdForLinks) {
+          const alwaysLinkPatch: Record<string, unknown> = {};
+          for (const entry of resolvedLinksForPost) {
+            alwaysLinkPatch[`${entry.field}_RecID`] = entry.recId;
+          }
+          const alwaysLinkPatchUrl = `${endpoint}('${newRecIdForLinks}')`;
+          console.log(`[ivanti-proxy] Post-create link PATCH (always):`, alwaysLinkPatchUrl, JSON.stringify(alwaysLinkPatch));
+          try {
+            const alpRes = await fetch(alwaysLinkPatchUrl, { method: "PATCH", headers, body: JSON.stringify(alwaysLinkPatch) });
+            if (!alpRes.ok && alpRes.status !== 204) {
+              const alpErr = await alpRes.text().catch(() => "");
+              console.warn(`[ivanti-proxy] Post-create link PATCH failed ${alpRes.status}: ${alpErr}`);
+            } else {
+              console.log(`[ivanti-proxy] Post-create link PATCH succeeded for RecId=${newRecIdForLinks}`);
+            }
+          } catch (alpe) {
+            console.warn(`[ivanti-proxy] Post-create link PATCH error:`, alpe);
+          }
+        }
+      }
+    }
+
     // Extract any retry-stripping metadata attached above.
     const _resp = response as Response & { _strippedFields?: string[]; _strippedValues?: Record<string, unknown> };
     const strippedFields = _resp._strippedFields;

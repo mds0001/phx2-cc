@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase-browser";
 import {
   CalendarClock, GitMerge, Plug, Building2, Users,
-  FileText, BarChart3, Activity, ShieldCheck, LogOut, Bot,
+  FileText, BarChart3, Activity, ShieldCheck, LogOut, Bot, Tag,
 } from "lucide-react";
 
 // Types
@@ -78,6 +78,7 @@ export default function GlobalShell() {
 
   const [counts,    setCounts]    = useState<Counts>(EMPTY_COUNTS);
   const [bohAlerts, setBohAlerts] = useState(0);
+  const [skuPending, setSkuPending] = useState(0);
 
   const hidden = HIDDEN_PATHS.some((p) => pathname?.startsWith(p));
 
@@ -113,6 +114,12 @@ export default function GlobalShell() {
       .select("id, status")
       .in("status", ["expired", "expiring_soon", "payment_failed"])
       .then(({ data }) => { if (data) setBohAlerts(data.length); });
+
+    supabase
+      .from("sku_research_queue")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "pending")
+      .then(({ count }) => { if (count != null) setSkuPending(count); });
 
     return () => { supabase.removeChannel(chan); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -203,6 +210,13 @@ export default function GlobalShell() {
               label="Health"
               href="/boh/health"
               active={pathname?.startsWith("/boh/health") === true}
+            />
+            <NavItem
+              icon={<Tag className="w-4 h-4" />}
+              label="SKU Research"
+              href="/boh/sku-research"
+              active={pathname?.startsWith("/boh/sku-research") === true}
+              badge={skuPending > 0 ? skuPending : undefined}
             />
           </div>
 

@@ -47,15 +47,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Job not found" }, { status: 404 });
     }
 
-    // Update job record
+    // Update job record — only overwrite `result` if the caller explicitly
+    // provided one. Omitting it preserves any data already written by a
+    // prior call (e.g. /api/agent/file-result storing file_b64).
+    const jobUpdate: Record<string, unknown> = {
+      status,
+      error:        jobError ?? null,
+      completed_at: new Date().toISOString(),
+    };
+    if (result !== undefined) {
+      jobUpdate.result = result;
+    }
+
     await supabase
       .from("agent_jobs")
-      .update({
-        status,
-        result:       result ?? null,
-        error:        jobError ?? null,
-        completed_at: new Date().toISOString(),
-      })
+      .update(jobUpdate)
       .eq("id", job_id);
 
     // Update the parent scheduled task status
@@ -75,7 +81,8 @@ export async function POST(req: NextRequest) {
         action:     status === "completed" ? "AGENT_COMPLETE" : "AGENT_FAILED",
         details:    result
           ? `Agent job ${status}. Extracted: ${result.rows_extracted}, Sent: ${result.rows_sent}, Duration: ${(result.duration_ms / 1000).toFixed(1)}s`
-          : (jobError ?? `Agent job ${status}`),
+          : (jobError 
+          ?? `Agent job ${status}`),
         created_by: null,
       });
     }

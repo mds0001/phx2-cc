@@ -111,6 +111,18 @@ const DEFAULT_POLL = 30;
 
 import CustomerSwitcher, { type CustomerOption } from "@/components/CustomerSwitcher";
 
+interface SkuRunException {
+  id: string;
+  task_id: string;
+  task_name: string;
+  customer_id: string | null;
+  customer_name: string | null;
+  run_at: string;
+  exceptions: { sku: string; row: number; targetField: string }[];
+  status: "pending" | "resolved";
+  rerun_at: string | null;
+}
+
 interface Props {
   profile: Profile | null;
   initialTasks: ScheduledTask[];
@@ -434,7 +446,7 @@ export default function SchedulerClient({
 
   // ── Execute a single task ─────────────────────────────────
   const executeTask = useCallback(
-    async (task: ScheduledTask) => {
+    async (task: ScheduledTask, rowFilter?: Set<number>) => {
       // Hard guard: prevent concurrent runs of the same task
       if (executingRef.current.has(task.id)) return;
       executingRef.current.add(task.id);
@@ -444,7 +456,8 @@ export default function SchedulerClient({
       taskAbortControllers.current.set(task.id, taskAbort);
       const taskStartTime = Date.now();
       console.log(
-        `[Execute] Starting task "${task.task_name}"`
+        `[Execute] Starting task "${task.task_name}"` +
+        (rowFilter?.size ? ` (rerun: ${rowFilter.size} exception rows only)` : "")
       );
 
       await supabase
@@ -483,6 +496,7 @@ export default function SchedulerClient({
 
         let filteredCount     = 0;
         let rowErrorCount     = 0;
+        const skuExceptions: { sku: string; row: number; targetField: string }[] = [];
         let rowWarnCount      = 0;
         let rowSkipCount      = 0;
         let rowCreatedCount   = 0;
@@ -554,10 +568,15 @@ export default function SchedulerClient({
             sourceConnRawConfig = srcConn.config as Record<string, unknown>;
             const src = "mapping profile";
             if (srcConn.type === "file") {
-              sourceConnFileConfig = srcConn.config as { file_path?: string; file_name?: string };
-              await taskLog("INFO", `Source connection (${src}): "${srcConn.name}" [FILE] — ${sourceConnFileConfig.file_name ?? sourceConnFileConfig.file_path ?? "no file configured"}`);
+              sourceConnFileConfig = srcConn.config as { file_path?: string; file_name?: string; file_mode?: string };
+              const modeLabel = (srcConn.config as Record<string, string>).file_mode === "local" ? "LOCAL/AGENT" : "FILE";
+              await taskLog("INFO", `Source connection (${src}): "${srcConn.name}" [${modeLabel}] — ${sourceConnFileConfig.file_name ?? sourceConnFileConfig.file_path ?? "no file configured"}`);
             } else {
               await taskLog("INFO", `Source connection (${src}): "${srcConn.name}" [${srcConn.type.toUpperCase()}]`);
+            }
+            // Cache agent_id for local file mode
+            if ((srcConn as Record<string, unknown>).agent_id) {
+              (sourceConnRawConfig as Record<string, unknown>).__agent_id = (srcConn as Record<string, unknown>).agent_id;
             }
           }
         }
@@ -604,22 +623,89 @@ export default function SchedulerClient({
             break;
           }
 
-          const fileCfg = sourceConnRawConfig as { file_name?: string } | null;
+          const fileCfg = sourceConnRawConfig as { file_name?: string; file_mode?: string } | null;
+          const fileMode  = (sourceConnRawConfig as Record<string, string> | null)?.file_mode ?? "file";
+          const srcAgentId = (sourceConnRawConfig as Record<string, string> | null)?.__agent_id ?? null;
 
-          // Download the source file
+          // Download the source file (cloud storage) or request via agent (local mode)
           const fileEntries: { label: string; buffer: ArrayBuffer; targetConnId?: string | null; mappingProfileId?: string | null }[] = [];
 
-          await taskLog("INFO", `Downloading file: ${resolvedSourceFilePath}`);
-          const { data: fileData, error: dlError } = await supabase.storage
-            .from("task_files")
-            .download(resolvedSourceFilePath!);
-          if (dlError || !fileData) {
-            rowErrorCount++;
-            await taskLog("ERROR", `File not found in storage: ${resolvedSourceFilePath}`);
-            break;
+          if (fileMode === "local") {
+            // Agent-delivered file
+            if (!srcAgentId) {
+              rowErrorCount++;
+              await taskLog("ERROR", "Local file mode requires an agent — none assigned to this endpoint.");
+              break;
+            }
+            await taskLog("INFO", `Requesting file from agent: ${resolvedSourceFilePath}`);
+            const fetchRes = await fetch("/api/agent/fetch-file", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ agent_id: srcAgentId, file_path: resolvedSourceFilePath, task_id: task.id }),
+            });
+            if (!fetchRes.ok) {
+              const err = await fetchRes.json().catch(() => ({})) as { error?: string };
+              rowErrorCount++;
+              await taskLog("ERROR", `Failed to enqueue agent file job: ${err.error ?? fetchRes.statusText}`);
+              break;
+            }
+            const { job_id } = await fetchRes.json() as { job_id: string };
+            await taskLog("INFO", `Agent job created (${job_id}) — waiting for agent to deliver file…`);
+
+            // Poll for the job result (max 60s)
+            const deadline = Date.now() + 60_000;
+            let agentFileBuffer: ArrayBuffer | null = null;
+            let agentFileName = (resolvedSourceFilePath ?? "file.xlsx").split(/[\\/]/).pop() ?? "file.xlsx";
+            let agentJobFailed = false;
+            while (Date.now() < deadline) {
+              if (cancelledRef.current.has(task.id)) break;
+              await new Promise((r) => setTimeout(r, 2000));
+              const { data: jobRow } = await supabase
+                .from("agent_jobs")
+                .select("status, result, error")
+                .eq("id", job_id)
+                .single();
+              if (!jobRow) continue;
+              if (jobRow.status === "completed" && jobRow.result) {
+                const r = jobRow.result as { file_b64?: string; file_name?: string };
+                if (r.file_b64) {
+                  const binary = atob(r.file_b64);
+                  const bytes  = new Uint8Array(binary.length);
+                  for (let j = 0; j < binary.length; j++) bytes[j] = binary.charCodeAt(j);
+                  agentFileBuffer = bytes.buffer;
+                  if (r.file_name) agentFileName = r.file_name;
+                }
+                break;
+              }
+              if (jobRow.status === "failed") {
+                agentJobFailed = true;
+                rowErrorCount++;
+                await taskLog("ERROR", `Agent failed to read file: ${(jobRow.error as string) ?? "unknown error"}`);
+                break;
+              }
+            }
+            if (!agentFileBuffer && !agentJobFailed) {
+              rowErrorCount++;
+              await taskLog("ERROR", "Timed out waiting for agent to deliver file (60s). Is the agent online?");
+              break;
+            }
+            if (!agentFileBuffer) break;
+            await taskLog("INFO", `Agent delivered file: ${agentFileName}`);
+            fileEntries.push({ label: agentFileName, buffer: agentFileBuffer });
+          } else {
+            // Supabase storage download
+            await taskLog("INFO", `Downloading file: ${resolvedSourceFilePath}`);
+            const { data: fileData, error: dlError } = await supabase.storage
+              .from("task_files")
+              .download(resolvedSourceFilePath!);
+            if (dlError || !fileData) {
+              rowErrorCount++;
+              await taskLog("ERROR", `File not found in storage: ${resolvedSourceFilePath}`);
+              break;
+            }
+            const label = fileCfg?.file_name ?? resolvedSourceFilePath!.split("/").pop() ?? "file";
+            fileEntries.push({ label, buffer: await fileData.arrayBuffer() });
           }
-          const label = fileCfg?.file_name ?? resolvedSourceFilePath.split("/").pop() ?? "file";
-          fileEntries.push({ label, buffer: await fileData.arrayBuffer() });
 
           for (const fileEntry of fileEntries) {
           const arrayBuffer = fileEntry.buffer;
@@ -939,6 +1025,12 @@ export default function SchedulerClient({
             }
           }
 
+          // \u2500\u2500 SKU lookup cache (per run, keyed by `mappingRowId:skuValue`) \u2500\u2500\u2500\u2500\u2500\u2500
+          const skuLookupCache    = new Map<string, string>();
+          const skuLookupMappings = fileMappingProfile?.mappings.filter(
+            (m) => m.transform === "sku_lookup"
+          ) ?? [];
+
           if (fileMappingProfile?.filter_expression) {
             await taskLog("INFO", `Row filter expression: ${fileMappingProfile.filter_expression}`);
           }
@@ -1019,8 +1111,55 @@ export default function SchedulerClient({
                 ? { ...row, __embedded_image__: embeddedImgData.base64 }
                 : row;
 
+            // Build per-row SKU lookup results
+            let skuLookupResults: Record<string, string> | undefined;
+            if (skuLookupMappings.length > 0 && fileMappingProfile) {
+              skuLookupResults = {};
+              let skuSkipRow = false;
+              for (const sm of skuLookupMappings) {
+                const srcField = fileMappingProfile.source_fields.find((f) => f.id === sm.sourceFieldId);
+                if (!srcField) continue;
+                const skuRaw = String(row[srcField.name] ?? "").trim().toUpperCase();
+                if (!skuRaw) continue;
+                const resultField = sm.skuResultField ?? "type";
+                const cacheKey = `${sm.id}:${skuRaw}`;
+                if (skuLookupCache.has(cacheKey)) {
+                  const cached = skuLookupCache.get(cacheKey)!;
+                  if (cached === "__NOT_FOUND__") { skuSkipRow = true; break; }
+                  skuLookupResults[sm.id] = cached;
+                } else {
+                  try {
+                    const res = await fetch("/api/sku-lookup", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ sku: skuRaw, result_field: resultField, customer_id: task.customer_id ?? null }),
+                    });
+                    const json = await res.json() as { found: boolean; value: string | null };
+                    if (json.found && json.value != null) {
+                      skuLookupCache.set(cacheKey, json.value);
+                      skuLookupResults[sm.id] = json.value;
+                    } else {
+                      skuLookupCache.set(cacheKey, "__NOT_FOUND__");
+                      skuSkipRow = true;
+                      const tgtFieldName3 = fileMappingProfile.target_fields.find((f) => f.id === sm.targetFieldId)?.name ?? sm.id;
+                      skuExceptions.push({ sku: skuRaw, row: i + 1, targetField: tgtFieldName3 });
+                      await taskLog("SKIP", `Row ${i + 1}: SKU "${skuRaw}" not found in taxonomy \u2014 row skipped. Queued for research. (target: ${tgtFieldName3})`);
+                      break;
+                    }
+                  } catch (e) {
+                    await taskLog("WARN", `Row ${i + 1}: SKU lookup failed for "${skuRaw}": ${e instanceof Error ? e.message : String(e)}`);
+                  }
+                }
+              }
+              if (skuSkipRow) {
+                rowSkipCount++;
+                slotSkipCount++;
+                continue;
+              }
+            }
+
             const payload = fileMappingProfile
-              ? applyMappingProfile(rowForMapping, fileMappingProfile, aiResults, aiGuessResults)
+              ? applyMappingProfile(rowForMapping, fileMappingProfile, aiResults, aiGuessResults, skuLookupResults)
               : rowForMapping;
 
             // For Ivanti targets: separate binary image fields from the main payload.
@@ -1344,6 +1483,11 @@ export default function SchedulerClient({
             mappingProfile ? applyMappingProfile(row, mappingProfile, undefined) : row
           );
 
+          // Rerun row filter: only process rows that had exceptions in the prior run
+          if (rowFilter && rowFilter.size > 0) {
+            await taskLog("INFO", `Rerun mode: processing ${rowFilter.size} exception row${rowFilter.size !== 1 ? "s" : ""} only (rows: ${[...rowFilter].sort((a, b) => a - b).join(", ")})`);
+          }
+
           // ── Route to target based on target connection type ──────
           if (!targetConnType || targetConnType === "file") {
             // ── Target is a file endpoint — write to Supabase storage ──
@@ -1413,11 +1557,12 @@ export default function SchedulerClient({
             let ivantiRowWarns = 0;
 
             for (let i = 0; i < filteredMappedRows.length; i++) {
-                // ── Cancellation checkpoint ──────────────────────────
                 if (cancelledRef.current.has(task.id)) {
                   await taskLog("WARN", "Task cancelled by user.");
                   break;
                 }
+              // Rerun row filter: skip rows not in the exception set
+              if (rowFilter && rowFilter.size > 0 && !rowFilter.has(i + 1)) continue;
               const payload = filteredMappedRows[i];
               // Warn about mapped fields that had no source value
               if (mappingProfile) {
@@ -1738,6 +1883,43 @@ export default function SchedulerClient({
           await taskLog("SUMMARY", summaryParts.join(" | "));
         }
 
+        // -- SKU exception recording + notification --
+        if (skuExceptions.length > 0) {
+          const customerName = customers.find((c) => c.id === task.customer_id)?.name ?? null;
+
+          // Record the run exceptions so the research page can group by run
+          try {
+            await fetch("/api/sku-run-exceptions", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                task_id:       task.id,
+                task_name:     task.task_name,
+                customer_id:   task.customer_id ?? null,
+                customer_name: customerName,
+                exceptions:    skuExceptions,
+              }),
+            });
+          } catch (e) {
+            console.warn("[sku-run-exceptions] failed to record:", e);
+          }
+
+          // Email all administrators
+          try {
+            await fetch("/api/sku-exception-notify", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                task_id:    task.id,
+                task_name:  task.task_name,
+                exceptions: skuExceptions,
+              }),
+            });
+          } catch (e) {
+            console.warn("[sku-exception-notify] failed:", e);
+          }
+        }
+
         await taskLog("COMPLETED", `${statusLabel} at ${new Date().toISOString()}`);
 
         // Always store the final run result so the user can see it.
@@ -1932,7 +2114,40 @@ export default function SchedulerClient({
   }, [supabase]);
 
   // ── Return from "Create new mapping" flow ─────────────────
-  const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | null } | null>(null);
+    // -- Handle ?rerun=<run_exception_id> URL param --
+  useEffect(() => {
+    const rerunId = searchParams.get("rerun");
+    if (!rerunId || tasks.length === 0) return;
+
+    (async () => {
+      try {
+        const listRes = await fetch("/api/sku-run-exceptions");
+        if (!listRes.ok) return;
+        const { data: runs } = await listRes.json() as { data: SkuRunException[] };
+        const run = runs?.find((r: SkuRunException) => r.id === rerunId);
+        if (!run) { console.warn("[rerun] run exception not found:", rerunId); return; }
+
+        const task = tasks.find((t) => t.id === run.task_id);
+        if (!task) { console.warn("[rerun] task not found:", run.task_id); return; }
+
+        const rowFilter = new Set<number>(
+          (run.exceptions as { row: number }[]).map((e) => e.row)
+        );
+
+        // Clean the URL before running
+        const url = new URL(window.location.href);
+        url.searchParams.delete("rerun");
+        window.history.replaceState({}, "", url.toString());
+
+        executeTask(task, rowFilter);
+      } catch (e) {
+        console.warn("[rerun] failed:", e);
+      }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasks]);
+
+const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | null } | null>(null);
 
   useEffect(() => {
     const newMappingId = searchParams.get("selectMapping");

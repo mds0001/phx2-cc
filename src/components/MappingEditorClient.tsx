@@ -74,6 +74,7 @@ const TRANSFORMS: { value: TransformType; label: string; desc: string }[] = [
   { value: "concat",     label: "Concat Fields",   desc: "Join two source fields together" },
   { value: "ai_lookup",  label: "AI Lookup",       desc: "Classify using Claude AI from multiple source fields" },
   { value: "ai_guess",   label: "AI Guess",        desc: "Let Claude infer the value from source context (optionally constrained to valid values)" },
+  { value: "sku_lookup",  label: "SKU Lookup",      desc: "Look up manufacturer SKU in the taxonomy store to return type, subtype, description, or model" },
   { value: "excel_date", label: "Excel Date",       desc: "Convert Excel serial date number to ISO date string (YYYY-MM-DD)" },
 ];
 
@@ -1550,8 +1551,9 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
               {/* Mapping rows */}
               <div className="divide-y divide-gray-800/60">
                 {mappings.map((mapping) => {
-                  const isAiLookup = mapping.transform === "ai_lookup";
-                  const isAiGuess  = mapping.transform === "ai_guess";
+                  const isAiLookup  = mapping.transform === "ai_lookup";
+                  const isAiGuess   = mapping.transform === "ai_guess";
+                  const isSkuLookup = mapping.transform === "sku_lookup";
                   const isStaticRow = mapping.sourceFieldId === "__static__";
 
                   // ── Static / Expression row ───────────────
@@ -2055,7 +2057,7 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
                             }
                             className="w-full appearance-none bg-gray-800 border border-gray-700 rounded-lg pl-3 pr-7 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
                           >
-                            {TRANSFORMS.filter((t) => t.value !== "ai_lookup" && t.value !== "ai_guess").map((t) => (
+                            {TRANSFORMS.filter((t) => t.value !== "ai_lookup" && t.value !== "ai_guess" && t.value !== "sku_lookup").map((t) => (
                               <option key={t.value} value={t.value}>
                                 {t.label}
                               </option>
@@ -2080,6 +2082,27 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
                         )}
 
                         {/* Concat options */}
+
+                        {isSkuLookup && (
+                          <div className="mt-2 space-y-2">
+                            <div>
+                              <label className="block text-[11px] font-medium text-gray-500 mb-1">Result Field</label>
+                              <select
+                                value={mapping.skuResultField ?? "type"}
+                                onChange={(e) => updateMapping(mapping.id, { skuResultField: e.target.value as "type" | "subtype" | "description" | "model" })}
+                                className="w-full bg-gray-900 border border-gray-700 rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
+                              >
+                                <option value="type">Type</option>
+                                <option value="subtype">Subtype</option>
+                                <option value="description">Description</option>
+                                <option value="model">Model</option>
+                              </select>
+                            </div>
+                            <p className="text-[11px] text-gray-600">
+                              The source field should contain the manufacturer SKU. At runtime, the SKU will be looked up in the taxonomy store and the selected field will be written to the target.
+                            </p>
+                          </div>
+                        )}
                         {mapping.transform === "concat" && (
                           <div className="space-y-1.5">
                             <select
@@ -2501,7 +2524,9 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
                           );
                           return m ? (
                             <p className="text-xs text-indigo-400 truncate">
-                              {m.transform === "ai_lookup"
+                              {m.transform === "sku_lookup"
+                                ? `SKU \u2192 ${m.skuResultField || "type"}`
+                                : m.transform === "ai_lookup"
                                 ? `AI \u2192 ${m.aiOutputKey || "?"}`
                                 : m.transform === "ai_guess"
                                   ? "AI Guess"

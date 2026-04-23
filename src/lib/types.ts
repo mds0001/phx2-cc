@@ -149,7 +149,8 @@ export type TransformType =
   | "concat"
   | "ai_lookup"
   | "ai_guess"
-  | "excel_date";
+  | "excel_date"
+  | "sku_lookup";
 
 export interface MappingRow {
   id: string;
@@ -170,6 +171,8 @@ export interface MappingRow {
   aiGuessPrompt?: string;          // optional extra instruction
   aiGuessPicklistBo?: string;      // Ivanti picklist BO to query for valid values (e.g. "CIStatusCIType")
   aiGuessPicklistField?: string;   // Field name within the picklist BO that holds the values (e.g. "ivnt_SubType")
+  // SKU Lookup fields (transform === "sku_lookup")
+  skuResultField?: "type" | "subtype" | "description" | "model" | "manufacturer";  // which taxonomy field to extract
   // When true the proxy resolves this target field's value to an Ivanti RecID
   // before posting, regardless of whether the field name ends in "Link".
   isLinkField?: boolean;
@@ -320,7 +323,9 @@ export function applyMappingProfile(
   profile: MappingProfile,
   aiResults?: Record<string, string>,
   // aiGuessResults: keyed by "mappingRowId" -> guessed value string
-  aiGuessResults?: Record<string, string>
+  aiGuessResults?: Record<string, string>,
+  // skuLookupResults: keyed by "mappingRowId" -> resolved taxonomy field value
+  skuLookupResults?: Record<string, string>
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {};
 
@@ -432,6 +437,11 @@ export function applyMappingProfile(
       case "ai_guess": {
         // Value comes from per-row AI guess results, keyed by mapping row ID
         value = aiGuessResults?.[mapping.id] ?? "";
+        break;
+      }
+      case "sku_lookup": {
+        // Value comes from pre-fetched SKU lookup results, keyed by mapping row ID
+        value = skuLookupResults?.[mapping.id] ?? "";
         break;
       }
       case "excel_date": {
