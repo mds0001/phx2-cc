@@ -30,9 +30,10 @@ function tcpTest(host: string, port: number): Promise<NextResponse> {
 // ── Route handler ─────────────────────────────────────────────
 export async function POST(request: NextRequest) {
   try {
-    const { type, config } = (await request.json()) as {
+    const { type, config, agent_id } = (await request.json()) as {
       type: string;
       config: Record<string, string>;
+      agent_id?: string | null;
     };
 
     switch (type) {
@@ -41,6 +42,27 @@ export async function POST(request: NextRequest) {
       case "file": {
         const filePath = config.file_path;
         if (!filePath) return result(false, "No file configured");
+
+        // Local (agent) mode -- verify the bound agent is online
+        if (config.file_mode === "local") {
+          const fileName = filePath.split(/[\\/]/).pop() ?? filePath;
+          if (!agent_id) return result(false, "No agent assigned to this endpoint");
+          const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+          const serviceKey  = process.env.SUPABASE_SERVICE_ROLE_KEY;
+          const agentRes = await fetch(
+            `${supabaseUrl}/rest/v1/agents?id=eq.${agent_id}&select=name,status,last_seen`,
+            { headers: { apikey: serviceKey ?? "", Authorization: `Bearer ${serviceKey}`, Accept: "application/json" } }
+          );
+          const [agent] = await agentRes.json().catch(() => []);
+          if (!agent) return result(false, "Agent not found");
+          const lastSeen = agent.last_seen ? new Date(agent.last_seen).getTime() : 0;
+          const stale = Date.now() - lastSeen > 60_000; // offline if no heartbeat in 60s
+          if (agent.status !== "online" || stale) {
+            const ago = lastSeen ? `last seen ${Math.round((Date.now() - lastSeen) / 1000)}s ago` : "never seen";
+            return result(false, `Agent "${agent.name}" is offline (${ago})`);
+          }
+          return result(true, `Agent "${agent.name}" is online -- will read ${fileName} at runtime`);
+        }
 
         const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
         const anonKey    = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;

@@ -7,7 +7,7 @@ import {
   File, Cloud, Mail, Database, Globe,
   Upload, X, FileText, Loader2, Zap, Download,
   FolderOpen, Folder, ChevronRight, Home,
-  Wifi, WifiOff, FlaskConical, ShoppingCart, Package, Building2, Search,
+  Wifi, WifiOff, FlaskConical, ShoppingCart, Package, Building2, Search, Bot,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
 import type { EndpointConnection, ConnectionType } from "@/lib/types";
@@ -216,7 +216,14 @@ function StorageBrowser({ onSelect, onClose }: { onSelect: (path: string) => voi
 // ── File form ─────────────────────────────────────────────────
 const FILE_TYPES = ["xlsx", "json", "xml", "csv"] as const;
 
-function FileForm({ config, onChange }: { config: Record<string, string>; onChange: (k: string, v: string) => void }) {
+function FileForm({ config, onChange, agents, agentId, onAgentChange, customerId }: {
+  config: Record<string, string>;
+  onChange: (k: string, v: string) => void;
+  agents: { id: string; name: string; status: string; customer_id: string }[];
+  agentId: string | null;
+  onAgentChange: (id: string | null) => void;
+  customerId: string | null;
+}) {
   const supabase = createClient();
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
@@ -224,7 +231,7 @@ function FileForm({ config, onChange }: { config: Record<string, string>; onChan
   const [dragOver, setDragOver] = useState(false);
 
   const fileType = (config.file_type ?? "xlsx") as string;
-  const fileMode = (config.file_mode ?? "file") as "file" | "directory";
+  const fileMode = (config.file_mode ?? "file") as "file" | "directory" | "local";
   const [showBrowser, setShowBrowser] = useState(false);
 
   async function handleFilePick(file: File) {
@@ -288,7 +295,7 @@ function FileForm({ config, onChange }: { config: Record<string, string>; onChan
       {/* Mode: specific file vs directory */}
       <Field label="Target">
         <div className="flex gap-2 mb-3">
-          {(["file", "directory"] as const).map((m) => (
+          {(["file", "directory", "local"] as const).map((m) => (
             <button
               key={m}
               type="button"
@@ -304,7 +311,7 @@ function FileForm({ config, onChange }: { config: Record<string, string>; onChan
                   : "bg-gray-800 border-gray-700 text-gray-400 hover:border-amber-500/40 hover:text-amber-400"
               }`}
             >
-              {m === "file" ? "Specific File" : "Directory"}
+              {m === "file" ? "Specific File" : m === "directory" ? "Directory" : "Local (Agent)"}
             </button>
           ))}
         </div>
@@ -371,6 +378,45 @@ function FileForm({ config, onChange }: { config: Record<string, string>; onChan
               </div>
             )}
           </>
+        ) : fileMode === "local" ? (
+          /* -- Local (Agent) mode -- */
+          <div className="space-y-3">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Local file path on agent machine</label>
+              <input
+                type="text"
+                value={config.file_path ?? ""}
+                onChange={(e) => onChange("file_path", e.target.value)}
+                placeholder="e.g. C:\\Users\\mike\\data\\computers.xlsx"
+                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50 font-mono"
+              />
+              <p className="text-xs text-gray-600 mt-1">Full path on the agent machine -- the agent reads this file directly</p>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1 flex items-center gap-1.5"><Bot className="w-3.5 h-3.5 text-indigo-400" /> Agent</label>
+              {!customerId ? (
+                <p className="text-xs text-amber-500">Assign a customer to this endpoint first, then an agent can be selected.</p>
+              ) : (() => {
+                const filtered = agents.filter((a) => a.customer_id === customerId);
+                return filtered.length === 0 ? (
+                  <p className="text-xs text-gray-600">No agents registered for this customer. Go to Admin &rarr; Agents to register one.</p>
+                ) : (
+                  <select
+                    value={agentId ?? ""}
+                    onChange={(e) => onAgentChange(e.target.value || null)}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                  >
+                    <option value="">Select agent...</option>
+                    {filtered.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name} ({a.status})
+                      </option>
+                    ))}
+                  </select>
+                );
+              })()}
+            </div>
+          </div>
         ) : (
           /* ── Directory mode ── */
           <div className="space-y-3">
@@ -854,6 +900,7 @@ export default function ConnectionEditorClient({
   isReadOnly = false,
   isAdmin = false,
   customers = [],
+  agents = [],
   scopedCustomerId = null,
   returnTo = null,
 }: {
@@ -863,6 +910,7 @@ export default function ConnectionEditorClient({
   isReadOnly?: boolean;
   isAdmin?: boolean;
   customers?: CustomerOption[];
+  agents?: { id: string; name: string; status: string; customer_id: string }[];
   /** When set, this user is a schedule_administrator scoped to one customer. */
   scopedCustomerId?: string | null;
   /** When "scheduler", the back button returns to /scheduler instead of /connections. */
@@ -879,6 +927,15 @@ export default function ConnectionEditorClient({
   const [customerId, setCustomerId] = useState<string | null>(
     scopedCustomerId ?? connection?.customer_id ?? null
   );
+
+  const [agentId, setAgentId] = useState<string | null>(connection?.agent_id ?? null);
+
+  // Clear agent if it no longer belongs to the selected customer
+  useEffect(() => {
+    if (!agentId) return;
+    const match = agents.find((a) => a.id === agentId);
+    if (match && customerId && match.customer_id !== customerId) setAgentId(null);
+  }, [customerId, agentId, agents]);
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -915,7 +972,7 @@ export default function ConnectionEditorClient({
       const res = await fetch("/api/test-connection", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type, config }),
+        body: JSON.stringify({ type, config, agent_id: agentId }),
       });
       const data = await res.json();
       setTestResult({ ok: data.success, message: data.message });
@@ -932,14 +989,14 @@ export default function ConnectionEditorClient({
     setSaveError(null);
     try {
       if (isNew) {
-        const payload = { name: name.trim(), type, config, created_by: userId, customer_id: customerId ?? null };
+        const payload = { name: name.trim(), type, config, created_by: userId, customer_id: customerId ?? null, agent_id: agentId ?? null };
         const { data, error } = await supabase
           .from("endpoint_connections").insert(payload).select("id").single();
         if (error) throw error;
         setSaved(true);
         setTimeout(() => router.replace(`/connections/${data.id}`), 800);
       } else {
-        const updatePayload = { name: name.trim(), type, config, customer_id: customerId ?? null };
+        const updatePayload = { name: name.trim(), type, config, customer_id: customerId ?? null, agent_id: agentId ?? null };
         const { data: updated, error } = await supabase
           .from("endpoint_connections")
           .update(updatePayload)
@@ -960,7 +1017,7 @@ export default function ConnectionEditorClient({
     } finally {
       setSaving(false);
     }
-  }, [name, type, config, customerId, userId, isNew, connection, supabase, router]);
+  }, [name, type, config, customerId, agentId, userId, isNew, connection, supabase, router]);
 
   const selectedMeta = TYPE_OPTIONS.find((t) => t.value === type)!;
 
@@ -1136,7 +1193,7 @@ export default function ConnectionEditorClient({
             </div>
           )}
 
-          {type === "file"          && <FileForm          config={config} onChange={setConfigField} />}
+          {type === "file"          && <FileForm          config={config} onChange={setConfigField} agents={agents} agentId={agentId} onAgentChange={setAgentId} customerId={customerId} />}
           {type === "cloud"         && <CloudForm         config={config} onChange={setConfigField} />}
           {type === "smtp"          && <SmtpForm          config={config} onChange={setConfigField} />}
           {type === "odbc"          && <OdbcForm          config={config} onChange={setConfigField} />}

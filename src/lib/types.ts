@@ -307,6 +307,7 @@ export interface EndpointConnection {
   /** When true, this is a locked system-provided template. Admins can promote/demote;
    *  all users can clone it via "Use as Template". */
   is_system?: boolean;
+  agent_id?: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;

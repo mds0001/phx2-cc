@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Plus, Plug, Trash2, Edit2, File, Cloud, Mail, Database, Globe,
   Zap, ShoppingCart, Package, Building2, Search,
-  Lock, Copy, Shield, ShieldOff, Loader2, CheckCircle2, XCircle,
+  Lock, Copy, Shield, ShieldOff, Loader2, CheckCircle2, XCircle, Bot,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
 import type { EndpointConnection, ConnectionType } from "@/lib/types";
@@ -239,7 +239,7 @@ export default function ConnectionsListClient({
     return (
       <tr className="border-b border-gray-800/60 hover:bg-gray-800/30 transition-colors group">
         {/* Type badge — click to test connection */}
-        <td className="py-3 pl-4 pr-3 w-36">
+        <td className="py-3 pl-4 pr-3 w-28">
           <button
             onClick={() => runTest(conn)}
             disabled={test?.status === "testing"}
@@ -254,7 +254,7 @@ export default function ConnectionsListClient({
         {/* Name */}
         <td className="py-3 px-3">
           <div className="flex items-center gap-2 min-w-0">
-            <span className="text-sm text-white font-medium">{conn.name}</span>
+            <span className="text-sm text-white font-medium truncate max-w-[340px]">{conn.name}</span>
             {conn.is_system && (
               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-cyan-500/10 border border-cyan-500/25 text-cyan-400 text-[10px] font-medium shrink-0">
                 <Lock className="w-2.5 h-2.5" />
@@ -267,23 +267,29 @@ export default function ConnectionsListClient({
                 {custName}
               </span>
             )}
+            {conn.agent_id && (
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-[10px] font-medium shrink-0">
+                <Bot className="w-2.5 h-2.5" />
+                Agent
+              </span>
+            )}
           </div>
         </td>
 
         {/* Config summary */}
-        <td className="py-3 px-3 w-56 hidden md:table-cell">
-          <span className="text-xs text-gray-500 truncate block max-w-[200px]">{configSummary(conn)}</span>
+        <td className="py-3 px-3 w-44 hidden md:table-cell">
+          <span className="text-xs text-gray-500 truncate block max-w-[160px]">{configSummary(conn)}</span>
         </td>
 
         {/* Updated */}
-        <td className="py-3 px-3 w-24 hidden lg:table-cell">
+        <td className="py-3 px-3 w-20 hidden lg:table-cell">
           <span className="text-xs text-gray-600">
             {new Date(conn.updated_at).toLocaleDateString()}
           </span>
         </td>
 
         {/* Actions */}
-        <td className="py-3 pl-3 pr-4 w-48">
+        <td className="py-3 pl-3 pr-4 w-36">
           <RowActions conn={conn} />
         </td>
       </tr>

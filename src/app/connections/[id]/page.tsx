@@ -43,7 +43,7 @@ export default async function ConnectionEditorPage({
   const isNew = id === "new";
   let connection = null;
 
-  const [connectionResult, customersResult] = await Promise.all([
+  const [connectionResult, customersResult, agentsResult] = await Promise.all([
     isNew ? Promise.resolve({ data: null }) : supabase
       .from("endpoint_connections")
       .select("*")
@@ -52,6 +52,7 @@ export default async function ConnectionEditorPage({
     isAdmin
       ? supabase.from("customers").select("id, name, company").order("name")
       : Promise.resolve({ data: [] }),
+    supabase.from("agents").select("id, name, status, customer_id").order("name"),
   ]);
 
   if (!isNew) {
@@ -90,6 +91,7 @@ export default async function ConnectionEditorPage({
       isReadOnly={readOnly}
       isAdmin={isAdmin}
       customers={customersResult.data ?? []}
+      agents={(agentsResult.data ?? []).map((a: { id: string; name: string; status: string; customer_id: string }) => ({ id: a.id, name: a.name, status: a.status, customer_id: a.customer_id }))}
       scopedCustomerId={userProfile?.role === "schedule_administrator" ? (userProfile?.customer_id ?? null) : null}
       returnTo={returnTo ?? null}
     />
