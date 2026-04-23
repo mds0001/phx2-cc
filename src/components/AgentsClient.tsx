@@ -4,8 +4,10 @@ import { useState, useEffect, useCallback } from "react";
 import { createClient } from "@/lib/supabase-browser";
 import {
   Bot, Plus, Trash2, Copy, Check, RefreshCw,
-  Wifi, WifiOff, AlertTriangle, Clock, Terminal,
+  Wifi, WifiOff, AlertTriangle, Clock, Terminal, Download,
 } from "lucide-react";
+
+const AGENT_DOWNLOAD_URL = "/downloads/threads-agent.exe";
 
 interface Agent {
   id:          string;
@@ -182,7 +184,17 @@ function TokenModal({
             <div className="bg-gray-800/50 border border-gray-700/50 rounded-lg p-3 space-y-1.5">
               <div className="text-xs font-medium text-gray-300">Installation steps</div>
               <ol className="text-xs text-gray-500 space-y-1 list-decimal list-inside">
-                <li>Download <span className="text-gray-300">threads-agent.exe</span> to the target machine</li>
+                <li className="flex items-center gap-1.5">
+                  <a
+                    href={AGENT_DOWNLOAD_URL}
+                    download
+                    className="inline-flex items-center gap-1 text-indigo-400 hover:text-indigo-300 underline underline-offset-2 transition-colors"
+                  >
+                    <Download className="w-3 h-3" />
+                    Download threads-agent.exe
+                  </a>
+                  <span>to the target machine</span>
+                </li>
                 <li>Run <span className="font-mono text-gray-300">threads-agent.exe --register</span></li>
                 <li>Paste the token above when prompted</li>
                 <li>Run <span className="font-mono text-gray-300">threads-agent.exe --install</span> to start as a Windows Service</li>
