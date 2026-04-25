@@ -110,10 +110,11 @@ async function notifyAdmins(sku: string, seenCount: number) {
 
 export async function POST(req: NextRequest) {
   try {
-    const { sku, result_field, customer_id } = (await req.json()) as {
+    const { sku, result_field, customer_id, context } = (await req.json()) as {
       sku?: string;
       result_field?: ResultField;
       customer_id?: string | null;
+      context?: Record<string, string> | null;
     };
 
     if (!sku) return NextResponse.json({ error: "sku required" }, { status: 400 });
@@ -121,12 +122,15 @@ export async function POST(req: NextRequest) {
     const normalizedSku = sku.trim().toUpperCase();
     const admin = createAdminClient();
 
-    // 1. Check taxonomy
-    const { data: taxonomy } = await admin
+    // 1. Check taxonomy — use limit(1) instead of single() to avoid URL encoding
+    //    issues with special characters like '#' in SKU names.
+    const { data: taxRows } = await admin
       .from("sku_taxonomy")
       .select("type, subtype, description, model, manufacturer")
       .eq("manufacturer_sku", normalizedSku)
-      .single();
+      .limit(1);
+
+    const taxonomy = taxRows?.[0] ?? null;
 
     if (taxonomy) {
       const field = result_field ?? "type";
@@ -134,12 +138,19 @@ export async function POST(req: NextRequest) {
       return result(true, value, normalizedSku);
     }
 
-    // 2. Not found — upsert into research queue
-    const { data: existing } = await admin
+    // 2. Not found in taxonomy — check queue status before queuing
+    const { data: queueRows } = await admin
       .from("sku_research_queue")
       .select("id, seen_count, status")
       .eq("manufacturer_sku", normalizedSku)
-      .single();
+      .limit(1);
+
+    const existing = queueRows?.[0] ?? null;
+
+    // If permanently ignored, treat as silently skipped — no exception, no re-queue
+    if (existing?.status === "ignored") {
+      return result(false, "__IGNORED__", normalizedSku);
+    }
 
     let newSeenCount = 1;
 
@@ -151,8 +162,8 @@ export async function POST(req: NextRequest) {
         .update({
           seen_count:   newSeenCount,
           last_seen_at: new Date().toISOString(),
-          // Reset to pending if it was ignored, so it surfaces again
-          ...(existing.status === "ignored" ? { status: "pending" } : {}),
+          // Reset to pending if skipped (soft dismiss). Ignored is permanent — never re-queue.
+          ...(existing.status === "skipped" ? { status: "pending" } : {}),
         })
         .eq("manufacturer_sku", normalizedSku);
     } else {
@@ -162,6 +173,7 @@ export async function POST(req: NextRequest) {
         status:           "pending",
         seen_count:       1,
         customer_id:      customer_id ?? null,
+        context:          context ?? null,
       });
     }
 

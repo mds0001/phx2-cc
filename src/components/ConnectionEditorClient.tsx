@@ -7,7 +7,7 @@ import {
   File, Cloud, Mail, Database, Globe,
   Upload, X, FileText, Loader2, Zap, Download,
   FolderOpen, Folder, ChevronRight, Home,
-  Wifi, WifiOff, FlaskConical, ShoppingCart, Package, Building2, Search, Bot,
+  Wifi, WifiOff, FlaskConical, ShoppingCart, Package, Building2, Search, Bot, Link2,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
 import type { EndpointConnection, ConnectionType } from "@/lib/types";
@@ -22,6 +22,7 @@ const TYPE_OPTIONS: { value: ConnectionType; label: string; icon: React.ReactNod
   { value: "portal", label: "Portal",  icon: <Globe    className="w-5 h-5" />, desc: "Web portal / API" },
   { value: "ivanti", label: "Ivanti ITSM",  icon: <Zap          className="w-5 h-5" />, desc: "Ivanti Neurons for Service Management (OData REST API)" },
   { value: "ivanti_neurons", label: "Ivanti Neurons", icon: <Search className="w-5 h-5" />, desc: "Ivanti Neurons People & Device Inventory API (OAuth2)" },
+  { value: "insight",       label: "Insight",        icon: <Link2  className="w-5 h-5" />, desc: "Insight Enterprises Digital Platform API (OAuth2 client credentials)" },
   { value: "dell",   label: "Dell",    icon: <ShoppingCart className="w-5 h-5" />, desc: "Dell Premier API — catalog, quotes & orders" },
   { value: "cdw",    label: "CDW",     icon: <Package      className="w-5 h-5" />, desc: "CDW API — PO status, orders & catalog" },
   { value: "azure",  label: "Azure",   icon: <Building2    className="w-5 h-5" />, desc: "Azure Enterprise App — OAuth2 client credentials" },
@@ -38,6 +39,7 @@ const TYPE_COLOR: Record<ConnectionType, string> = {
   cdw:    "bg-red-500/10 border-red-500/40 text-red-400",
   azure:  "bg-cyan-500/10 border-cyan-500/40 text-cyan-400",
   ivanti_neurons: "bg-indigo-500/10 border-indigo-500/40 text-indigo-400",
+  insight:         "bg-emerald-500/10 border-emerald-500/40 text-emerald-400",
 };
 
 const TYPE_RING: Record<ConnectionType, string> = {
@@ -51,6 +53,7 @@ const TYPE_RING: Record<ConnectionType, string> = {
   cdw:    "ring-red-500",
   azure:  "ring-cyan-500",
   ivanti_neurons: "ring-indigo-500",
+  insight:         "ring-emerald-500",
 };
 
 // ── Field helper components ──────────────────────────────────
@@ -547,6 +550,68 @@ function PortalForm({ config, onChange }: { config: Record<string, string>; onCh
   );
 }
 
+function InsightForm({ config, onChange }: { config: Record<string, string>; onChange: (k: string, v: string) => void }) {
+  return (
+    <>
+      <div className="flex items-center gap-2 px-4 py-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl">
+        <Link2 className="w-4 h-4 text-emerald-400 shrink-0" />
+        <p className="text-xs text-emerald-300">Insight Enterprises Digital Platform API — OAuth 2.0 client credentials flow</p>
+      </div>
+
+      <Field label="Base URL">
+        <TextInput
+          value={config.url ?? ""}
+          onChange={(v) => onChange("url", v)}
+          placeholder="https://insight-qa2.test01.apimanagement.us20.hana.ondemand.com"
+          type="url"
+        />
+      </Field>
+      <Field label="OAuth Token Path">
+        <TextInput
+          value={config.oauth_token_path ?? ""}
+          onChange={(v) => onChange("oauth_token_path", v)}
+          placeholder="/oauth/token?grant_type=client_credentials"
+        />
+      </Field>
+      <Field label="Invoice Path">
+        <TextInput
+          value={config.invoice_path ?? ""}
+          onChange={(v) => onChange("invoice_path", v)}
+          placeholder="/NA/CustomerInvoice"
+        />
+      </Field>
+      <Field label="Status Path">
+        <TextInput
+          value={config.status_path ?? ""}
+          onChange={(v) => onChange("status_path", v)}
+          placeholder="/NA/GetStatus"
+        />
+      </Field>
+      <Field label="Client ID (Key)">
+        <TextInput
+          value={config.client_id ?? ""}
+          onChange={(v) => onChange("client_id", v)}
+          placeholder="OAuth client_id / API key"
+        />
+      </Field>
+      <Field label="Client Secret">
+        <PasswordInput
+          value={config.client_secret ?? ""}
+          onChange={(v) => onChange("client_secret", v)}
+        />
+      </Field>
+      <Field label="ClientID Header">
+        <TextInput
+          value={config.client_id_header ?? ""}
+          onChange={(v) => onChange("client_id_header", v)}
+          placeholder="e.g. 9373908"
+        />
+        <p className="text-xs text-gray-500 mt-1">Passed as a <span className="font-mono">ClientID</span> header on every API request.</p>
+      </Field>
+    </>
+  );
+}
+
 function AzureForm({ config, onChange }: { config: Record<string, string>; onChange: (k: string, v: string) => void }) {
   return (
     <>
@@ -961,6 +1026,7 @@ export default function ConnectionEditorClient({
       t === "cdw"    ? { base_url: "https://portal.apiconnect.cdw.com" } :
       t === "azure"  ? { scope: "https://graph.microsoft.com/.default", base_url: "https://graph.microsoft.com/v1.0" } :
       t === "ivanti_neurons" ? { dataset: "devices" } :
+      t === "insight"        ? { url: "https://", oauth_token_path: "/oauth/token?grant_type=client_credentials", invoice_path: "/NA/CustomerInvoice", status_path: "/NA/GetStatus", grant_type: "client_credentials" } :
       {}
     );
   }
@@ -1198,6 +1264,7 @@ export default function ConnectionEditorClient({
           {type === "smtp"          && <SmtpForm          config={config} onChange={setConfigField} />}
           {type === "odbc"          && <OdbcForm          config={config} onChange={setConfigField} />}
           {type === "portal"        && <PortalForm        config={config} onChange={setConfigField} />}
+          {type === "insight"       && <InsightForm       config={config} onChange={setConfigField} />}
           {type === "ivanti"        && <IvantiForm        config={config} onChange={setConfigField} />}
           {type === "ivanti_neurons" && <IvantiNeuronsForm config={config} onChange={setConfigField} />}
           {type === "dell"          && <DellForm          config={config} onChange={setConfigField} />}

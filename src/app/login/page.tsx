@@ -66,11 +66,13 @@ export default function LoginPage() {
       <div className="relative w-full max-w-md">
         {/* Logo + wordmark */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-4 shadow-lg lg-glow-cyan"
+          <a href="https://www.cloudweavr.com" target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-4 shadow-lg lg-glow-cyan hover:opacity-90 transition-opacity"
             style={{ background: "linear-gradient(135deg, #00F5FF 0%, #7B61FF 100%)" }}>
             <Zap className="w-8 h-8 text-white" strokeWidth={2.5} />
-          </div>
-          <h1 className="text-3xl font-bold text-white tracking-tight lg-gradient-text">Threads by Cloud Weaver</h1>
+          </a>
+          <a href="https://www.cloudweavr.com" target="_blank" rel="noopener noreferrer" className="hover:opacity-80 transition-opacity">
+            <h1 className="text-3xl font-bold text-white tracking-tight lg-gradient-text">Threads by Cloud Weaver</h1>
+          </a>
           <p className="text-slate-400 mt-1.5 text-sm">Weaves your cloud data.</p>
         </div>
 
@@ -160,7 +162,7 @@ export default function LoginPage() {
         </div>
 
         <p className="text-center text-slate-600 text-xs mt-6">
-          Threads by Cloud Weaver &copy; {new Date().getFullYear()} &mdash; Weaves your cloud data.
+          <a href="https://www.cloudweavr.com" target="_blank" rel="noopener noreferrer" className="hover:text-slate-400 transition-colors">Threads by Cloud Weaver</a> &copy; {new Date().getFullYear()} &mdash; Weaves your cloud data.
         </p>
       </div>
     </div>

@@ -3,15 +3,16 @@
 import { useState, useMemo, Fragment } from "react";
 import {
   Search, CheckCircle2, XCircle, Plus, ChevronDown, ChevronUp,
-  Package, Clock, Eye, RotateCcw, Tag, Database, Pencil, Trash2,
+  Package, Clock, Eye, RotateCcw, Tag, Database, Pencil, Trash2, Sparkles, Loader2,
 } from "lucide-react";
+import CustomerSwitcher, { type CustomerOption } from "@/components/CustomerSwitcher";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface QueueItem {
   id: string;
   manufacturer_sku: string;
-  status: "pending" | "resolved" | "ignored";
+  status: "pending" | "resolved" | "ignored" | "skipped";
   seen_count: number;
   first_seen_at: string;
   last_seen_at: string;
@@ -19,7 +20,25 @@ interface QueueItem {
   notes: string | null;
   resolved_at: string | null;
   customers: { name: string } | null;
+  context: Record<string, string> | null;
+  archived: boolean;
 }
+
+interface TaxonomySuggestion {
+  manufacturer: string;
+  type: string;
+  subtype: string;
+  description: string;
+  model: string;
+}
+
+const CI_SUBTYPES: Record<string, string[]> = {
+  Computer:           ["All-In-One", "Desktop", "Laptop", "Server", "Thin Client", "Tablet", "Virtual Client", "Virtual Desktop", "Virtual Server"],
+  MobileDevice:       ["Audio Device", "Smart Phone", "Tablet", "Wearable"],
+  PeripheralDevice:   ["Badge", "CC Reader", "Display", "Dock", "Document Scanner", "Fax", "Hard-Drive", "Monitor", "Monitor 13 Inch", "Monitor 15 Inch", "Printer", "Projector", "Reader", "Scanner", "UPS", "USB", "Web Cam"],
+  ivnt_Infrastructure:["Access Point", "Barcode Scanner", "Chassis", "Database", "Firewall", "Generator", "Hub", "Management", "Network MFD", "Network Test", "NIC Module", "Phone", "Printer", "Projector", "Rack", "Router", "SAN", "Scanner", "Security", "Switch", "Telephony", "UPS", "Video Conference"],
+  ivnt_GeneralAsset:  ["BatchJob", "Cart", "Certificate", "Cluster", "Document", "ESX", "Headphones", "Middleware", "ProductivityApp", "System", "TV", "VOIP"],
+};
 
 interface TaxonomyEntry {
   id: string;
@@ -42,12 +61,15 @@ interface SkuRunException {
   exceptions: { sku: string; row: number; targetField: string }[];
   status: "pending" | "resolved";
   rerun_at: string | null;
+  archived: boolean;
 }
 
 interface Props {
   queue: QueueItem[];
   taxonomy: TaxonomyEntry[];
   runs: SkuRunException[];
+  customers?: CustomerOption[];
+  activeCustomerId?: string | null;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -66,6 +88,7 @@ function StatusBadge({ status }: { status: QueueItem["status"] }) {
     pending:  { cls: "bg-yellow-500/15 text-yellow-400 border-yellow-500/30", label: "Pending" },
     resolved: { cls: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30", label: "Resolved" },
     ignored:  { cls: "bg-gray-500/15 text-gray-400 border-gray-500/30", label: "Ignored" },
+    skipped:  { cls: "bg-blue-500/15 text-blue-400 border-blue-500/30", label: "Skipped" },
   }[status];
   return (
     <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border ${cfg.cls}`}>
@@ -79,15 +102,21 @@ function StatusBadge({ status }: { status: QueueItem["status"] }) {
 function TaxonomyForm({
   sku,
   initial,
+  aiSuggestion,
   onSave,
   onCancel,
+  onSkip,
+  onIgnore,
   saving,
   saveLabel,
 }: {
   sku: string;
   initial?: Partial<TaxonomyEntry>;
+  aiSuggestion?: TaxonomySuggestion | null;
   onSave: (data: { manufacturer: string; type: string; subtype: string; description: string; model: string }) => void;
   onCancel: () => void;
+  onSkip?: () => void;
+  onIgnore?: () => void;
   saving: boolean;
   saveLabel?: string;
 }) {
@@ -96,12 +125,78 @@ function TaxonomyForm({
   const [subtype, setSubtype]           = useState(initial?.subtype ?? "");
   const [description, setDescription]   = useState(initial?.description ?? "");
   const [model, setModel]               = useState(initial?.model ?? "");
+  const [customSubtype, setCustomSubtype] = useState(false);
+
+  const aiIsEmpty = aiSuggestion != null &&
+    !aiSuggestion.manufacturer && !aiSuggestion.type &&
+    !aiSuggestion.subtype && !aiSuggestion.description && !aiSuggestion.model;
+
+  function applyAiSuggestion() {
+    if (!aiSuggestion) return;
+    if (aiSuggestion.manufacturer) setManufacturer(aiSuggestion.manufacturer);
+    if (aiSuggestion.type)         setType(aiSuggestion.type);
+    if (aiSuggestion.subtype)      setSubtype(aiSuggestion.subtype);
+    if (aiSuggestion.description)  setDescription(aiSuggestion.description);
+    if (aiSuggestion.model)        setModel(aiSuggestion.model);
+  }
 
   return (
     <div className="bg-gray-900 border border-indigo-500/30 rounded-xl p-4 space-y-3">
-      <div className="text-xs font-semibold text-indigo-300 mb-1">
-        Taxonomy for <span className="font-mono text-white">{sku}</span>
+      <div className="flex items-center justify-between mb-1">
+        <div className="text-xs font-semibold text-indigo-300">
+          Taxonomy for <span className="font-mono text-white">{sku}</span>
+        </div>
+        {aiSuggestion && !aiIsEmpty && (
+          <button
+            type="button"
+            onClick={applyAiSuggestion}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/30 text-purple-300 text-[11px] font-medium transition-all"
+          >
+            <Sparkles className="w-3 h-3" />
+            Apply AI Suggestion
+          </button>
+        )}
       </div>
+      {aiIsEmpty && (
+        <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg px-3 py-2.5 space-y-2">
+          <div className="text-[11px] text-yellow-400 font-medium">
+            AI couldn&apos;t find a good fit for this SKU. How would you like to proceed?
+          </div>
+          <div className="flex gap-2">
+            {onSkip && (
+              <button
+                type="button"
+                onClick={onSkip}
+                className="flex-1 px-2.5 py-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-300 text-[11px] font-medium transition-all"
+              >
+                Skip for Now
+              </button>
+            )}
+            {onIgnore && (
+              <button
+                type="button"
+                onClick={onIgnore}
+                className="flex-1 px-2.5 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600 border border-gray-600 text-gray-300 text-[11px] font-medium transition-all"
+              >
+                Perm. Ignore
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => { setCustomSubtype(true); }}
+              className="flex-1 px-2.5 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-indigo-300 text-[11px] font-medium transition-all"
+            >
+              Add New Subtype
+            </button>
+          </div>
+        </div>
+      )}
+      {aiSuggestion && !aiIsEmpty && (
+        <div className="text-[11px] text-purple-400/70 bg-purple-500/5 border border-purple-500/15 rounded-lg px-3 py-2 font-mono leading-relaxed">
+          {[aiSuggestion.manufacturer, aiSuggestion.type, aiSuggestion.subtype, aiSuggestion.model].filter(Boolean).join(" · ")}
+          {aiSuggestion.description && <span className="text-gray-500"> — {aiSuggestion.description}</span>}
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className="block text-[11px] font-medium text-gray-500 mb-1">Manufacturer</label>
@@ -117,15 +212,83 @@ function TaxonomyForm({
         </div>
         <div>
           <label className="block text-[11px] font-medium text-gray-500 mb-1">Type</label>
-          <input value={type} onChange={(e) => setType(e.target.value)}
-            placeholder="e.g. Computer"
-            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
+          <select value={type} onChange={(e) => { setType(e.target.value); setSubtype(""); }}
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-indigo-500">
+            <option value="">— select type —</option>
+            <option value="Computer">Computer</option>
+            <option value="MobileDevice">MobileDevice</option>
+            <option value="PeripheralDevice">PeripheralDevice</option>
+            <option value="ivnt_Infrastructure">ivnt_Infrastructure</option>
+            <option value="ivnt_GeneralAsset">ivnt_GeneralAsset</option>
+          </select>
         </div>
         <div>
-          <label className="block text-[11px] font-medium text-gray-500 mb-1">Subtype</label>
-          <input value={subtype} onChange={(e) => setSubtype(e.target.value)}
-            placeholder="e.g. Laptop"
-            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
+          <label className="block text-[11px] font-medium text-gray-500 mb-1">
+            Subtype
+            {customSubtype && <span className="ml-1.5 text-indigo-400">(new)</span>}
+          </label>
+          {customSubtype ? (
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2 text-[11px] text-gray-500">
+                <span>CI Type:</span>
+                {type ? (
+                  <span className="text-indigo-300 font-medium font-mono">{type}</span>
+                ) : (
+                  <select
+                    value={type}
+                    onChange={(e) => setType(e.target.value)}
+                    className="bg-gray-800 border border-indigo-500/50 rounded px-2 py-0.5 text-white text-[11px] focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="">— select type first —</option>
+                    <option value="Computer">Computer</option>
+                    <option value="MobileDevice">MobileDevice</option>
+                    <option value="PeripheralDevice">PeripheralDevice</option>
+                    <option value="ivnt_Infrastructure">ivnt_Infrastructure</option>
+                    <option value="ivnt_GeneralAsset">ivnt_GeneralAsset</option>
+                  </select>
+                )}
+                <span className="text-gray-600">→ New Subtype</span>
+              </div>
+              <div className="flex gap-1.5">
+                <input
+                  value={subtype}
+                  onChange={(e) => setSubtype(e.target.value)}
+                  placeholder={type ? `New subtype under ${type}` : "Select CI type first"}
+                  disabled={!type}
+                  className="flex-1 bg-gray-800 border border-indigo-500/50 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 disabled:opacity-40"
+                  autoFocus={!!type}
+                />
+                <button
+                  type="button"
+                  onClick={() => { setCustomSubtype(false); setSubtype(""); }}
+                  className="px-2 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-400 text-[11px] transition-all"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex gap-1.5">
+              <select value={subtype} onChange={(e) => setSubtype(e.target.value)}
+                className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-indigo-500"
+                disabled={!type}>
+                <option value="">{type ? "— select subtype —" : "— select type first —"}</option>
+                {(CI_SUBTYPES[type] ?? []).map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+              {type && (
+                <button
+                  type="button"
+                  onClick={() => { setCustomSubtype(true); setSubtype(""); }}
+                  title="Add new subtype"
+                  className="px-2 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600 border border-gray-700 text-gray-400 hover:text-white text-[11px] transition-all"
+                >
+                  +
+                </button>
+              )}
+            </div>
+          )}
         </div>
         <div className="col-span-2">
           <label className="block text-[11px] font-medium text-gray-500 mb-1">Description</label>
@@ -134,7 +297,7 @@ function TaxonomyForm({
             className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
         </div>
       </div>
-      <div className="flex gap-2 pt-1">
+      <div className="flex items-center gap-2 pt-1 flex-wrap">
         <button onClick={onCancel}
           className="px-3 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-white hover:bg-gray-800 text-sm transition-all">
           Cancel
@@ -145,6 +308,22 @@ function TaxonomyForm({
           className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-all disabled:opacity-50">
           {saving ? "Saving…" : (saveLabel ?? "Save & Resolve")}
         </button>
+        {onSkip && (
+          <button type="button" onClick={onSkip}
+            className="px-3 py-1.5 rounded-lg text-gray-500 hover:text-blue-400 hover:bg-gray-800 text-xs font-medium transition-all border border-gray-700">
+            Skip for Now
+          </button>
+        )}
+        {onIgnore && (
+          <button type="button" onClick={onIgnore}
+            className="px-3 py-1.5 rounded-lg text-gray-500 hover:text-red-400 hover:bg-gray-800 text-xs font-medium transition-all border border-gray-700">
+            Perm. Ignore
+          </button>
+        )}
+        <button type="button" onClick={() => setCustomSubtype(true)}
+          className="px-3 py-1.5 rounded-lg text-gray-500 hover:text-indigo-400 hover:bg-gray-800 text-xs font-medium transition-all border border-gray-700">
+          + New Subtype
+        </button>
       </div>
     </div>
   );
@@ -152,16 +331,16 @@ function TaxonomyForm({
 
 // ── Main Component ─────────────────────────────────────────────────────────
 
-export default function SkuResearchClient({ queue: initialQueue, taxonomy: initialTaxonomy, runs: initialRuns }: Props) {
+export default function SkuResearchClient({ queue: initialQueue, taxonomy: initialTaxonomy, runs: initialRuns, customers = [], activeCustomerId = null }: Props) {
   const [queue,    setQueue]    = useState<QueueItem[]>(initialQueue);
   const [taxonomy, setTaxonomy] = useState<TaxonomyEntry[]>(initialTaxonomy);
   const [runs,     setRuns]     = useState<SkuRunException[]>(initialRuns);
-  const [tab,      setTab]      = useState<"queue" | "runs" | "taxonomy">("queue");
+  const [tab,      setTab]      = useState<"runs" | "taxonomy">("runs");
   const [expandedRunIds,     setExpandedRunIds]     = useState<Set<string>>(new Set());
   const [classifyingSkuKey,  setClassifyingSkuKey]  = useState<string | null>(null); // "<runId>:<sku>"
   const [runClassifySaving,  setRunClassifySaving]  = useState(false);
   const [search,   setSearch]   = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "resolved" | "ignored">("pending");
+  const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "resolved" | "ignored" | "skipped">("pending");
   const [expandedId,   setExpandedId]   = useState<string | null>(null);
   const [savingId,     setSavingId]     = useState<string | null>(null);
   const [showAddForm,  setShowAddForm]  = useState(false);
@@ -169,7 +348,16 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
   const [editingId,    setEditingId]    = useState<string | null>(null);
   const [deletingId,   setDeletingId]   = useState<string | null>(null);
   const [editSaving,   setEditSaving]   = useState(false);
+  const [suggestingId,  setSuggestingId]  = useState<string | null>(null);
+  const [suggestions,   setSuggestions]   = useState<Record<string, TaxonomySuggestion>>({});
+  const [batchResearching, setBatchResearching] = useState(false);
+  const [batchProgress,    setBatchProgress]    = useState<{ done: number; total: number } | null>(null);
   const [toast, setToast] = useState<{ msg: string; type: "ok" | "err" } | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
+  const [runSuggestions, setRunSuggestions] = useState<Record<string, TaxonomySuggestion>>({});
+  const [runSuggestingKey, setRunSuggestingKey] = useState<string | null>(null);
+  const [showArchivedQueue, setShowArchivedQueue] = useState(false);
+  const [taxSort, setTaxSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "manufacturer_sku", dir: "asc" });
 
   function showToast(msg: string, type: "ok" | "err" = "ok") {
     setToast({ msg, type });
@@ -179,11 +367,13 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
   // ── Filtered queue ─────────────────────────────────────────────────────
   const filteredQueue = useMemo(() => {
     return queue.filter((item) => {
+      if (!showArchivedQueue && item.archived) return false;
+      if (showArchivedQueue && !item.archived) return false;
       if (statusFilter !== "all" && item.status !== statusFilter) return false;
       if (search && !item.manufacturer_sku.toLowerCase().includes(search.toLowerCase())) return false;
       return true;
     });
-  }, [queue, statusFilter, search]);
+  }, [queue, statusFilter, search, showArchivedQueue]);
 
   const filteredTaxonomy = useMemo(() => {
     if (!search) return taxonomy;
@@ -195,7 +385,21 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
     );
   }, [taxonomy, search]);
 
-  const pendingCount = queue.filter((q) => q.status === "pending").length;
+  const sortedTaxonomy = useMemo(() => {
+    const col = taxSort.col as keyof TaxonomyEntry;
+    return [...filteredTaxonomy].sort((a, b) => {
+      const av = (a[col] ?? "").toString().toLowerCase();
+      const bv = (b[col] ?? "").toString().toLowerCase();
+      return taxSort.dir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+    });
+  }, [filteredTaxonomy, taxSort]);
+
+  function toggleTaxSort(col: string) {
+    setTaxSort((prev) => prev.col === col ? { col, dir: prev.dir === "asc" ? "desc" : "asc" } : { col, dir: "asc" });
+  }
+
+  const pendingCount = queue.filter((q) => q.status === "pending" && !q.archived).length;
+  const archivedQueueCount = queue.filter((q) => q.archived).length;
 
   // ── Resolve: upsert taxonomy + mark resolved ───────────────────────────
   async function handleResolve(item: QueueItem, data: { manufacturer: string; type: string; subtype: string; description: string; model: string }) {
@@ -217,7 +421,16 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
       });
       if (!qRes.ok) throw new Error(await qRes.text());
 
-      setQueue((prev) => prev.map((q) => q.id === item.id ? { ...q, status: "resolved", resolved_at: new Date().toISOString() } : q));
+      setQueue((prev) => prev.map((q) => q.id === item.id ? { ...q, status: "resolved", resolved_at: new Date().toISOString(), archived: true } : q));
+      fetch(`/api/sku-research-queue/${item.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ archived: true }) }).catch(() => null);
+      // Best-effort: write custom subtype to Ivanti if it's not in the known list
+      if (item.customer_id && data.subtype.trim() && !(CI_SUBTYPES[data.type] ?? []).includes(data.subtype.trim())) {
+        fetch("/api/ivanti-subtype", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ customer_id: item.customer_id, parent_type: data.type, subtype: data.subtype.trim() }),
+        }).catch(() => null);
+      }
       setExpandedId(null);
       showToast(`SKU ${item.manufacturer_sku} resolved`);
     } catch (e) {
@@ -227,7 +440,45 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
     }
   }
 
-  // ── Ignore ─────────────────────────────────────────────────────────────
+  // ── Archive / unarchive queue item ──────────────────────
+  async function handleArchiveQueueItem(item: QueueItem) {
+    try {
+      await fetch(`/api/sku-research-queue/${item.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ archived: true }),
+      });
+      setQueue((prev) => prev.map((q) => q.id === item.id ? { ...q, archived: true } : q));
+      showToast(`SKU ${item.manufacturer_sku} archived`);
+    } catch { showToast("Failed to archive", "err"); }
+  }
+
+  async function handleUnarchiveQueueItem(item: QueueItem) {
+    try {
+      await fetch(`/api/sku-research-queue/${item.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ archived: false }),
+      });
+      setQueue((prev) => prev.map((q) => q.id === item.id ? { ...q, archived: false } : q));
+      showToast(`SKU ${item.manufacturer_sku} unarchived`);
+    } catch { showToast("Failed to unarchive", "err"); }
+  }
+
+  // ── Skip (soft — resurfaces next run) ─────────────────────────────────
+  async function handleSkip(item: QueueItem) {
+    try {
+      await fetch(`/api/boh/sku-research-queue/${item.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "skipped" }),
+      });
+      setQueue((prev) => prev.map((q) => q.id === item.id ? { ...q, status: "skipped" } : q));
+      showToast(`SKU ${item.manufacturer_sku} skipped`);
+    } catch { showToast("Failed to skip SKU", true); }
+  }
+
+  // ── Ignore (permanent) ────────────────────────────────────────────────────
   async function handleIgnore(item: QueueItem) {
     setSavingId(item.id);
     try {
@@ -262,6 +513,55 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
     } finally {
       setSavingId(null);
     }
+  }
+
+
+  // ── AI Suggest (single) ────────────────────────────────────────────────
+  async function handleAiSuggest(item: QueueItem) {
+    setSuggestingId(item.id);
+    try {
+      const res = await fetch("/api/sku-research-suggest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queue_id: item.id }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const json = await res.json() as { suggestion: TaxonomySuggestion };
+      setSuggestions((prev) => ({ ...prev, [item.id]: json.suggestion }));
+      setExpandedId(item.id);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : String(e), "err");
+    } finally {
+      setSuggestingId(null);
+    }
+  }
+
+  // ── Research All (batch) ───────────────────────────────────────────────
+  async function handleBatchSuggest() {
+    const pending = queue.filter((q) => q.status === "pending");
+    if (!pending.length) return;
+    setBatchResearching(true);
+    setBatchProgress({ done: 0, total: pending.length });
+    const newSuggestions: Record<string, TaxonomySuggestion> = {};
+    for (let i = 0; i < pending.length; i++) {
+      const item = pending[i];
+      try {
+        const res = await fetch("/api/sku-research-suggest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ queue_id: item.id }),
+        });
+        if (res.ok) {
+          const json = await res.json() as { suggestion: TaxonomySuggestion };
+          newSuggestions[item.id] = json.suggestion;
+        }
+      } catch { /* skip failed */ }
+      setBatchProgress({ done: i + 1, total: pending.length });
+    }
+    setSuggestions((prev) => ({ ...prev, ...newSuggestions }));
+    setBatchResearching(false);
+    setBatchProgress(null);
+    showToast(`AI suggestions ready for ${Object.keys(newSuggestions).length} SKUs`);
   }
 
   // ── Add manual taxonomy entry ──────────────────────────────────────────
@@ -316,7 +616,7 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
   }
 
   // -- Classify a SKU from the Exception Runs view --
-  async function handleRunClassify(sku: string, data: { manufacturer: string; type: string; subtype: string; description: string; model: string }) {
+  async function handleRunClassify(sku: string, data: { manufacturer: string; type: string; subtype: string; description: string; model: string }, customer_id?: string | null) {
     setRunClassifySaving(true);
     try {
       const res = await fetch("/api/sku-taxonomy", {
@@ -336,12 +636,109 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ manufacturer_sku: sku.trim().toUpperCase() }),
       }).catch(() => null);
+      // Best-effort: write custom subtype to Ivanti if it's not in the known list
+      if (customer_id && data.subtype.trim() && !(CI_SUBTYPES[data.type] ?? []).includes(data.subtype.trim())) {
+        fetch("/api/ivanti-subtype", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ customer_id, parent_type: data.type, subtype: data.subtype.trim() }),
+        }).catch(() => null);
+      }
       setClassifyingSkuKey(null);
       showToast(`SKU ${sku} classified`);
     } catch (e) {
       showToast(e instanceof Error ? e.message : String(e), "err");
     } finally {
       setRunClassifySaving(false);
+    }
+  }
+
+  // -- Skip / ignore a SKU from the exception runs view (updates queue item if exists) --
+  async function handleRunSkip(sku: string, customer_id?: string | null) {
+    try {
+      const queueItem = queue.find((q) => q.manufacturer_sku.trim().toLowerCase() === sku.trim().toLowerCase());
+      if (queueItem) {
+        await fetch(`/api/sku-research-queue/${queueItem.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "skipped" }),
+        });
+        setQueue((prev) => prev.map((q) => q.id === queueItem.id ? { ...q, status: "skipped" } : q));
+      } else {
+        const res = await fetch("/api/sku-research-queue", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ manufacturer_sku: sku, status: "skipped", customer_id: customer_id ?? null }),
+        });
+        if (res.ok) {
+          const json = await res.json() as { data: QueueItem };
+          if (json.data) setQueue((prev) => [...prev, json.data]);
+        }
+      }
+      showToast(`SKU ${sku} skipped`);
+    } catch { showToast("Failed to skip", "err"); }
+  }
+
+  async function handleRunIgnore(sku: string, customer_id?: string | null) {
+    try {
+      const queueItem = queue.find((q) => q.manufacturer_sku.trim().toLowerCase() === sku.trim().toLowerCase());
+      if (queueItem) {
+        await fetch(`/api/sku-research-queue/${queueItem.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "ignored" }),
+        });
+        setQueue((prev) => prev.map((q) => q.id === queueItem.id ? { ...q, status: "ignored" } : q));
+      } else {
+        const res = await fetch("/api/sku-research-queue", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ manufacturer_sku: sku, status: "ignored", customer_id: customer_id ?? null }),
+        });
+        if (res.ok) {
+          const json = await res.json() as { data: QueueItem };
+          if (json.data) setQueue((prev) => [...prev, json.data]);
+        }
+      }
+      setClassifyingSkuKey(null);
+      showToast(`SKU ${sku} permanently ignored`);
+    } catch { showToast("Failed to ignore", "err"); }
+  }
+
+  // -- AI Suggest for a SKU in the exception runs view --
+  async function handleRunAiSuggest(runId: string, sku: string) {
+    const key = `${runId}:${sku}`;
+    setRunSuggestingKey(key);
+    try {
+      const queueItem = queue.find((q) => q.manufacturer_sku.trim().toLowerCase() === sku.trim().toLowerCase());
+      let suggestion: TaxonomySuggestion | null = null;
+      if (queueItem) {
+        const res = await fetch("/api/sku-research-suggest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ queue_id: queueItem.id }),
+        });
+        if (res.ok) {
+          const json = await res.json() as { suggestion: TaxonomySuggestion };
+          suggestion = json.suggestion;
+        }
+      } else {
+        const res = await fetch("/api/sku-research-suggest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sku }),
+        });
+        if (res.ok) {
+          const json = await res.json() as { suggestion?: TaxonomySuggestion };
+          suggestion = json.suggestion ?? null;
+        }
+      }
+      if (suggestion) setRunSuggestions((prev) => ({ ...prev, [key]: suggestion! }));
+      setClassifyingSkuKey(key);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : String(e), "err");
+    } finally {
+      setRunSuggestingKey(null);
     }
   }
 
@@ -357,7 +754,32 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
         setRuns((prev) => prev.map((r) => r.id === run.id ? { ...r, status: "resolved", rerun_at: new Date().toISOString() } : r));
       }
     } catch { /* best effort */ }
-    window.open(`/scheduler?rerun=${run.id}`, "_blank");
+    window.location.href = `/scheduler?rerun=${run.id}`;
+  }
+
+  // -- Archive / unarchive a run --
+  async function handleArchive(run: SkuRunException) {
+    try {
+      const res = await fetch(`/api/sku-run-exceptions/${run.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ archived: true }),
+      });
+      if (res.ok) setRuns((prev) => prev.map((r) => r.id === run.id ? { ...r, archived: true } : r));
+      showToast("Run archived");
+    } catch { showToast("Failed to archive run", "err"); }
+  }
+
+  async function handleUnarchive(run: SkuRunException) {
+    try {
+      const res = await fetch(`/api/sku-run-exceptions/${run.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ archived: false }),
+      });
+      if (res.ok) setRuns((prev) => prev.map((r) => r.id === run.id ? { ...r, archived: false } : r));
+      showToast("Run unarchived");
+    } catch { showToast("Failed to unarchive run", "err"); }
   }
 
   // -- Delete taxonomy entry --
@@ -376,7 +798,7 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
   }
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white">
+    <div className="flex flex-col bg-gray-950 text-white" style={{height:"calc(100vh - 44px)"}}>
       {/* Toast */}
       {toast && (
         <div className={`fixed top-4 right-4 z-50 px-4 py-2.5 rounded-xl text-sm font-medium shadow-xl border transition-all ${
@@ -389,34 +811,35 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
       )}
 
       {/* Header */}
-      <div className="border-b border-gray-800 px-8 py-5">
+      <div className="shrink-0 border-b border-gray-800 px-8 py-5">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-xl font-semibold text-white flex items-center gap-2.5">
               <Tag className="w-5 h-5 text-indigo-400" />
               SKU Research
-              {pendingCount > 0 && (
-                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-yellow-500/15 border border-yellow-500/30 text-yellow-400">
-                  {pendingCount} pending
-                </span>
-              )}
             </h1>
             <p className="text-sm text-gray-500 mt-0.5">
-              Classify unrecognized manufacturer SKUs to unblock import runs
+              Resolve unrecognized SKUs and rerun failed import tasks
             </p>
           </div>
-          <button
-            onClick={() => { setShowAddForm(true); setTab("taxonomy"); }}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-all"
-          >
-            <Plus className="w-4 h-4" />
-            Add SKU
-          </button>
+          <div className="flex items-center gap-2">
+            {customers.length > 0 && (
+              <CustomerSwitcher customers={customers} activeCustomerId={activeCustomerId} />
+            )}
+
+            <button
+              onClick={() => { setShowAddForm(true); setTab("taxonomy"); }}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-all"
+            >
+              <Plus className="w-4 h-4" />
+              Add SKU
+            </button>
+          </div>
         </div>
 
         {/* Tabs */}
         <div className="flex gap-1 mt-5">
-          {(["queue", "runs", "taxonomy"] as const).map((t) => (
+          {(["runs", "taxonomy"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -426,8 +849,7 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                   : "text-gray-500 hover:text-gray-300"
               }`}
             >
-              {t === "queue" ? `Research Queue (${queue.filter(q => q.status === "pending").length})`
-               : t === "runs" ? `Exception Runs (${runs.filter(r => r.status === "pending").length})`
+              {t === "runs" ? `Tasks with Exceptions (${runs.filter(r => !r.archived).length})`
                : `Taxonomy (${taxonomy.length})`}
             </button>
           ))}
@@ -435,7 +857,7 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
       </div>
 
       {/* Controls */}
-      <div className="px-8 py-4 flex items-center gap-3 border-b border-gray-800/60">
+      <div className="shrink-0 px-8 py-4 flex items-center gap-3 border-b border-gray-800/60">
         <div className="relative flex-1 max-w-xs">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
           <input
@@ -445,153 +867,45 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
             className="w-full pl-9 pr-3 py-1.5 bg-gray-900 border border-gray-800 rounded-lg text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
           />
         </div>
-        {tab === "queue" && (
-          <div className="flex gap-1">
-            {(["all", "pending", "resolved", "ignored"] as const).map((s) => (
-              <button
-                key={s}
-                onClick={() => setStatusFilter(s)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all capitalize ${
-                  statusFilter === s
-                    ? "bg-gray-700 text-white"
-                    : "text-gray-500 hover:text-gray-300"
-                }`}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-        )}
+
       </div>
 
       {/* Content */}
-      <div className="px-8 py-6">
+      <div className="flex-1 min-h-0 overflow-hidden px-8 py-2">
 
         {/* ── Queue Tab ── */}
-        {tab === "queue" && (
-          <div className="space-y-2">
-            {filteredQueue.length === 0 && (
-              <div className="text-center py-16 text-gray-600">
-                <Package className="w-10 h-10 mx-auto mb-3 opacity-30" />
-                <p className="text-sm">{statusFilter === "pending" ? "No pending SKUs — great!" : "No items match your filter."}</p>
+        {/* -- Tasks with Exceptions Tab -- */}        {tab === "runs" && (
+          <div className="h-full overflow-y-auto space-y-6">
+            <div className="flex items-center justify-between">
+              <div className="text-xs text-gray-500">
+                {runs.filter((r) => !r.archived).length} active run{runs.filter((r) => !r.archived).length !== 1 ? "s" : ""}
+                {runs.some((r) => r.archived) && `, ${runs.filter((r) => r.archived).length} archived`}
               </div>
-            )}
-            {filteredQueue.map((item) => {
-              const isExpanded = expandedId === item.id;
-              const isSaving   = savingId === item.id;
-
-              return (
-                <div key={item.id} className={`bg-gray-900 border rounded-xl transition-all ${
-                  item.status === "pending" ? "border-yellow-500/20" : "border-gray-800"
-                }`}>
-                  {/* Row */}
-                  <div className="flex items-center gap-4 px-4 py-3">
-                    {/* SKU */}
-                    <div className="font-mono text-sm text-white font-semibold min-w-[180px]">
-                      {item.manufacturer_sku}
-                    </div>
-
-                    {/* Status */}
-                    <StatusBadge status={item.status} />
-
-                    {/* Seen */}
-                    <div className="flex items-center gap-1 text-xs text-gray-500 min-w-[80px]">
-                      <Eye className="w-3 h-3" />
-                      {item.seen_count}× seen
-                    </div>
-
-                    {/* Last seen */}
-                    <div className="flex items-center gap-1 text-xs text-gray-500 min-w-[100px]">
-                      <Clock className="w-3 h-3" />
-                      {timeAgo(item.last_seen_at)}
-                    </div>
-
-                    {/* Customer */}
-                    {item.customers?.name && (
-                      <div className="text-xs text-gray-500 truncate">{item.customers.name}</div>
-                    )}
-
-                    {/* Actions */}
-                    <div className="ml-auto flex items-center gap-2">
-                      {item.status === "pending" && (
-                        <>
-                          <button
-                            onClick={() => setExpandedId(isExpanded ? null : item.id)}
-                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-400 hover:text-indigo-300 text-xs font-medium transition-all border border-indigo-500/20"
-                          >
-                            <CheckCircle2 className="w-3.5 h-3.5" />
-                            Resolve
-                            {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                          </button>
-                          <button
-                            onClick={() => handleIgnore(item)}
-                            disabled={isSaving}
-                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-gray-800 text-xs font-medium transition-all disabled:opacity-50"
-                          >
-                            <XCircle className="w-3.5 h-3.5" />
-                            Ignore
-                          </button>
-                        </>
-                      )}
-                      {item.status === "ignored" && (
-                        <button
-                          onClick={() => handleReopen(item)}
-                          disabled={isSaving}
-                          className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-gray-500 hover:text-yellow-400 hover:bg-gray-800 text-xs font-medium transition-all disabled:opacity-50"
-                        >
-                          <RotateCcw className="w-3.5 h-3.5" />
-                          Re-open
-                        </button>
-                      )}
-                      {item.status === "resolved" && (
-                        <span className="text-xs text-emerald-400 flex items-center gap-1">
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          {item.resolved_at ? timeAgo(item.resolved_at) : "Resolved"}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Resolve form */}
-                  {isExpanded && (
-                    <div className="border-t border-gray-800 p-4">
-                      <TaxonomyForm
-                        sku={item.manufacturer_sku}
-                        saving={isSaving}
-                        onCancel={() => setExpandedId(null)}
-                        onSave={(data) => handleResolve(item, data)}
-                      />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {/* ── Taxonomy Tab ── */}
-        {/* -- Exception Runs Tab -- */}
-        {tab === "runs" && (
-          <div className="space-y-6">
-            {runs.length === 0 ? (
-              <div className="text-center py-16 text-gray-600">No exception runs recorded yet.</div>
+              {runs.some((r) => r.archived) && (
+                <button
+                  onClick={() => setShowArchived((v) => !v)}
+                  className="text-xs text-gray-500 hover:text-gray-300 underline underline-offset-2 transition-colors"
+                >
+                  {showArchived ? "Hide Archived" : "Show Archived"}
+                </button>
+              )}
+            </div>
+            {runs.filter((r) => showArchived ? r.archived : !r.archived).length === 0 ? (
+              <div className="text-center py-16 text-gray-600">
+                {showArchived ? "No archived runs." : "No exception runs recorded yet."}
+              </div>
             ) : (() => {
-              const byCustomer = new Map<string, SkuRunException[]>();
-              for (const r of runs) {
-                const key = r.customer_name ?? "Unknown Customer";
-                if (!byCustomer.has(key)) byCustomer.set(key, []);
-                byCustomer.get(key)!.push(r);
-              }
-              return [...byCustomer.entries()].map(([customer, customerRuns]) => (
-                <div key={customer}>
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="text-xs font-semibold text-indigo-400 uppercase tracking-widest">{customer}</span>
-                    <div className="flex-1 h-px bg-gray-800" />
-                  </div>
-                  <div className="space-y-3">
-                    {customerRuns.map((run) => {
+              const visibleRuns = runs.filter((r) => showArchived ? r.archived : !r.archived);
+              return (
+                <div className="space-y-3">
+                  {visibleRuns.map((run) => {
                       const uniqueSkus = [...new Set(run.exceptions.map((e) => e.sku))];
-                      const classifiedSkus = uniqueSkus.filter((s) => taxonomy.some((t) => t.manufacturer_sku === s));
+                      const classifiedSkus = uniqueSkus.filter((s) => {
+                        const norm = s.trim().toLowerCase();
+                        return taxonomy.some((t) => t.manufacturer_sku.trim().toLowerCase() === norm) ||
+                          queue.some((q) => q.manufacturer_sku.trim().toLowerCase() === norm &&
+                            (q.status === "ignored" || q.status === "skipped"));
+                      });
                       const allClassified = classifiedSkus.length === uniqueSkus.length;
                       const isExpanded = expandedRunIds.has(run.id);
                       return (
@@ -611,6 +925,9 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                               <div className="flex items-center gap-2 flex-wrap">
                                 <span className="text-sm font-medium text-white truncate">{run.task_name}</span>
                                 <span className="text-xs text-gray-500">{timeAgo(run.run_at)}</span>
+                                {run.customer_name && (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">{run.customer_name}</span>
+                                )}
                                 {run.status === "resolved"
                                   ? <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">Resolved</span>
                                   : allClassified
@@ -623,7 +940,7 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                               <button
                                 onClick={() => handleRerunJob(run)}
                                 disabled={!allClassified}
-                                title={allClassified ? "Rerun exception rows in scheduler" : "Classify all SKUs first"}
+                                title={allClassified ? "Rerun exception rows in scheduler" : "Resolve all SKUs first"}
                                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
                                   allClassified
                                     ? "bg-indigo-600 hover:bg-indigo-500 text-white"
@@ -634,13 +951,34 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                                 Rerun Job
                               </button>
                             )}
+                            {run.archived ? (
+                              <button
+                                onClick={() => handleUnarchive(run)}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-500 hover:text-amber-400 hover:bg-gray-800 transition-all border border-gray-800"
+                                title="Unarchive this run"
+                              >
+                                <RotateCcw className="w-3 h-3" />
+                                Unarchive
+                              </button>
+                            ) : run.status === "resolved" && (
+                              <button
+                                onClick={() => handleArchive(run)}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-all border border-gray-800"
+                                title="Archive this resolved run"
+                              >
+                                Archive
+                              </button>
+                            )}
                           </div>
                           {isExpanded && (
                             <div className="border-t border-gray-800 divide-y divide-gray-800/60">
                               {uniqueSkus.map((sku) => {
-                                const isClassified = taxonomy.some((t) => t.manufacturer_sku === sku);
+                                const isClassified = taxonomy.some((t) => t.manufacturer_sku.trim().toLowerCase() === sku.trim().toLowerCase())
+                                  || queue.some((q) => q.manufacturer_sku.trim().toLowerCase() === sku.trim().toLowerCase() && (q.status === "ignored" || q.status === "skipped"));
                                 const skuKey = `${run.id}:${sku}`;
-                                const isClassifying = classifyingSkuKey === skuKey;
+                                const isResolving = classifyingSkuKey === skuKey;
+                                const isSuggestingThis = runSuggestingKey === skuKey;
+                                const suggestion = runSuggestions[skuKey] ?? null;
                                 return (
                                   <div key={sku} className="px-4 py-3">
                                     <div className="flex items-center gap-3">
@@ -652,26 +990,40 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                                       <span className="text-xs text-gray-600">
                                         {run.exceptions.filter((e) => e.sku === sku).map((e) => `row ${e.row}`).join(", ")}
                                       </span>
-                                      {!isClassified && !isClassifying && (
-                                        <button
-                                          onClick={() => setClassifyingSkuKey(skuKey)}
-                                          className="ml-auto text-xs text-indigo-400 hover:text-indigo-300 font-medium"
-                                        >
-                                          Classify
-                                        </button>
+                                      {!isClassified && (
+                                        <div className="ml-auto flex items-center gap-2">
+                                          <button
+                                            onClick={() => handleRunAiSuggest(run.id, sku)}
+                                            disabled={isSuggestingThis}
+                                            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-purple-600/20 hover:bg-purple-600/30 text-purple-400 text-xs font-medium transition-all border border-purple-500/20 disabled:opacity-50"
+                                          >
+                                            {isSuggestingThis ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                                            {suggestion ? "Re-suggest" : "AI Suggest"}
+                                          </button>
+                                          <button
+                                            onClick={() => setClassifyingSkuKey(isResolving ? null : skuKey)}
+                                            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-400 text-xs font-medium transition-all border border-indigo-500/20"
+                                          >
+                                            <CheckCircle2 className="w-3 h-3" />
+                                            Resolve
+                                          </button>
+                                        </div>
                                       )}
                                       {isClassified && (
-                                        <span className="ml-auto text-xs text-emerald-500">Classified</span>
+                                        <span className="ml-auto text-xs text-emerald-500">Resolved</span>
                                       )}
                                     </div>
-                                    {isClassifying && (
+                                    {isResolving && (
                                       <div className="mt-3 pl-7">
                                         <TaxonomyForm
                                           sku={sku}
+                                          aiSuggestion={suggestion}
                                           saving={runClassifySaving}
-                                          saveLabel="Classify"
+                                          saveLabel="Save & Resolve"
                                           onCancel={() => setClassifyingSkuKey(null)}
-                                          onSave={(data) => handleRunClassify(sku, data)}
+                                          onSave={(data) => handleRunClassify(sku, data, run.customer_id)}
+                                          onSkip={() => { handleRunSkip(sku, run.customer_id); setClassifyingSkuKey(null); }}
+                                          onIgnore={() => handleRunIgnore(sku, run.customer_id)}
                                         />
                                       </div>
                                     )}
@@ -682,16 +1034,15 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                           )}
                         </div>
                       );
-                    })}
-                  </div>
+                  })}
                 </div>
-              ));
+              );
             })()}
           </div>
         )}
 
         {tab === "taxonomy" && (
-          <div className="space-y-4">
+          <div className="h-full flex flex-col gap-4">
             {/* Add form */}
             {showAddForm && (
               <div className="mb-4">
@@ -720,22 +1071,41 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                 <p className="text-sm">No taxonomy entries yet. Resolve SKUs from the queue to populate this.</p>
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
+              <div className="flex-1 min-h-0 overflow-auto w-full">
+                <table className="text-sm" style={{minWidth:"1800px"}}>
+                  <thead className="sticky top-0 z-10 bg-gray-950">
                     <tr className="text-left text-xs text-gray-600 uppercase tracking-wider border-b border-gray-800">
-                      <th className="pb-2 pr-4 font-semibold">SKU</th>
-                      <th className="pb-2 pr-4 font-semibold">Manufacturer</th>
-                      <th className="pb-2 pr-4 font-semibold">Type</th>
-                      <th className="pb-2 pr-4 font-semibold">Subtype</th>
-                      <th className="pb-2 pr-4 font-semibold">Model</th>
-                      <th className="pb-2 pr-4 font-semibold">Description</th>
-                      <th className="pb-2 font-semibold">Updated</th>
-                      <th className="pb-2 font-semibold"></th>
+                      {([
+                        { label: "SKU",         col: "manufacturer_sku", w: 200 },
+                        { label: "Manufacturer", col: "manufacturer",     w: 140 },
+                        { label: "Type",         col: "type",             w: 120 },
+                        { label: "Subtype",      col: "subtype",          w: 150 },
+                        { label: "Model",        col: "model",            w: 200 },
+                        { label: "Description",  col: "description",      w: 300 },
+                        { label: "Updated",      col: "updated_at",       w: 110 },
+                      ] as { label: string; col: string; w: number }[]).map(({ label, col, w }) => (
+                        <th
+                          key={col}
+                          onClick={() => toggleTaxSort(col)}
+                          style={{width: w, minWidth: w}}
+                          className="pb-2 pr-4 font-semibold cursor-pointer select-none hover:text-gray-300 transition-colors"
+                        >
+                          <span className="inline-flex items-center gap-1">
+                            {label}
+                            {taxSort.col === col
+                              ? taxSort.dir === "asc"
+                                ? <ChevronUp className="w-3 h-3 text-cyan-400" />
+                                : <ChevronDown className="w-3 h-3 text-cyan-400" />
+                              : <ChevronDown className="w-3 h-3 opacity-20" />
+                            }
+                          </span>
+                        </th>
+                      ))}
+                      <th className="pb-2 font-semibold" style={{width:80,minWidth:80}}></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-800/60">
-                    {filteredTaxonomy.map((t) => (
+                    {sortedTaxonomy.map((t) => (
                       <Fragment key={t.manufacturer_sku}>
                         <tr className={`transition-colors ${editingId === t.manufacturer_sku ? "bg-indigo-950/30" : "hover:bg-gray-900/50"}`}>
                           <td className="py-2.5 pr-4 font-mono text-white font-medium">{t.manufacturer_sku}</td>

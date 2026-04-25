@@ -151,7 +151,7 @@ export default function GlobalShell() {
 
         {/* Brand */}
         <div className="px-4 py-4 border-b border-gray-800 shrink-0">
-          <div className="flex items-center gap-2.5">
+          <a href="https://www.cloudweavr.com" target="_blank" rel="noopener noreferrer" className="flex items-center gap-2.5 hover:opacity-80 transition-opacity">
             <div className="w-[36px] h-[36px] rounded-lg bg-indigo-600 flex items-center justify-center shrink-0">
               <Activity className="w-[20px] h-[20px] text-white" />
             </div>
@@ -159,7 +159,7 @@ export default function GlobalShell() {
               <div className="text-[21px] font-semibold text-gray-100 leading-tight">Threads</div>
               <div className="text-[16px] text-gray-600 leading-tight">by Cloud Weaver</div>
             </div>
-          </div>
+          </a>
         </div>
 
         {/* Nav */}

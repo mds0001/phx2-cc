@@ -228,7 +228,7 @@ export interface MappingSlot {
 
 // ── Endpoint connections ──────────────────────────────────────
 
-export type ConnectionType = "file" | "cloud" | "smtp" | "odbc" | "portal" | "ivanti" | "ivanti_neurons" | "dell" | "cdw" | "azure";
+export type ConnectionType = "file" | "cloud" | "smtp" | "odbc" | "portal" | "ivanti" | "ivanti_neurons" | "dell" | "cdw" | "azure" | "insight";
 
 export type FileType = "xlsx" | "json" | "xml" | "csv";
 export type FileMode = "file" | "directory";

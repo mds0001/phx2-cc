@@ -59,6 +59,32 @@ export async function POST(req: NextRequest) {
 
     const admin = createAdminClient();
 
+    // Only email about SKUs that are brand-new to the queue (seen_count === 1).
+    // Repeat runs with already-known SKUs should not generate another notification.
+    const allSkus = [...new Set(exceptions.map((e) => e.sku))];
+    const { data: queueRows } = await admin
+      .from("sku_research_queue")
+      .select("manufacturer_sku, seen_count")
+      .in("manufacturer_sku", allSkus);
+
+    const newSkus = new Set(
+      (queueRows ?? [])
+        .filter((q) => q.seen_count === 1)
+        .map((q) => q.manufacturer_sku)
+    );
+
+    // Also include any SKUs not in the queue at all (edge case)
+    const knownSkus = new Set((queueRows ?? []).map((q) => q.manufacturer_sku));
+    allSkus.filter((s) => !knownSkus.has(s)).forEach((s) => newSkus.add(s));
+
+    if (newSkus.size === 0) {
+      console.log(`[sku-exception-notify] All ${allSkus.length} SKU(s) already known — skipping email`);
+      return NextResponse.json({ success: true, notified: 0, reason: "all SKUs already known" });
+    }
+
+    // Filter exceptions to only new SKUs
+    const exceptions_to_notify = exceptions.filter((e) => newSkus.has(e.sku));
+
     // Look up the task's customer name
     const { data: taskRow } = await admin
       .from("scheduled_tasks")
@@ -82,15 +108,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, notified: 0 });
     }
 
-    // Deduplicate SKUs for the summary
-    const uniqueSkus = [...new Set(exceptions.map((e) => e.sku))];
+    // Deduplicate SKUs for the summary (only new ones)
+    const uniqueSkus = [...newSkus];
     const skuCount   = uniqueSkus.length;
-    const rowCount   = exceptions.length;
+    const rowCount   = exceptions_to_notify.length;
 
     const subject = `SKU Research Required — ${skuCount} unknown SKU${skuCount !== 1 ? "s" : ""} · ${customerName} · "${task_name}"`;
 
     // Plain-text version
-    const exceptionLines = exceptions
+    const exceptionLines = exceptions_to_notify
       .map((e) => `  Row ${e.row}: ${e.sku} (field: ${e.targetField})`)
       .join("\n");
 
@@ -111,7 +137,7 @@ export async function POST(req: NextRequest) {
     ].join("\n");
 
     // HTML version
-    const rowsHtml = exceptions
+    const rowsHtml = exceptions_to_notify
       .map(
         (e) => `
       <tr>

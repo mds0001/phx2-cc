@@ -553,7 +553,7 @@ export default function SchedulerClient({
 
         // ── Step 2: Resolve source connection (file endpoint) ─
         const resolvedSourceConnId =
-          mappingProfile?.source_connection_id ?? null;
+          mappingProfile?.source_connection_id ?? task.source_connection_id ?? null;
         let sourceConnFileConfig: { file_path?: string; file_name?: string } | null = null;
         let sourceConnType: string | null = null;
         let sourceConnRawConfig: Record<string, unknown> | null = null;
@@ -566,7 +566,7 @@ export default function SchedulerClient({
           if (srcConn) {
             sourceConnType = srcConn.type;
             sourceConnRawConfig = srcConn.config as Record<string, unknown>;
-            const src = "mapping profile";
+            const src = mappingProfile?.source_connection_id ? "mapping profile" : "task";
             if (srcConn.type === "file") {
               sourceConnFileConfig = srcConn.config as { file_path?: string; file_name?: string; file_mode?: string };
               const modeLabel = (srcConn.config as Record<string, string>).file_mode === "local" ? "LOCAL/AGENT" : "FILE";
@@ -1126,18 +1126,35 @@ export default function SchedulerClient({
                 if (skuLookupCache.has(cacheKey)) {
                   const cached = skuLookupCache.get(cacheKey)!;
                   if (cached === "__NOT_FOUND__") { skuSkipRow = true; break; }
+                  if (cached === "__IGNORED__") { skuSkipRow = true; break; } // permanently ignored
                   skuLookupResults[sm.id] = cached;
                 } else {
                   try {
                     const res = await fetch("/api/sku-lookup", {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ sku: skuRaw, result_field: resultField, customer_id: task.customer_id ?? null }),
+                      body: JSON.stringify({
+                          sku: skuRaw,
+                          result_field: resultField,
+                          customer_id: task.customer_id ?? null,
+                          // Pass all string fields from the source row as context for AI research
+                          context: Object.fromEntries(
+                            Object.entries(row as Record<string, unknown>)
+                              .filter(([, v]) => typeof v === "string" || typeof v === "number")
+                              .map(([k, v]) => [k, String(v)])
+                          ),
+                        }),
                     });
                     const json = await res.json() as { found: boolean; value: string | null };
-                    if (json.found && json.value != null) {
-                      skuLookupCache.set(cacheKey, json.value);
-                      skuLookupResults[sm.id] = json.value;
+                    if (json.value === "__IGNORED__") {
+                      // Permanently ignored SKU -- skip silently, no exception
+                      skuLookupCache.set(cacheKey, "__IGNORED__");
+                      skuSkipRow = true;
+                    } else if (json.found) {
+                      // SKU found in taxonomy -- use value even if null (field just has no data)
+                      const resolvedValue = json.value ?? "";
+                      skuLookupCache.set(cacheKey, resolvedValue);
+                      if (resolvedValue) skuLookupResults[sm.id] = resolvedValue;
                     } else {
                       skuLookupCache.set(cacheKey, "__NOT_FOUND__");
                       skuSkipRow = true;
@@ -1215,7 +1232,32 @@ export default function SchedulerClient({
                 payloadForLog[k] = `[binary upload: ${Math.round(base64.length * 0.75 / 1024)}KB]`;
               }
             }
-            await taskLog("ROW", `Sending row ${i + 1}/${rows.length}: ${JSON.stringify(payloadForLog)}`);
+            // Name fallback: if Name is empty, use SerialNumber; if both empty, skip silently
+            const nameVal = (mainPayload["Name"] ?? "").toString().trim();
+            const snVal   = (mainPayload["SerialNumber"] ?? "").toString().trim();
+            if (!nameVal) {
+              if (snVal) {
+                mainPayload["Name"] = snVal;
+              } else {
+                rowSkipCount++;
+                continue;
+              }
+            }
+
+// Skip rows whose taxonomy CIType does not match the mapping profile target BO
+            {
+              const boExpectedType = (effectiveBusinessObject ?? "")
+                .replace(/^CI[#_]+/i, "")
+                .replace(/__/g, "_")
+                .trim();
+              const rowCiType = String(mainPayload["CIType"] ?? "").trim();
+              if (boExpectedType && rowCiType && rowCiType !== boExpectedType) {
+                rowSkipCount++;
+                continue;
+              }
+            }
+
+await taskLog("ROW", `Sending row ${i + 1}/${rows.length}: ${JSON.stringify(payloadForLog)}`);
 
             // Determine proxy route from the (possibly per-file-overridden) target connection type
             const resolvedConnType = fileTargetConnType;
@@ -1816,6 +1858,114 @@ export default function SchedulerClient({
             await taskLog("INFO", `Neurons source → ${targetConnType} target: no handler configured for this target type`);
           }
 
+        } else if (sourceConnType === "portal" || sourceConnType === "insight") {
+          // ── Insight / portal REST API → target ───────────────────────────
+          await taskLog("INFO", "Fetching data from Insight / portal source...");
+
+          const insightRes = await fetch("/api/insight-proxy", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ connection_id: resolvedSourceConnId }),
+          });
+
+          if (!insightRes.ok) {
+            const errText = await insightRes.text().catch(() => "");
+            let insightErrMsg = insightRes.statusText || String(insightRes.status);
+            try { const j = JSON.parse(errText) as Record<string, string>; if (j.error) insightErrMsg = j.error; }
+            catch { if (errText) insightErrMsg = errText.slice(0, 300); }
+            throw new Error(`Insight proxy failed (HTTP ${insightRes.status}): ${insightErrMsg}`);
+          }
+
+          const { rows: insightRawRows, invoice_count, line_count } =
+            await insightRes.json() as {
+              rows: Record<string, string>[];
+              invoice_count: number;
+              line_count: number;
+            };
+
+          await taskLog("INFO", `Fetched ${invoice_count} invoice(s) with ${line_count} line item(s)`);
+
+          if (insightRawRows.length > 0) {
+            await taskLog("INFO", `Source fields available: ${Object.keys(insightRawRows[0]).join(", ")}`);
+          }
+
+          if (mappingProfile?.filter_expression) {
+            await taskLog("INFO", `Row filter expression: ${mappingProfile.filter_expression}`);
+          }
+
+          // Apply rowFilter (exception rerun support)
+          const insightRowsToProcess = (rowFilter && rowFilter.size > 0)
+            ? insightRawRows.filter((_, idx) => rowFilter.has(idx + 1))
+            : insightRawRows;
+
+          if (rowFilter && rowFilter.size > 0) {
+            await taskLog("INFO", `Rerun mode: processing ${insightRowsToProcess.length} exception row(s) only`);
+          }
+
+          // Apply filter expression
+          let insightFilteredCount = 0;
+          const insightFiltered = insightRowsToProcess.filter((row, idx) => {
+            if (!mappingProfile?.filter_expression) return true;
+            const { pass, error } = evaluateFilter(row as Record<string, unknown>, mappingProfile.filter_expression);
+            if (error) console.warn(`Insight row filter error (row ${idx + 1}):`, error);
+            if (!pass) { insightFilteredCount++; return false; }
+            return true;
+          });
+
+          if (insightFilteredCount > 0) {
+            await taskLog("INFO", `Row filter: ${insightFilteredCount} row(s) skipped (did not match expression)`);
+          }
+
+          // Apply mapping profile
+          const insightMapped = insightFiltered.map((row) =>
+            mappingProfile ? applyMappingProfile(row, mappingProfile, undefined) : row
+          );
+
+          // ── Route to target ────────────────────────────────────
+          if (targetConnType === "ivanti") {
+            const tgtRaw = targetConnRawConfig as Record<string, string> | null;
+            await taskLog("INFO", `Sending ${insightMapped.length} record(s) to Ivanti ITSM target`);
+
+            let insightRowErrors = 0;
+            let insightRowWarns = 0;
+            for (let i = 0; i < insightMapped.length; i++) {
+              if (cancelledRef.current.has(task.id)) {
+                await taskLog("WARN", "Task cancelled by user.");
+                break;
+              }
+              const payload = insightMapped[i];
+              try {
+                await new Promise((r) => setTimeout(r, 75));
+                const res = await fetchWithRetry("/api/ivanti-proxy", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    ivantiUrl:      tgtRaw?.url,
+                    data:           payload,
+                    apiKey:         tgtRaw?.api_key,
+                    businessObject: tgtRaw?.business_object,
+                    tenantId:       tgtRaw?.tenant_id,
+                  }),
+                });
+                const json = await res.json() as Record<string, unknown>;
+                if (!res.ok) {
+                  insightRowErrors++;
+                  await taskLog("ERROR", `Row ${i + 1} failed: ${JSON.stringify(json)}`);
+                } else {
+                  await taskLog("SUCCESS", `Row ${i + 1}: ${JSON.stringify(json)}`);
+                }
+              } catch (rowErr: unknown) {
+                insightRowErrors++;
+                await taskLog("ERROR", `Row ${i + 1} failed: ${rowErr instanceof Error ? rowErr.message : String(rowErr)}`);
+              }
+            }
+            rowErrorCount += insightRowErrors;
+            rowWarnCount  += insightRowWarns;
+
+          } else {
+            await taskLog("INFO", `Insight/portal source → ${targetConnType ?? "no"} target: no handler configured for this target type`);
+          }
+
         } else {
           await taskLog("INFO", sourceConnType
             ? `Source is a ${sourceConnType.toUpperCase()} endpoint — no handler configured for this source type`
@@ -1884,6 +2034,14 @@ export default function SchedulerClient({
         }
 
         // -- SKU exception recording + notification --
+        if (skuExceptions.length === 0) {
+          // Clean run -- auto-archive any previous exception runs for this task
+          fetch("/api/sku-run-exceptions", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ task_id: task.id }),
+          }).catch(() => null);
+        }
         if (skuExceptions.length > 0) {
           const customerName = customers.find((c) => c.id === task.customer_id)?.name ?? null;
 

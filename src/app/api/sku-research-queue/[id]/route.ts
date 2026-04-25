@@ -13,11 +13,12 @@ export async function PATCH(
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { id } = await params;
-    const body = await req.json() as { status?: string; notes?: string };
+    const body = await req.json() as { status?: string; notes?: string; archived?: boolean };
 
     const update: Record<string, unknown> = {};
     if (body.status) update.status = body.status;
-    if (body.notes  !== undefined) update.notes = body.notes;
+    if (body.notes !== undefined) update.notes = body.notes;
+    if (body.archived !== undefined) update.archived = body.archived;
     if (body.status === "resolved") {
       update.resolved_at = new Date().toISOString();
       update.resolved_by = user.id;

@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "crypto";
 import { createAdminClient } from "@/lib/supabase-admin";
 
 export function generateApiKey(): string {
-  return randomBytes(32).toString("hex"); // 64-char hex string
+  return randomBytes(32).toString("hex");
 }
 
 export function hashApiKey(key: string): string {
@@ -12,6 +12,7 @@ export function hashApiKey(key: string): string {
 /**
  * Validates X-Agent-Id and X-Agent-Key headers.
  * Returns the agent row on success, null on failure.
+ * Retired agents return null (caller responds 401).
  */
 export async function validateAgentRequest(request: Request) {
   const agentId  = request.headers.get("X-Agent-Id");
@@ -28,6 +29,7 @@ export async function validateAgentRequest(request: Request) {
 
   if (error || !data) return null;
   if (hashApiKey(agentKey) !== data.api_key_hash) return null;
+  if (data.status === "retired") return null;
 
   return data;
 }

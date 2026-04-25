@@ -4,15 +4,16 @@ import { useState, useEffect, useCallback } from "react";
 import { createClient } from "@/lib/supabase-browser";
 import {
   Bot, Plus, Trash2, Copy, Check, RefreshCw,
-  Wifi, WifiOff, AlertTriangle, Clock, Terminal, Download,
+  Wifi, WifiOff, AlertTriangle, Clock, Terminal, Download, PowerOff,
 } from "lucide-react";
 
-const AGENT_DOWNLOAD_URL = "/downloads/threads-agent.exe";
+const AGENT_DOWNLOAD_URL = "https://ogolfqzuqnfslyjivntm.supabase.co/storage/v1/object/public/agent-releases/threads-agent.exe";
 
 interface Agent {
   id:          string;
   name:        string;
-  status:      "online" | "offline" | "error";
+  status:      "online" | "offline" | "error" | "retired";
+  pending_uninstall: boolean;
   last_seen:   string | null;
   version:     string | null;
   platform:    string;
@@ -45,12 +46,25 @@ function timeAgo(iso: string | null): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+/**
+ * If the agent DB status is "online" but last_seen is stale (>30s),
+ * treat it as "offline" — the agent has likely stopped without a clean exit.
+ * 30s = 3× the default 10s poll interval.
+ */
+function effectiveStatus(agent: Agent): Agent["status"] {
+  if (agent.status !== "online") return agent.status;
+  if (!agent.last_seen) return "offline";
+  const staleMs = 30_000;
+  return Date.now() - new Date(agent.last_seen).getTime() > staleMs ? "offline" : "online";
+}
+
 function StatusBadge({ status }: { status: Agent["status"] }) {
   const meta = {
     online:  { icon: <Wifi       className="w-3 h-3" />, label: "Online",  color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/25" },
     offline: { icon: <WifiOff    className="w-3 h-3" />, label: "Offline", color: "text-gray-500",    bg: "bg-gray-500/10 border-gray-600/25"       },
-    error:   { icon: <AlertTriangle className="w-3 h-3" />, label: "Error", color: "text-red-400",    bg: "bg-red-500/10 border-red-500/25"          },
-  }[status];
+    error:   { icon: <AlertTriangle className="w-3 h-3" />, label: "Error",   color: "text-red-400",    bg: "bg-red-500/10 border-red-500/25"          },
+    retired: { icon: <PowerOff      className="w-3 h-3" />, label: "Retired", color: "text-gray-600",    bg: "bg-gray-700/20 border-gray-700/30"        },
+  }[status] ?? { icon: <WifiOff className="w-3 h-3" />, label: status, color: "text-gray-500", bg: "bg-gray-500/10 border-gray-600/25" };
 
   return (
     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border ${meta.color} ${meta.bg}`}>
@@ -183,8 +197,8 @@ function TokenModal({
 
             <div className="bg-gray-800/50 border border-gray-700/50 rounded-lg p-3 space-y-1.5">
               <div className="text-xs font-medium text-gray-300">Installation steps</div>
-              <ol className="text-xs text-gray-500 space-y-1 list-decimal list-inside">
-                <li className="flex items-center gap-1.5">
+              <ol className="text-xs text-gray-500 space-y-2 list-decimal list-inside">
+                <li>
                   <a
                     href={AGENT_DOWNLOAD_URL}
                     download
@@ -193,7 +207,15 @@ function TokenModal({
                     <Download className="w-3 h-3" />
                     Download threads-agent.exe
                   </a>
-                  <span>to the target machine</span>
+                  {" "}to the target machine
+                  <div className="mt-1.5 ml-0 bg-yellow-500/10 border border-yellow-500/20 rounded-md p-2 space-y-1">
+                    <div className="text-yellow-400 font-medium">⚠ Browser security warning</div>
+                    <div className="text-gray-400">Your browser will flag this file as uncommon. To keep the download:</div>
+                    <div className="space-y-0.5">
+                      <div><span className="text-gray-300 font-medium">Chrome:</span> Open Downloads (⌘J / Ctrl+J) → click the warning → <span className="text-gray-300">Keep anyway</span></div>
+                      <div><span className="text-gray-300 font-medium">Edge:</span> Open Downloads → click <span className="text-gray-300">···</span> next to the file → <span className="text-gray-300">Keep</span> → <span className="text-gray-300">Show more</span> → <span className="text-gray-300">Keep anyway</span></div>
+                    </div>
+                  </div>
                 </li>
                 <li>Run <span className="font-mono text-gray-300">threads-agent.exe --register</span></li>
                 <li>Paste the token above when prompted</li>
@@ -243,6 +265,27 @@ export default function AgentsClient({ agents: initial, customers }: Props) {
     setRefreshing(false);
   }
 
+  const [uninstalling, setUninstalling] = useState<string | null>(null);
+
+  async function handleUninstall(id: string, name: string) {
+    if (!confirm(`Send uninstall command to agent "${name}"?\n\nThe agent will remove itself from Windows Services on its next heartbeat and cannot be re-used without re-registering.`)) return;
+    setUninstalling(id);
+    try {
+      const res = await fetch("/api/agent/uninstall", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent_id: id }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      // Optimistically mark as pending uninstall in UI
+      setAgents((prev) => prev.map((a) => a.id === id ? { ...a, pending_uninstall: true } : a));
+    } catch (e) {
+      alert("Uninstall failed: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setUninstalling(null);
+    }
+  }
+
   async function handleDelete(id: string, name: string) {
     if (!confirm(`Remove agent "${name}"? It will stop receiving jobs and need to be re-registered.`)) return;
     setDeleting(id);
@@ -251,9 +294,9 @@ export default function AgentsClient({ agents: initial, customers }: Props) {
     setDeleting(null);
   }
 
-  const online  = agents.filter((a) => a.status === "online").length;
-  const offline = agents.filter((a) => a.status === "offline").length;
-  const error   = agents.filter((a) => a.status === "error").length;
+  const online  = agents.filter((a) => effectiveStatus(a) === "online").length;
+  const offline = agents.filter((a) => effectiveStatus(a) === "offline").length;
+  const error   = agents.filter((a) => effectiveStatus(a) === "error").length;
 
   return (
     <div className="ml-[220px] mb-[44px] min-h-screen bg-gray-950 text-white">
@@ -335,8 +378,9 @@ export default function AgentsClient({ agents: initial, customers }: Props) {
               >
                 {/* Status dot */}
                 <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                  agent.status === "online"  ? "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]" :
-                  agent.status === "error"   ? "bg-red-400" :
+                  effectiveStatus(agent) === "online"   ? "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]" :
+                  effectiveStatus(agent) === "error"    ? "bg-red-400" :
+                  effectiveStatus(agent) === "retired"  ? "bg-gray-700" :
                   "bg-gray-600"
                 }`} />
 
@@ -344,7 +388,7 @@ export default function AgentsClient({ agents: initial, customers }: Props) {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2.5 flex-wrap">
                     <span className="font-medium text-white">{agent.name}</span>
-                    <StatusBadge status={agent.status} />
+                    <StatusBadge status={effectiveStatus(agent)} />
                     {agent.customers?.name && (
                       <span className="text-xs text-gray-500 bg-gray-800 border border-gray-700 rounded px-1.5 py-0.5">
                         {agent.customers.name}
@@ -360,14 +404,27 @@ export default function AgentsClient({ agents: initial, customers }: Props) {
                 </div>
 
                 {/* Actions */}
-                <button
-                  onClick={() => handleDelete(agent.id, agent.name)}
-                  disabled={deleting === agent.id}
-                  className="p-2 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50"
-                  title="Remove agent"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+                <div className="flex items-center gap-1">
+                  {effectiveStatus(agent) !== "retired" && (
+                    <button
+                      onClick={() => handleUninstall(agent.id, agent.name)}
+                      disabled={uninstalling === agent.id || agent.pending_uninstall}
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-gray-600 hover:text-orange-400 hover:bg-orange-500/10 transition-all disabled:opacity-50 text-xs font-medium"
+                      title={agent.pending_uninstall ? "Uninstall pending next heartbeat" : "Send uninstall command"}
+                    >
+                      <PowerOff className="w-3.5 h-3.5" />
+                      {agent.pending_uninstall ? "Pending…" : "Uninstall"}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => handleDelete(agent.id, agent.name)}
+                    disabled={deleting === agent.id}
+                    className="p-2 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50"
+                    title="Remove agent record"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
             ))}
           </div>

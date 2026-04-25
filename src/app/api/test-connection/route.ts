@@ -389,6 +389,42 @@ export async function POST(request: NextRequest) {
         }
       }
 
+      case "insight": {
+        const { url, oauth_token_path, client_id, client_secret, client_id_header, invoice_path } = config;
+        if (!url)               return result(false, "No Base URL configured");
+        if (!oauth_token_path)  return result(false, "No OAuth Token Path configured");
+        if (!client_id)         return result(false, "No Client ID configured");
+        if (!client_secret)     return result(false, "No Client Secret configured");
+
+        // Step 1: obtain OAuth token via Basic Auth
+        const insightTokenUrl = `${url.replace(/\/$/, "")}${oauth_token_path}`;
+        const basicAuth = Buffer.from(`${client_id}:${client_secret}`).toString("base64");
+        let insightToken: string;
+        try {
+          const tokenRes = await fetch(insightTokenUrl, {
+            method: "POST",
+            headers: {
+              "Authorization": `Basic ${basicAuth}`,
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            signal: AbortSignal.timeout(12_000),
+          });
+          if (!tokenRes.ok) {
+            const txt = await tokenRes.text().catch(() => "");
+            return result(false, `OAuth token request failed — HTTP ${tokenRes.status}: ${txt.slice(0, 200)}`);
+          }
+          const tokenData = await tokenRes.json().catch(() => ({})) as { access_token?: string };
+          if (!tokenData.access_token) return result(false, "Token endpoint responded but returned no access_token");
+          insightToken = tokenData.access_token;
+        } catch (e) {
+          return result(false, `OAuth URL unreachable: ${e instanceof Error ? e.message : String(e)}`);
+        }
+
+        // OAuth token obtained successfully — credentials are valid
+        void invoice_path; // available for future use
+        return result(true, `Connected — OAuth token obtained successfully`);
+      }
+
       default:
         return result(false, `Unknown connection type: ${type}`);
     }
