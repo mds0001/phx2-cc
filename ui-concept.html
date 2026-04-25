@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PHX2 UI Concepts</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f1117; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; }
+
+  .page { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+  h1 { font-size: 20px; font-weight: 600; color: #f8fafc; margin-bottom: 6px; }
+  .subtitle { color: #64748b; margin-bottom: 40px; font-size: 13px; }
+
+  /* Concept sections */
+  .concept { margin-bottom: 52px; }
+  .concept-label { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #6366f1; margin-bottom: 10px; }
+  .concept-title { font-size: 16px; font-weight: 600; color: #f1f5f9; margin-bottom: 4px; }
+  .concept-desc { color: #64748b; font-size: 12px; margin-bottom: 16px; }
+
+  /* Mock shell */
+  .mock { background: #161b27; border: 1px solid #1e2a3a; border-radius: 10px; overflow: hidden; }
+  .mock-bar { background: #1a2133; border-bottom: 1px solid #1e2a3a; padding: 10px 16px; display: flex; align-items: center; gap: 10px; }
+  .mock-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .mock-title { color: #475569; font-size: 12px; margin-left: 4px; }
+
+  /* Concept A – Current flow (bad) */
+  .flow { display: flex; align-items: center; gap: 0; padding: 24px; flex-wrap: wrap; gap: 6px; }
+  .flow-step { background: #1e2a3a; border: 1px solid #263448; border-radius: 6px; padding: 8px 14px; font-size: 12px; color: #94a3b8; white-space: nowrap; }
+  .flow-step.active { background: #1e3a5f; border-color: #3b82f6; color: #93c5fd; }
+  .flow-step.pain { background: #2a1f1f; border-color: #7f1d1d; color: #fca5a5; }
+  .flow-arrow { color: #334155; font-size: 16px; }
+  .flow-back { color: #ef4444; font-size: 11px; transform: scaleX(-1) rotate(180deg); display: inline-block; }
+
+  /* Sidebar + main layout */
+  .shell { display: flex; min-height: 320px; }
+  .sidebar { width: 200px; background: #111827; border-right: 1px solid #1e2a3a; padding: 12px 0; flex-shrink: 0; }
+  .sidebar-item { padding: 8px 16px; font-size: 12px; color: #64748b; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+  .sidebar-item.active { background: #1e2a3a; color: #e2e8f0; border-right: 2px solid #6366f1; }
+  .sidebar-item .icon { width: 16px; height: 16px; opacity: 0.6; }
+  .main { flex: 1; padding: 20px; overflow: hidden; }
+
+  /* Task hub card */
+  .hub-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; }
+  .hub-title { font-size: 15px; font-weight: 600; color: #f1f5f9; }
+  .hub-badge { font-size: 10px; padding: 2px 8px; border-radius: 99px; font-weight: 600; }
+  .badge-green { background: #14532d; color: #4ade80; }
+  .badge-red { background: #450a0a; color: #f87171; }
+  .badge-yellow { background: #422006; color: #fbbf24; }
+
+  .pipeline { display: flex; gap: 10px; margin-bottom: 16px; align-items: stretch; }
+  .pipe-card { flex: 1; background: #1a2133; border: 1px solid #1e2a3a; border-radius: 8px; padding: 12px; }
+  .pipe-card.clickable { cursor: pointer; transition: border-color 0.15s; }
+  .pipe-card.clickable:hover { border-color: #6366f1; }
+  .pipe-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: #475569; margin-bottom: 4px; }
+  .pipe-value { font-size: 12px; color: #cbd5e1; font-weight: 500; }
+  .pipe-sub { font-size: 11px; color: #475569; margin-top: 2px; }
+  .pipe-arrow { display: flex; align-items: center; color: #334155; font-size: 18px; flex-shrink: 0; }
+  .pipe-edit { font-size: 10px; color: #6366f1; margin-top: 6px; cursor: pointer; }
+  .pipe-edit:hover { color: #818cf8; }
+
+  /* Error row */
+  .error-row { background: #1f1315; border: 1px solid #7f1d1d; border-radius: 6px; padding: 10px 14px; margin-bottom: 6px; display: flex; align-items: center; gap: 10px; }
+  .error-dot { width: 6px; height: 6px; background: #ef4444; border-radius: 50%; flex-shrink: 0; }
+  .error-text { flex: 1; font-size: 12px; color: #fca5a5; }
+  .error-link { font-size: 11px; color: #6366f1; cursor: pointer; white-space: nowrap; text-decoration: underline; text-underline-offset: 2px; }
+
+  /* Slide-over */
+  .slideover-wrap { display: flex; }
+  .slideover-main { flex: 1; padding: 20px; }
+  .slideover-panel { width: 340px; background: #111827; border-left: 1px solid #1e2a3a; padding: 16px; flex-shrink: 0; display: flex; flex-direction: column; gap: 12px; }
+  .slideover-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .slideover-title { font-size: 13px; font-weight: 600; color: #f1f5f9; }
+  .slideover-close { color: #475569; cursor: pointer; font-size: 16px; }
+  .field-row { background: #1a2133; border: 1px solid #263448; border-radius: 6px; padding: 8px 10px; }
+  .field-row.highlight { border-color: #6366f1; background: #1a1f3a; }
+  .field-name { font-size: 11px; color: #94a3b8; margin-bottom: 3px; }
+  .field-val { font-size: 12px; color: #e2e8f0; }
+  .field-arrow { display: flex; align-items: center; justify-content: center; color: #334155; font-size: 12px; padding: 2px 0; }
+  .btn { padding: 6px 14px; border-radius: 5px; font-size: 12px; font-weight: 500; cursor: pointer; border: none; }
+  .btn-primary { background: #6366f1; color: white; }
+  .btn-ghost { background: transparent; color: #64748b; border: 1px solid #263448; }
+
+  /* Breadcrumb */
+  .breadcrumb { display: flex; align-items: center; gap: 6px; padding: 12px 20px; border-bottom: 1px solid #1e2a3a; background: #111827; }
+  .bc-item { font-size: 12px; color: #6366f1; cursor: pointer; }
+  .bc-item:hover { color: #818cf8; }
+  .bc-sep { color: #334155; font-size: 14px; }
+  .bc-current { font-size: 12px; color: #e2e8f0; }
+
+  /* Run log */
+  .run-log { background: #0d1117; border-radius: 6px; padding: 12px; font-family: 'SF Mono', monospace; font-size: 11px; color: #64748b; line-height: 1.7; }
+  .log-ok { color: #4ade80; }
+  .log-err { color: #f87171; }
+  .log-link { color: #818cf8; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+
+  /* Section divider */
+  .divider { border: none; border-top: 1px solid #1e2a3a; margin: 0; }
+
+  /* vs label */
+  .vs-row { display: flex; gap: 20px; margin-bottom: 16px; }
+  .vs-col { flex: 1; }
+  .vs-head { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; padding: 4px 10px; border-radius: 4px; margin-bottom: 10px; display: inline-block; }
+  .vs-before { background: #2a1f1f; color: #fca5a5; }
+  .vs-after { background: #14532d; color: #4ade80; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>PHX2 UI — Navigation Friction Concepts</h1>
+  <p class="subtitle">Three ideas to reduce the Task → Mapping → Endpoint round-trip</p>
+
+  <!-- ═══════════════════════════════════════════════════════ CONCEPT 1 -->
+  <div class="concept">
+    <div class="concept-label">Concept 1</div>
+    <div class="concept-title">Task as Pipeline Hub</div>
+    <div class="concept-desc">The task detail page shows the full pipeline — source endpoint, mapping, target endpoint — as linked cards. Edit any layer without leaving the task.</div>
+
+    <div class="vs-row">
+      <div class="vs-col">
+        <span class="vs-head vs-before">Current — 8+ clicks to fix a mapping</span>
+        <div class="mock">
+          <div class="mock-bar"><div class="mock-dot" style="background:#ef4444"></div><div class="mock-dot" style="background:#f59e0b"></div><div class="mock-dot" style="background:#22c55e"></div><span class="mock-title">current flow</span></div>
+          <div class="flow">
+            <div class="flow-step active">Tasks list</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step active">Task detail</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step active">Run → Error</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step pain">← Back</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step pain">Mappings list</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step pain">Find mapping</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step pain">Edit → Save</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step pain">← Back to Tasks</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step active">Re-run</div>
+          </div>
+        </div>
+      </div>
+      <div class="vs-col">
+        <span class="vs-head vs-after">New — 2 clicks to fix a mapping</span>
+        <div class="mock">
+          <div class="mock-bar"><div class="mock-dot" style="background:#ef4444"></div><div class="mock-dot" style="background:#f59e0b"></div><div class="mock-dot" style="background:#22c55e"></div><span class="mock-title">new flow</span></div>
+          <div class="flow">
+            <div class="flow-step active">Task detail</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step active">Click "Edit Mapping"</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step active">Slide-over edits</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step active">Save → Re-run</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mock">
+      <div class="mock-bar"><div class="mock-dot" style="background:#ef4444"></div><div class="mock-dot" style="background:#f59e0b"></div><div class="mock-dot" style="background:#22c55e"></div><span class="mock-title">Task Detail — Pipeline Hub</span></div>
+      <div class="shell">
+        <div class="sidebar">
+          <div class="sidebar-item"><span>📋</span> Tasks</div>
+          <div class="sidebar-item active"><span>▶</span> Scheduler</div>
+          <div class="sidebar-item"><span>🗂</span> Mappings</div>
+          <div class="sidebar-item"><span>🔌</span> Endpoints</div>
+        </div>
+        <div class="main">
+          <div class="hub-header">
+            <div>
+              <div class="hub-title">MikeCo Import – Stress Test</div>
+              <div style="font-size:11px;color:#475569;margin-top:2px;">Last run: 2 min ago · 7 rows · 57s</div>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <span class="hub-badge badge-red">7 Errors</span>
+              <button class="btn btn-primary">▶ Run Now</button>
+            </div>
+          </div>
+
+          <!-- Pipeline cards -->
+          <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:#475569;margin-bottom:8px;">Pipeline</div>
+          <div class="pipeline">
+            <div class="pipe-card clickable">
+              <div class="pipe-label">Source Endpoint</div>
+              <div class="pipe-value">ITAM: 01 AM_Product_Catalog</div>
+              <div class="pipe-sub">FILE · .xlsx</div>
+              <div class="pipe-edit">✏ Edit endpoint →</div>
+            </div>
+            <div class="pipe-arrow">→</div>
+            <div class="pipe-card clickable" style="border-color:#6366f1;background:#1a1f3a;">
+              <div class="pipe-label">Mapping Profile</div>
+              <div class="pipe-value">01 AM_Product_Catalog → FRS_PriceItem#</div>
+              <div class="pipe-sub">25 field mappings</div>
+              <div class="pipe-edit">✏ Edit mapping →</div>
+            </div>
+            <div class="pipe-arrow">→</div>
+            <div class="pipe-card clickable">
+              <div class="pipe-label">Target Endpoint</div>
+              <div class="pipe-value">CD STG</div>
+              <div class="pipe-sub">IVANTI · cleardata-stg.saasit.com</div>
+              <div class="pipe-edit">✏ Edit endpoint →</div>
+            </div>
+          </div>
+
+          <!-- Recent errors -->
+          <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:#475569;margin-bottom:8px;margin-top:16px;">Last Run Errors</div>
+          <div class="error-row">
+            <div class="error-dot"></div>
+            <div class="error-text">Row 1: Binary field "ivnt_CatalogImage" upload failed — all strategies exhausted</div>
+            <div class="error-link">→ Edit mapping</div>
+          </div>
+          <div class="error-row">
+            <div class="error-dot"></div>
+            <div class="error-text">Row 2: Binary field "ivnt_CatalogImage" upload failed — all strategies exhausted</div>
+            <div class="error-link">→ Edit mapping</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ CONCEPT 2 -->
+  <div class="concept">
+    <div class="concept-label">Concept 2</div>
+    <div class="concept-title">Slide-over Editor</div>
+    <div class="concept-desc">Clicking "Edit mapping" or "Edit endpoint" opens a panel on the right — you stay on the task page. Save closes the panel, ready to re-run immediately.</div>
+
+    <div class="mock">
+      <div class="mock-bar"><div class="mock-dot" style="background:#ef4444"></div><div class="mock-dot" style="background:#f59e0b"></div><div class="mock-dot" style="background:#22c55e"></div><span class="mock-title">Task Detail with Mapping Slide-over Open</span></div>
+      <div class="slideover-wrap">
+        <div class="slideover-main">
+          <div class="hub-header">
+            <div>
+              <div class="hub-title">MikeCo Import – Stress Test</div>
+              <div style="font-size:11px;color:#475569;margin-top:2px;">Last run: 2 min ago · 7 rows</div>
+            </div>
+            <span class="hub-badge badge-red">7 Errors</span>
+          </div>
+          <div class="pipeline" style="opacity:0.4;">
+            <div class="pipe-card"><div class="pipe-label">Source</div><div class="pipe-value">01 AM_Product_Catalog</div></div>
+            <div class="pipe-arrow">→</div>
+            <div class="pipe-card" style="border-color:#6366f1"><div class="pipe-label">Mapping</div><div class="pipe-value">25 field mappings</div></div>
+            <div class="pipe-arrow">→</div>
+            <div class="pipe-card"><div class="pipe-label">Target</div><div class="pipe-value">CD STG · Ivanti</div></div>
+          </div>
+          <div class="run-log" style="margin-top:12px;">
+            <div><span class="log-ok">✓</span> Row 1 → Updated RecId=F957C5FA...</div>
+            <div><span class="log-err">✗</span> Row 1: ivnt_CatalogImage upload failed <span class="log-link">→ fix field</span></div>
+            <div><span class="log-ok">✓</span> Row 2 → Updated RecId=CE95685A...</div>
+            <div><span class="log-err">✗</span> Row 2: ivnt_CatalogImage upload failed <span class="log-link">→ fix field</span></div>
+          </div>
+        </div>
+
+        <!-- Slide-over panel -->
+        <div class="slideover-panel">
+          <div>
+            <div class="slideover-header">
+              <div class="slideover-title">Edit Mapping</div>
+              <div class="slideover-close">✕</div>
+            </div>
+            <div style="font-size:11px;color:#475569;margin-bottom:12px;">01 AM_Product_Catalog → FRS_PriceItem#</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px;">
+            <div class="field-row"><div class="field-name">ItemName</div><div class="field-val">→ ItemName</div></div>
+            <div class="field-row"><div class="field-name">ItemDescription</div><div class="field-val">→ ItemDescription</div></div>
+            <div class="field-row highlight">
+              <div class="field-name" style="color:#818cf8;">ivnt_CatalogImage ← highlighted (error)</div>
+              <div class="field-val" style="color:#c7d2fe;">Transform: binary_upload</div>
+            </div>
+            <div class="field-row"><div class="field-name">Cost</div><div class="field-val">→ Cost</div></div>
+            <div class="field-row"><div class="field-name">Manufacturer</div><div class="field-val">→ ivnt_ManufacturerLink</div></div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:auto;padding-top:12px;">
+            <button class="btn btn-primary" style="flex:1;">Save & Re-run</button>
+            <button class="btn btn-ghost">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ CONCEPT 3 -->
+  <div class="concept">
+    <div class="concept-label">Concept 3</div>
+    <div class="concept-title">Error → Direct Field Link</div>
+    <div class="concept-desc">Run log errors include a link that opens the mapping editor pre-scrolled to the exact failing field. No searching required.</div>
+
+    <div class="mock">
+      <div class="mock-bar"><div class="mock-dot" style="background:#ef4444"></div><div class="mock-dot" style="background:#f59e0b"></div><div class="mock-dot" style="background:#22c55e"></div><span class="mock-title">Run Log with Deep-link Errors</span></div>
+      <div style="padding:20px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+          <div class="hub-title">Run Log — Apr 20 23:50</div>
+          <span class="hub-badge badge-red">7 Errors</span>
+        </div>
+        <div class="run-log">
+          <div><span style="color:#475569;">23:50:21</span> &nbsp;<span class="log-ok">INFO</span> &nbsp;Slot 11: FRS_PriceItem# — 7 rows</div>
+          <div><span style="color:#475569;">23:50:22</span> &nbsp;<span class="log-ok">✓</span> &nbsp;&nbsp;&nbsp;Row 1 → Updated — <span class="log-link">open in Ivanti ↗</span></div>
+          <div><span style="color:#475569;">23:50:23</span> &nbsp;<span class="log-err">✗</span> &nbsp;&nbsp;&nbsp;Row 1: <strong style="color:#fca5a5;">ivnt_CatalogImage</strong> binary upload failed &nbsp;<span class="log-link">→ edit this field</span></div>
+          <div><span style="color:#475569;">23:50:31</span> &nbsp;<span class="log-ok">✓</span> &nbsp;&nbsp;&nbsp;Row 2 → Updated — <span class="log-link">open in Ivanti ↗</span></div>
+          <div><span style="color:#475569;">23:50:32</span> &nbsp;<span class="log-err">✗</span> &nbsp;&nbsp;&nbsp;Row 2: <strong style="color:#fca5a5;">ivnt_CatalogImage</strong> binary upload failed &nbsp;<span class="log-link">→ edit this field</span></div>
+          <div style="color:#334155;margin-top:4px;">... 5 more rows (same error)</div>
+          <div style="margin-top:8px;"><span style="color:#475569;">23:51:09</span> &nbsp;<span style="color:#fbbf24;">⚠</span> &nbsp;&nbsp;&nbsp;Completed with 7 errors · 57s &nbsp;<span class="log-link">→ fix all 7 (same field)</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ CONCEPT 4 -->
+  <div class="concept">
+    <div class="concept-label">Concept 4</div>
+    <div class="concept-title">Breadcrumb Drill-down</div>
+    <div class="concept-desc">Task → Mapping → Endpoint as one continuous drill-down. The browser back button works naturally, and context is never lost.</div>
+
+    <div class="mock">
+      <div class="mock-bar"><div class="mock-dot" style="background:#ef4444"></div><div class="mock-dot" style="background:#f59e0b"></div><div class="mock-dot" style="background:#22c55e"></div><span class="mock-title">Mapping Editor — reached from Task Detail</span></div>
+      <div class="breadcrumb">
+        <span class="bc-item">Tasks</span>
+        <span class="bc-sep">/</span>
+        <span class="bc-item">MikeCo Import – Stress Test</span>
+        <span class="bc-sep">/</span>
+        <span class="bc-current">Mapping: 01 AM_Product_Catalog → FRS_PriceItem#</span>
+      </div>
+      <div style="padding:20px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+          <div>
+            <div class="hub-title">01 AM_Product_Catalog → FRS_PriceItem#</div>
+            <div style="font-size:11px;color:#475569;margin-top:2px;">25 mappings · Used by 1 task</div>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-ghost">← Back to Task</button>
+            <button class="btn btn-primary">Save</button>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:4px;max-width:480px;">
+          <div class="field-row"><div class="field-name">Source → Target</div><div class="field-val">ItemName → ItemName</div></div>
+          <div class="field-row highlight">
+            <div class="field-name" style="color:#818cf8;">⚠ Error on last run — ivnt_CatalogImage</div>
+            <div class="field-val" style="color:#c7d2fe;">__embedded_image__ → ivnt_CatalogImage · transform: binary_upload</div>
+          </div>
+          <div class="field-row"><div class="field-name">Source → Target</div><div class="field-val">Cost → Cost</div></div>
+        </div>
+        <div style="margin-top:12px;font-size:11px;color:#475569;">
+          Reached from: <span style="color:#6366f1;">MikeCo Import – Stress Test</span> · Saving will return you to the task.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="font-size:12px;color:#334155;margin-top:8px;text-align:center;padding-bottom:32px;">
+    These are wireframe concepts — dark theme, typography, and component style match the existing PHX2 UI.
+  </div>
+</div>
+</body>
+</html>
