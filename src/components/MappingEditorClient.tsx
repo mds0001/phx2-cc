@@ -76,6 +76,7 @@ const TRANSFORMS: { value: TransformType; label: string; desc: string }[] = [
   { value: "ai_guess",   label: "AI Guess",        desc: "Let Claude infer the value from source context (optionally constrained to valid values)" },
   { value: "sku_lookup",  label: "SKU Lookup",      desc: "Look up manufacturer SKU in the taxonomy store to return type, subtype, description, or model" },
   { value: "excel_date", label: "Excel Date",       desc: "Convert Excel serial date number to ISO date string (YYYY-MM-DD)" },
+  { value: "on_order_status", label: "On Order (protect)", desc: "Sets Status to 'On Order' for new records; preserves existing non-empty Status on updates" },
 ];
 
 // ── Helper ─────────────────────────────────────────────────────
@@ -1171,14 +1172,33 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
                         <span className="text-red-400 font-normal normal-case">— required</span>
                       )}
                     </label>
-                    <input
-                      type="text"
-                      value={targetBusinessObject}
-                      onChange={(e) => setTargetBusinessObject(e.target.value)}
-                      placeholder="e.g. Location, Vendor, CI__Computers"
-                      className={`w-full bg-gray-800 border rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 placeholder-gray-600 ${!targetBusinessObject.trim() ? "border-red-500/50" : "border-gray-700"}`}
-                    />
-                    <p className="text-xs text-gray-500">The Ivanti business object this profile writes to. Must be set explicitly — no default is used.</p>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={targetBusinessObject}
+                        onChange={(e) => setTargetBusinessObject(e.target.value)}
+                        placeholder="e.g. CI#Computer, Location, Vendor"
+                        className={`flex-1 bg-gray-800 border rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 placeholder-gray-600 ${!targetBusinessObject.trim() ? "border-red-500/50" : "border-gray-700"}`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setTargetBusinessObject("auto")}
+                        title="Auto — derives the target BO from the CIType field at runtime (requires a sku_lookup mapping for type)"
+                        className={`shrink-0 px-3 py-2 rounded-xl border text-xs font-semibold transition-colors ${
+                          targetBusinessObject === "auto"
+                            ? "bg-violet-600 border-violet-500 text-white"
+                            : "bg-gray-800 border-gray-700 text-gray-400 hover:text-white hover:border-gray-500"
+                        }`}
+                      >
+                        Auto
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      {targetBusinessObject === "auto"
+                        ? <>✨ <strong>Auto mode</strong> — target BO is derived from CIType at runtime (e.g. CIType “Computer” → <code>CI#Computer</code>). Requires a <code>sku_lookup</code> mapping for the <em>type</em> result field.
+                        </>
+                        : "The Ivanti business object this profile writes to. Or click Auto to derive it from CIType at runtime."}
+                    </p>
 
                   </div>
                 );
@@ -1697,6 +1717,15 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
                                     placeholder="Lookup field (e.g. Name)"
                                     className="flex-1 min-w-[120px] bg-gray-800 border border-indigo-500/30 rounded px-2 py-0.5 text-xs text-indigo-300 placeholder-indigo-500/40 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                                   />
+                                  <label className="flex items-center gap-1 cursor-pointer text-xs text-indigo-300/70 whitespace-nowrap" title="Auto-create the linked record if it doesn't exist, using the value formatted as Title Case">
+                                    <input
+                                      type="checkbox"
+                                      checked={!!mapping.linkFieldAutoCreate}
+                                      onChange={(e) => updateMapping(mapping.id, { linkFieldAutoCreate: e.target.checked || undefined })}
+                                      className="accent-indigo-500"
+                                    />
+                                    Auto-create
+                                  </label>
                                 </>
                               )}
                             </div>
@@ -2089,15 +2118,27 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
                               <label className="block text-[11px] font-medium text-gray-500 mb-1">Result Field</label>
                               <select
                                 value={mapping.skuResultField ?? "type"}
-                                onChange={(e) => updateMapping(mapping.id, { skuResultField: e.target.value as "type" | "subtype" | "description" | "model" })}
+                                onChange={(e) => updateMapping(mapping.id, { skuResultField: e.target.value as "type" | "subtype" | "description" | "model" | "manufacturer" })}
                                 className="w-full bg-gray-900 border border-gray-700 rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
                               >
                                 <option value="type">Type</option>
                                 <option value="subtype">Subtype</option>
                                 <option value="description">Description</option>
                                 <option value="model">Model</option>
+                                <option value="manufacturer">Manufacturer</option>
                               </select>
                             </div>
+                            {(mapping.skuResultField ?? "type") === "manufacturer" && (
+                              <label className="flex items-center gap-1 cursor-pointer text-xs text-indigo-300/70 whitespace-nowrap" title="Auto-create the linked record if it doesn't exist, using the value formatted as Title Case">
+                                <input
+                                  type="checkbox"
+                                  checked={!!mapping.linkFieldAutoCreate}
+                                  onChange={(e) => updateMapping(mapping.id, { linkFieldAutoCreate: e.target.checked || undefined })}
+                                  className="accent-indigo-500"
+                                />
+                                Auto-create
+                              </label>
+                            )}
                             <p className="text-[11px] text-gray-600">
                               The source field should contain the manufacturer SKU. At runtime, the SKU will be looked up in the taxonomy store and the selected field will be written to the target.
                             </p>
@@ -2244,6 +2285,15 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
                                 placeholder="Lookup field (e.g. Name)"
                                 className="flex-1 min-w-[120px] bg-gray-800 border border-indigo-500/30 rounded px-2 py-0.5 text-xs text-indigo-300 placeholder-indigo-500/40 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                               />
+                              <label className="flex items-center gap-1 cursor-pointer text-xs text-indigo-300/70 whitespace-nowrap" title="Auto-create the linked record if it doesn't exist, using the value formatted as Title Case">
+                                <input
+                                  type="checkbox"
+                                  checked={!!mapping.linkFieldAutoCreate}
+                                  onChange={(e) => updateMapping(mapping.id, { linkFieldAutoCreate: e.target.checked || undefined })}
+                                  className="accent-indigo-500"
+                                />
+                                Auto-create
+                              </label>
                             </>
                           )}
                         </div>

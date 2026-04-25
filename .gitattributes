@@ -1,3 +1,0 @@
-# Normalize all text files to LF in the repo, no conversion warnings
-* text=auto eol=lf
-*.ps1 text eol=crlf

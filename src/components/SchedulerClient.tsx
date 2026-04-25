@@ -794,12 +794,14 @@ export default function SchedulerClient({
           // Business object must come from the mapping profile — never fall back to the
           // connection's default BO, which could silently write to the wrong object.
           const effectiveBusinessObject = (fileMappingProfile as unknown as { target_business_object?: string })?.target_business_object?.trim() || undefined;
+          // "auto" sentinel: BO is derived per-row from the CIType taxonomy result
+          const isAutoBO = effectiveBusinessObject?.toLowerCase() === "auto";
           const effectiveTenantId       = fileTargetConnection?.tenant_id       ?? undefined;
           const effectiveLoginUsername  = fileTargetConnection?.login_username  ?? undefined;
           const effectiveLoginPassword  = fileTargetConnection?.login_password  ?? undefined;
 
           if (!effectiveBusinessObject && (fileTargetConnType === "ivanti" || fileTargetConnType === "ivanti_neurons")) {
-            await taskLog("ERROR", `Mapping profile "${fileMappingProfile?.name ?? slot.mapping_profile_id}" has no Business Object set. Open the mapping editor and set the target Business Object before running this task.`);
+            await taskLog("ERROR", `Mapping profile "${fileMappingProfile?.name ?? slot.mapping_profile_id}" has no Business Object set. Open the mapping editor and set the target Business Object (or "auto") before running this task.`);
             continue;
           }
 
@@ -1126,7 +1128,7 @@ export default function SchedulerClient({
                 if (skuLookupCache.has(cacheKey)) {
                   const cached = skuLookupCache.get(cacheKey)!;
                   if (cached === "__NOT_FOUND__") { skuSkipRow = true; break; }
-                  if (cached === "__IGNORED__") { skuSkipRow = true; break; } // permanently ignored
+                  if (cached === "__IGNORED__") { skuSkipRow = true; await taskLog("SKIP", `Row ${i + 1}: SKU "${skuRaw}" is marked as ignored — skipped.`); break; } // permanently ignored
                   skuLookupResults[sm.id] = cached;
                 } else {
                   try {
@@ -1147,9 +1149,11 @@ export default function SchedulerClient({
                     });
                     const json = await res.json() as { found: boolean; value: string | null };
                     if (json.value === "__IGNORED__") {
-                      // Permanently ignored SKU -- skip silently, no exception
+                      // Permanently ignored SKU -- log and skip, no exception
                       skuLookupCache.set(cacheKey, "__IGNORED__");
                       skuSkipRow = true;
+                      await taskLog("SKIP", `Row ${i + 1}: SKU "${skuRaw}" is marked as ignored — skipped.`);
+                      break;
                     } else if (json.found) {
                       // SKU found in taxonomy -- use value even if null (field just has no data)
                       const resolvedValue = json.value ?? "";
@@ -1240,9 +1244,16 @@ export default function SchedulerClient({
                 mainPayload["Name"] = snVal;
               } else {
                 rowSkipCount++;
+                await taskLog("SKIP", `Row ${i + 1}: skipped — both Name and SerialNumber are empty.`);
                 continue;
               }
             }
+
+            // Split comma-separated serial numbers — create one CI record per SN
+            const snArray = snVal.includes(",")
+              ? snVal.split(",").map((s: string) => s.trim()).filter(Boolean)
+              : [snVal];
+            const isMultiSn = snArray.length > 1;
 
 // Skip rows whose taxonomy CIType does not match the mapping profile target BO
             {
@@ -1251,13 +1262,37 @@ export default function SchedulerClient({
                 .replace(/__/g, "_")
                 .trim();
               const rowCiType = String(mainPayload["CIType"] ?? "").trim();
-              if (boExpectedType && rowCiType && rowCiType !== boExpectedType) {
+              if (!isAutoBO && boExpectedType && rowCiType && rowCiType !== boExpectedType) {
                 rowSkipCount++;
+                await taskLog("SKIP", `Row ${i + 1}: CIType "${rowCiType}" does not match target type "${boExpectedType}" — skipped. (SKU belongs to a different mapping profile.)`);
                 continue;
               }
             }
 
-await taskLog("ROW", `Sending row ${i + 1}/${rows.length}: ${JSON.stringify(payloadForLog)}`);
+// Auto-BO: derive business object from CIType when target_business_object === "auto"
+            let rowBusinessObject: string | undefined = effectiveBusinessObject;
+            if (isAutoBO) {
+              const autoCiType = String(mainPayload["CIType"] ?? "").trim();
+              if (!autoCiType) {
+                rowSkipCount++;
+                await taskLog("SKIP", `Row ${i + 1}: auto-BO mode but CIType is empty (no taxonomy match) — row skipped.`);
+                continue;
+              }
+              rowBusinessObject = `CI#${autoCiType}`;
+              await taskLog("INFO", `Row ${i + 1}: auto-BO → "${rowBusinessObject}"`);
+            }
+
+            // Per-SN loop: if serial number is comma-separated, send one record per SN
+            let snAborted = false;
+            for (const singleSn of snArray) {
+              if (isMultiSn) {
+                mainPayload["SerialNumber"] = singleSn;
+                mainPayload["Name"] = singleSn;
+                payloadForLog["SerialNumber"] = singleSn;
+                payloadForLog["Name"] = singleSn;
+              }
+
+await taskLog("ROW", `Sending row ${i + 1}/${rows.length}${isMultiSn ? ` [SN: ${singleSn}]` : ""}: ${JSON.stringify(payloadForLog)}`);
 
             // Determine proxy route from the (possibly per-file-overridden) target connection type
             const resolvedConnType = fileTargetConnType;
@@ -1266,17 +1301,27 @@ await taskLog("ROW", `Sending row ${i + 1}/${rows.length}: ${JSON.stringify(payl
               let proxyRoute = "/api/ivanti-proxy";
               // Collect target field names the user has explicitly marked as Ivanti link fields,
               // plus any per-field BO name overrides.
+              // Also include sku_lookup manufacturer mappings (treated as link fields at runtime).
               const fileLinkMappings = (fileMappingProfile?.mappings ?? []).filter((m) => m.isLinkField);
-              const fileLinkFieldNames = fileLinkMappings
+              const fileSkuManufacturerMappings = (fileMappingProfile?.mappings ?? []).filter(
+                (m) => m.transform === "sku_lookup" && m.skuResultField === "manufacturer"
+              );
+              const allLinkMappings = [...fileLinkMappings, ...fileSkuManufacturerMappings];
+              const fileLinkFieldNames = allLinkMappings
                 .map((m) => fileMappingProfile?.target_fields.find((f) => f.id === m.targetFieldId)?.name)
                 .filter((n): n is string => !!n);
               const fileLinkFieldBoNames: Record<string, string> = {};
               const fileLinkFieldLookupFields: Record<string, string> = {};
-              for (const m of fileLinkMappings) {
+              for (const m of allLinkMappings) {
                 const fieldName = fileMappingProfile?.target_fields.find((f) => f.id === m.targetFieldId)?.name;
                 if (fieldName && m.linkFieldBoName) fileLinkFieldBoNames[fieldName] = m.linkFieldBoName;
                 if (fieldName && m.linkFieldLookupField) fileLinkFieldLookupFields[fieldName] = m.linkFieldLookupField;
               }
+              // Collect all mappings with auto-create enabled (not limited to isLinkField)
+              const fileLinkFieldAutoCreate: string[] = (fileMappingProfile?.mappings ?? [])
+                .filter((m) => m.linkFieldAutoCreate)
+                .map((m) => fileMappingProfile?.target_fields.find((f) => f.id === m.targetFieldId)?.name)
+                .filter((n): n is string => !!n);
               // Build composite upsert key from mapping rows marked isKey.
               const fileUpsertKeys = (fileMappingProfile?.mappings ?? [])
                 .filter((m) => m.isKey)
@@ -1290,9 +1335,10 @@ await taskLog("ROW", `Sending row ${i + 1}/${rows.length}: ${JSON.stringify(payl
                 ivantiUrl: effectiveUrl,
                 data: mainPayload,
                 apiKey: effectiveApiKey,
-                businessObject: effectiveBusinessObject,
+                businessObject: rowBusinessObject,
                 tenantId: effectiveTenantId,
                 ...(fileLinkFieldNames.length > 0 && { linkFieldNames: fileLinkFieldNames }),
+                ...(fileLinkFieldAutoCreate.length > 0 && { autoCreateLinkFields: fileLinkFieldAutoCreate }),
                 ...(Object.keys(fileLinkFieldBoNames).length > 0 && { linkFieldBoNames: fileLinkFieldBoNames }),
                 ...(Object.keys(fileLinkFieldLookupFields).length > 0 && { linkFieldLookupFields: fileLinkFieldLookupFields }),
                 ...(fileUpsertKeys.length > 0 && { upsertKeys: fileUpsertKeys }),
@@ -1308,6 +1354,15 @@ await taskLog("ROW", `Sending row ${i + 1}/${rows.length}: ${JSON.stringify(payl
                 // Web-UI credentials for ASHX binary upload (when configured on the connection).
                 ...(effectiveLoginUsername && { loginUsername: effectiveLoginUsername }),
                 ...(effectiveLoginPassword && { loginPassword: effectiveLoginPassword }),
+                // on_order_status fields: proxy will set "On Order" for new records,
+                // preserve existing non-empty value on updates.
+                ...(() => {
+                  const ooFields = (fileMappingProfile?.mappings ?? [])
+                    .filter((m) => m.transform === "on_order_status")
+                    .map((m) => fileMappingProfile?.target_fields.find((f) => f.id === m.targetFieldId)?.name)
+                    .filter((n): n is string => !!n);
+                  return ooFields.length > 0 ? { preserveOnOrderFields: ooFields } : {};
+                })(),
               };
               if (resolvedConnType === "dell") {
                 proxyRoute = "/api/dell-proxy";
@@ -1376,6 +1431,19 @@ await taskLog("ROW", `Sending row ${i + 1}/${rows.length}: ${JSON.stringify(payl
               ].filter(Boolean).join(" | ");
               await taskLog(res.ok ? "SUCCESS" : "ERROR", `${_label}${_link}`);
 
+              // Log link field resolution results (errors and auto-creates)
+              if (json?.linkResolution) {
+                type LinkEntry = { field: string; value: string; recId?: string; error?: string; autoCreated?: boolean };
+                const linkLog = json.linkResolution as LinkEntry[];
+                for (const entry of linkLog) {
+                  if (entry.error) {
+                    await taskLog("WARN", `Row ${i + 1}: Link "${entry.field}"="${entry.value}" — unresolved: ${entry.error}`);
+                  } else if (entry.autoCreated) {
+                    await taskLog("INFO", `Row ${i + 1}: Link "${entry.field}"="${entry.value}" — auto-created RecID ${entry.recId}`);
+                  }
+                }
+              }
+
               // Log binary field upload results if any
               if (res.ok && json?.binaryUploadResults) {
                 const binResults = json.binaryUploadResults as Record<string, string>;
@@ -1415,7 +1483,7 @@ await taskLog("ROW", `Sending row ${i + 1}/${rows.length}: ${JSON.stringify(payl
                             username:       effectiveLoginUsername,
                             password:       effectiveLoginPassword,
                             tenant:         effectiveTenantId ?? "",
-                            businessObject: effectiveBusinessObject,
+                            businessObject: rowBusinessObject,
                             recordRecId:    _savedRecId,
                             storageKey:     _rule.storageKey,
                             fileName:       _rule.fileName,
@@ -1448,12 +1516,14 @@ await taskLog("ROW", `Sending row ${i + 1}/${rows.length}: ${JSON.stringify(payl
               }
             } catch (rowErr: unknown) {
               // If the task was cancelled, don't log a spurious ERROR for the aborted row.
-              if (rowErr instanceof Error && rowErr.name === "AbortError") break;
+              if (rowErr instanceof Error && rowErr.name === "AbortError") { snAborted = true; break; }
               rowErrorCount++;
-              await taskLog("ERROR", `Row ${i + 1} failed: ${
+              await taskLog("ERROR", `Row ${i + 1}${isMultiSn ? ` [SN: ${singleSn}]` : ""} failed: ${
                 rowErr instanceof Error ? rowErr.message : String(rowErr)
                 }`);
             }
+            } // end per-SN loop
+            if (snAborted) break;
           }
 
           // Log filter summary if any rows were skipped

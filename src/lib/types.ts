@@ -150,7 +150,8 @@ export type TransformType =
   | "ai_lookup"
   | "ai_guess"
   | "excel_date"
-  | "sku_lookup";
+  | "sku_lookup"
+  | "on_order_status";
 
 export interface MappingRow {
   id: string;
@@ -182,6 +183,9 @@ export interface MappingRow {
   // The field within the linked BO that holds the display value to match against
   // (e.g. "Name", "ivnt_SubType"). When set, only this field is tried — no guessing.
   linkFieldLookupField?: string;
+  // When true, if the linked record cannot be found it will be created automatically
+  // with the value title-cased (e.g. "dell" → "Dell", "ZAGG" → "Zagg").
+  linkFieldAutoCreate?: boolean;
   /** When true this target field is part of the composite upsert key.
    *  The proxy uses all key fields together to look up an existing record
    *  before deciding to POST (create) or PATCH (update). */
@@ -442,6 +446,12 @@ export function applyMappingProfile(
       case "sku_lookup": {
         // Value comes from pre-fetched SKU lookup results, keyed by mapping row ID
         value = skuLookupResults?.[mapping.id] ?? "";
+        break;
+      }
+      case "on_order_status": {
+        // Always "On Order" as the candidate value; the ivanti-proxy will preserve
+        // a non-empty existing value on PATCH and force "On Order" on POST.
+        value = "On Order";
         break;
       }
       case "excel_date": {

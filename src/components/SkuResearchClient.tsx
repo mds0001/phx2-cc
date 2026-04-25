@@ -1075,6 +1075,7 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                 <table className="text-sm" style={{minWidth:"1800px"}}>
                   <thead className="sticky top-0 z-10 bg-gray-950">
                     <tr className="text-left text-xs text-gray-600 uppercase tracking-wider border-b border-gray-800">
+                      <th className="pb-2" style={{width:80,minWidth:80}}></th>
                       {([
                         { label: "SKU",         col: "manufacturer_sku", w: 200 },
                         { label: "Manufacturer", col: "manufacturer",     w: 140 },
@@ -1101,21 +1102,13 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                           </span>
                         </th>
                       ))}
-                      <th className="pb-2 font-semibold" style={{width:80,minWidth:80}}></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-800/60">
                     {sortedTaxonomy.map((t) => (
                       <Fragment key={t.manufacturer_sku}>
                         <tr className={`transition-colors ${editingId === t.manufacturer_sku ? "bg-indigo-950/30" : "hover:bg-gray-900/50"}`}>
-                          <td className="py-2.5 pr-4 font-mono text-white font-medium">{t.manufacturer_sku}</td>
-                          <td className="py-2.5 pr-4 text-gray-300">{t.manufacturer ?? <span className="text-gray-700">—</span>}</td>
-                          <td className="py-2.5 pr-4 text-gray-300">{t.type ?? <span className="text-gray-700">—</span>}</td>
-                          <td className="py-2.5 pr-4 text-gray-300">{t.subtype ?? <span className="text-gray-700">—</span>}</td>
-                          <td className="py-2.5 pr-4 text-gray-300">{t.model ?? <span className="text-gray-700">—</span>}</td>
-                          <td className="py-2.5 pr-4 text-gray-400 max-w-[220px] truncate">{t.description ?? <span className="text-gray-700">—</span>}</td>
-                          <td className="py-2.5 text-xs text-gray-600">{timeAgo(t.updated_at)}</td>
-                          <td className="py-2.5">
+                          <td className="py-2.5 pr-2">
                             <div className="flex items-center gap-1">
                               <button
                                 onClick={() => { setEditingId(editingId === t.manufacturer_sku ? null : t.manufacturer_sku); setDeletingId(null); }}
@@ -1150,6 +1143,13 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                               )}
                             </div>
                           </td>
+                          <td className="py-2.5 pr-4 font-mono text-white font-medium">{t.manufacturer_sku}</td>
+                          <td className="py-2.5 pr-4 text-gray-300">{t.manufacturer ?? <span className="text-gray-700">—</span>}</td>
+                          <td className="py-2.5 pr-4 text-gray-300">{t.type ?? <span className="text-gray-700">—</span>}</td>
+                          <td className="py-2.5 pr-4 text-gray-300">{t.subtype ?? <span className="text-gray-700">—</span>}</td>
+                          <td className="py-2.5 pr-4 text-gray-300">{t.model ?? <span className="text-gray-700">—</span>}</td>
+                          <td className="py-2.5 pr-4 text-gray-400 max-w-[220px] truncate">{t.description ?? <span className="text-gray-700">—</span>}</td>
+                          <td className="py-2.5 text-xs text-gray-600">{timeAgo(t.updated_at)}</td>
                         </tr>
                         {editingId === t.manufacturer_sku && (
                           <tr>

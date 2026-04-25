@@ -78,7 +78,8 @@ async function resolveLinkFields(
   businessObject = "CI__Computers",
   linkFieldNames: string[] = [],
   linkFieldBoNames: Record<string, string> = {},
-  linkFieldLookupFields: Record<string, string> = {}
+  linkFieldLookupFields: Record<string, string> = {},
+  autoCreateLinkFieldNames: string[] = []
 ): Promise<{ resolved: Record<string, unknown>; log: ResolvedField[] }> {
   const result: Record<string, unknown> = { ...payload };
   const log: ResolvedField[] = [];
@@ -200,8 +201,20 @@ async function resolveLinkFields(
               : (Array.isArray(rawVal) ? rawVal : []);
             const row = valueArr[0];
             const foundId = row?.RecId ?? row?.RecID ?? row?._RecID ?? row?.recId ?? row?.recID;
-            if (foundId) { recId = foundId; break directSearch; }
-            lastError = `No record in ${boVariant} where ${lookupField}='${escapedVal}'`;
+            if (foundId) {
+              // Verify the returned record actually matches our search value.
+              // Some Ivanti BOs ignore OData filters and return all records;
+              // if the first record's lookup field doesn't match, discard it.
+              const returnedVal = row?.[lookupField] ?? "";
+              const matched = returnedVal.toLowerCase() === value.toLowerCase() ||
+                returnedVal.toLowerCase().startsWith(value.toLowerCase());
+              if (matched || !autoCreateLinkFieldNames.includes(key)) {
+                recId = foundId; break directSearch;
+              }
+              lastError = `No record in ${boVariant} where ${lookupField}='${escapedVal}' (returned "${returnedVal}", expected "${value}")`;
+            } else {
+              lastError = `No record in ${boVariant} where ${lookupField}='${escapedVal}'`;
+            }
           } catch (e) { lastError = e instanceof Error ? e.message : String(e); }
         }
       }
@@ -211,7 +224,10 @@ async function resolveLinkFields(
     // If the linked BO is not directly queryable, find an existing record in
     // the target BO (e.g. CI__Computers) that already has the same display
     // value and reuse its _RecID.
-    if (!recId) {
+    // Skip this strategy when auto-create is enabled: a previous run may have
+    // stored the display value with a wrong RecID (e.g. a fallback manufacturer),
+    // which would pollute the resolution and prevent auto-create from firing.
+    if (!recId && !autoCreateLinkFieldNames.includes(key)) {
       try {
         const recIdField = `${key}_RecID`;
         const indirectUrl =
@@ -247,6 +263,70 @@ async function resolveLinkFields(
       // display value internally; sending _RecID on POST causes an implicit
       // varchar→varbinary SQL conversion error.
       console.log(`[ivanti-proxy] ${key}="${value}" -> RecID="${recId}" (resolved, display value kept for now)`);
+    } else if (autoCreateLinkFieldNames.includes(key)) {
+      // Auto-create: linked record not found — create it in the linked BO.
+      // Try multiple BO name variants since different Ivanti installations expose
+      // the same BO under different OData paths.
+      const autoBoName = linkFieldBoNames[key] ?? boNameFromLinkField(key);
+      const autoLookupField = linkFieldLookupFields[key] ?? autoBoName;
+      // Title-case the value: "ZAGG" → "Zagg", "dell inc" → "Dell Inc"
+      const titleCased = value
+        .split(" ")
+        .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+        .join(" ");
+      const autoBoLower = autoBoName.toLowerCase();
+      const createVariants = [
+        `frs_offering_${autoBoName}`,
+        `frs_offering_${autoBoLower}`,
+        autoBoName,
+        `${autoBoName}s`,
+        `${autoBoLower}s`,
+        `frs_${autoBoLower}`,
+        `CI%23${autoBoName}`,
+        `CI%23${autoBoLower}`,
+        `${autoBoName}%23`,
+      ];
+      let createError = "";
+      let created = false;
+      for (const variant of createVariants) {
+        try {
+          const createUrl = `${base}/api/odata/businessobject/${variant}`;
+          console.log(`[ivanti-proxy] Auto-create attempt: POST ${createUrl} {${autoLookupField}: "${titleCased}"}`);
+          const createRes = await fetch(createUrl, {
+            method: "POST",
+            headers: { ...headers, "Content-Type": "application/json" },
+            body: JSON.stringify({ [autoLookupField]: titleCased }),
+          });
+          if (createRes.ok) {
+            const createJson = (await createRes.json()) as { RecId?: string; RecID?: string };
+            const newRecId = createJson.RecId ?? createJson.RecID;
+            if (newRecId) {
+              linkFieldCache.set(lfCacheKey, newRecId);
+              result[key] = value; // keep display value; proxy swaps to _RecID on PATCH
+              log.push({ field: key, value, recId: newRecId, autoCreated: true });
+              console.log(`[ivanti-proxy] Auto-created ${variant} "${titleCased}" RecId=${newRecId}`);
+              created = true;
+              break;
+            } else {
+              createError = `Auto-create to ${variant} succeeded but no RecId returned`;
+            }
+          } else if (createRes.status === 404) {
+            createError = `${variant}: 404`;
+            continue; // try next variant
+          } else {
+            const errText = await createRes.text().catch(() => "");
+            createError = `Auto-create to ${variant} failed HTTP ${createRes.status}: ${errText.slice(0, 200)}`;
+            console.warn(`[ivanti-proxy] ${createError}`);
+            break; // non-404 error is definitive
+          }
+        } catch (e) {
+          createError = `Auto-create exception: ${e instanceof Error ? e.message : String(e)}`;
+          break;
+        }
+      }
+      if (!created) {
+        log.push({ field: key, value, error: createError || "Auto-create failed: all BO variants returned 404" });
+      }
     } else {
       // Do not cache failures — allows config changes to take effect without restart.
       log.push({ field: key, value, error: lastError || "Unknown lookup failure" });
@@ -662,7 +742,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { ivantiUrl, data, apiKey, businessObject, tenantId, linkFieldNames, linkFieldBoNames, linkFieldLookupFields, upsertKey, upsertKeys, skipIfExists, skipIfNotExists, method, directRecId, directBoName, binaryFields, loginUsername, loginPassword } = body as {
+    const { ivantiUrl, data, apiKey, businessObject, tenantId, linkFieldNames, linkFieldBoNames, linkFieldLookupFields, autoCreateLinkFields, upsertKey, upsertKeys, skipIfExists, skipIfNotExists, method, directRecId, directBoName, binaryFields, loginUsername, loginPassword, preserveOnOrderFields } = body as {
       ivantiUrl: string;
       data: Record<string, unknown>;
       apiKey?: string;
@@ -675,6 +755,7 @@ export async function POST(request: NextRequest) {
       /** Per-field explicit lookup field name: when set, the proxy uses only this field
        *  to match the display value in the linked BO (e.g. { ivnt_VendorLink: "Name" }). */
       linkFieldLookupFields?: Record<string, string>;
+      autoCreateLinkFields?: string[];
       upsertKey?: string;
       /** Composite upsert key — one or more target field names that together identify
        *  a unique record. Takes precedence over the legacy upsertKey (single field). */
@@ -698,6 +779,9 @@ export async function POST(request: NextRequest) {
        *  web session (SID + AFT cookies) before uploading to UploadImageHandler.ashx. */
       loginUsername?: string;
       loginPassword?: string;
+      /** Fields that should be set to "On Order" when creating a new record, and preserved
+       *  (omitted from PATCH) when the existing record already has a non-empty value. */
+      preserveOnOrderFields?: string[];
     };
 
     // ── Direct DELETE by known RecID (fast path used by resetTask) ───────────
@@ -760,7 +844,7 @@ export async function POST(request: NextRequest) {
     const { resolved: resolvedData, log: resolveLog } = method === "DELETE"
       ? { resolved: dateConvertedData, log: [] }
       : await resolveLinkFields(
-          dateConvertedData, ivantiUrl, resolvedKey, tenantId, effectiveObject, linkFieldNames ?? [], linkFieldBoNames ?? {}, linkFieldLookupFields ?? {}
+          dateConvertedData, ivantiUrl, resolvedKey, tenantId, effectiveObject, linkFieldNames ?? [], linkFieldBoNames ?? {}, linkFieldLookupFields ?? {}, autoCreateLinkFields ?? []
         );
 
     const base = ivantiUrl.replace(/\/$/, "");
@@ -825,19 +909,28 @@ export async function POST(request: NextRequest) {
       .filter((p): p is string => p !== null);
 
     let existingRecId: string | null = null;
+    // Existing field values captured during lookup (for preserveOnOrderFields logic)
+    const existingFieldValues: Record<string, unknown> = {};
 
     if (filterParts.length > 0) {
       try {
         const filter = filterParts.join(" and ");
-        const lookupUrl = `${endpoint}?$filter=${encodeURIComponent(filter)}&$select=RecId&$top=1`;
+        const selectFields = ["RecId", ...(preserveOnOrderFields ?? [])].join(",");
+        const lookupUrl = `${endpoint}?$filter=${encodeURIComponent(filter)}&$select=${encodeURIComponent(selectFields)}&$top=1`;
         console.log("[ivanti-proxy] Upsert lookup:", lookupUrl);
         const lookupRes = await fetch(lookupUrl, { method: "GET", headers });
         if (lookupRes.ok) {
           // Ivanti sometimes returns an empty body when no record is found — guard against that.
           const text = await lookupRes.text();
           if (text.trim()) {
-            const j = JSON.parse(text) as { value?: Array<{ RecId?: string }> };
-            existingRecId = j.value?.[0]?.RecId ?? null;
+            const j = JSON.parse(text) as { value?: Array<Record<string, unknown>> };
+            existingRecId = (j.value?.[0]?.RecId as string | undefined) ?? null;
+            // Capture preserve-on-order field values from the existing record
+            if (j.value?.[0] && preserveOnOrderFields?.length) {
+              for (const f of preserveOnOrderFields) {
+                existingFieldValues[f] = j.value[0][f] ?? null;
+              }
+            }
           }
         }
       } catch (e) {
@@ -918,6 +1011,14 @@ export async function POST(request: NextRequest) {
     // For PATCH (update): swap resolved link-field display values to _RecID form.
     // Ivanti silently ignores display values on PATCH but throws a varchar→varbinary
     // conversion error if _RecID is sent on POST (create), so we only do this swap here.
+    // ── preserveOnOrderFields: on create, always force "On Order" ──────────
+    if (!existingRecId && preserveOnOrderFields?.length) {
+      for (const f of preserveOnOrderFields) {
+        (resolvedData as Record<string, unknown>)[f] = "On Order";
+        console.log(`[ivanti-proxy] preserveOnOrder: "${f}" → "On Order" (new record)`);
+      }
+    }
+
     let sendPayload = resolvedData;
     if (existingRecId) {
       const patchPayload = { ...resolvedData };
@@ -929,6 +1030,24 @@ export async function POST(request: NextRequest) {
         }
       }
       sendPayload = patchPayload;
+
+      // ── preserveOnOrderFields: on update, protect fields that already have a value ──
+      // If the existing record has a non-empty value → strip from PATCH (leave it alone).
+      // If the existing record has an empty/null value → force "On Order".
+      if (preserveOnOrderFields?.length) {
+        for (const f of preserveOnOrderFields) {
+          const existing = existingFieldValues[f];
+          if (existing && String(existing).trim()) {
+            // Non-empty existing value — do not overwrite it
+            delete (sendPayload as Record<string, unknown>)[f];
+            console.log(`[ivanti-proxy] preserveOnOrder: "${f}" already "${existing}" — stripped from PATCH`);
+          } else {
+            // Empty/null — inject "On Order"
+            (sendPayload as Record<string, unknown>)[f] = "On Order";
+            console.log(`[ivanti-proxy] preserveOnOrder: "${f}" is empty — setting "On Order"`);
+          }
+        }
+      }
     }
 
     // Strip binary fields (and any null/undefined values for them) from the main OData
