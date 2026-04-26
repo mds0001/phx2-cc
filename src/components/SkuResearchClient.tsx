@@ -1171,9 +1171,18 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                                         </div>
                                       )}
                                       {isClassified && (
-                                        <span className={"ml-auto text-xs font-medium " + (inTaxonomy ? "text-emerald-500" : queueEntry?.status === "skipped" ? "text-blue-400" : "text-gray-500")}>
-                                          {inTaxonomy ? "Resolved" : queueEntry?.status === "skipped" ? "Skipped" : "Ignored"}
-                                        </span>
+                                        <div className="ml-auto flex items-center gap-2">
+                                          <span className={"text-xs font-medium " + (inTaxonomy ? "text-emerald-500" : queueEntry?.status === "skipped" ? "text-blue-400" : "text-gray-500")}>
+                                            {inTaxonomy ? "Resolved" : queueEntry?.status === "skipped" ? "Skipped" : "Ignored"}
+                                          </span>
+                                          <button
+                                            onClick={() => setClassifyingSkuKey(isResolving ? null : skuKey)}
+                                            title="Edit classification"
+                                            className="p-1 rounded text-gray-600 hover:text-indigo-400 hover:bg-gray-800 transition-all"
+                                          >
+                                            <Pencil className="w-3 h-3" />
+                                          </button>
+                                        </div>
                                       )}
                                     </div>
                                     {isResolving && (

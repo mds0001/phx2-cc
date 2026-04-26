@@ -79,6 +79,8 @@ export default function GlobalShell() {
   const [counts,    setCounts]    = useState<Counts>(EMPTY_COUNTS);
   const [bohAlerts, setBohAlerts] = useState(0);
   const [skuPending, setSkuPending] = useState(0);
+  const [skuTweCount, setSkuTweCount] = useState(0);
+  const [nonTemplateTasks, setNonTemplateTasks] = useState(0);
 
   const hidden = HIDDEN_PATHS.some((p) => pathname?.startsWith(p));
 
@@ -100,12 +102,20 @@ export default function GlobalShell() {
     supabase
       .from("scheduled_tasks")
       .select("status")
-      .then(({ data }) => { if (data) refreshCounts(data); });
+      .neq("is_system", true)
+      .then(({ data }) => {
+        if (data) {
+          refreshCounts(data);
+          setNonTemplateTasks(data.length);
+        }
+      });
 
     const chan = supabase
       .channel("global-shell-tasks")
       .on("postgres_changes", { event: "*", schema: "public", table: "scheduled_tasks" }, () => {
-        supabase.from("scheduled_tasks").select("status").then(({ data }) => { if (data) refreshCounts(data); });
+        supabase.from("scheduled_tasks").select("status").neq("is_system", true).then(({ data }) => {
+          if (data) { refreshCounts(data); setNonTemplateTasks(data.length); }
+        });
       })
       .subscribe();
 
@@ -121,13 +131,19 @@ export default function GlobalShell() {
       .eq("status", "pending")
       .then(({ count }) => { if (count != null) setSkuPending(count); });
 
+    supabase
+      .from("sku_run_exceptions")
+      .select("id", { count: "exact", head: true })
+      .neq("archived", true)
+      .then(({ count }) => { if (count != null) setSkuTweCount(count); });
+
     return () => { supabase.removeChannel(chan); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hidden]);
 
   if (hidden) return null;
 
-  const schedulerBadge = counts.active + counts.completedWithErrors;
+  const schedulerBadge = nonTemplateTasks;
 
   const statsRow = [
     { label: "Active",    value: counts.active,                                                                color: "text-emerald-400" },
@@ -216,7 +232,7 @@ export default function GlobalShell() {
               label="SKU Research"
               href="/boh/sku-research"
               active={pathname?.startsWith("/boh/sku-research") === true}
-              badge={skuPending > 0 ? skuPending : undefined}
+              badge={skuTweCount > 0 ? skuTweCount : undefined}
             />
           </div>
 
