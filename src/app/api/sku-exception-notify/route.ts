@@ -59,31 +59,8 @@ export async function POST(req: NextRequest) {
 
     const admin = createAdminClient();
 
-    // Only email about SKUs that are brand-new to the queue (seen_count === 1).
-    // Repeat runs with already-known SKUs should not generate another notification.
-    const allSkus = [...new Set(exceptions.map((e) => e.sku))];
-    const { data: queueRows } = await admin
-      .from("sku_research_queue")
-      .select("manufacturer_sku, seen_count")
-      .in("manufacturer_sku", allSkus);
-
-    const newSkus = new Set(
-      (queueRows ?? [])
-        .filter((q) => q.seen_count === 1)
-        .map((q) => q.manufacturer_sku)
-    );
-
-    // Also include any SKUs not in the queue at all (edge case)
-    const knownSkus = new Set((queueRows ?? []).map((q) => q.manufacturer_sku));
-    allSkus.filter((s) => !knownSkus.has(s)).forEach((s) => newSkus.add(s));
-
-    if (newSkus.size === 0) {
-      console.log(`[sku-exception-notify] All ${allSkus.length} SKU(s) already known — skipping email`);
-      return NextResponse.json({ success: true, notified: 0, reason: "all SKUs already known" });
-    }
-
-    // Filter exceptions to only new SKUs
-    const exceptions_to_notify = exceptions.filter((e) => newSkus.has(e.sku));
+    // Email about all exceptions every run — notify regardless of whether SKUs are new or known.
+    const exceptions_to_notify = exceptions;
 
     // Look up the task's customer name
     const { data: taskRow } = await admin

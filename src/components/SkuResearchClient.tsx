@@ -356,6 +356,7 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
   const [showArchived, setShowArchived] = useState(false);
   const [runSuggestions, setRunSuggestions] = useState<Record<string, TaxonomySuggestion>>({});
   const [runSuggestingKey, setRunSuggestingKey] = useState<string | null>(null);
+  const [suggestAllRunId,  setSuggestAllRunId]  = useState<string | null>(null); // run-level suggest-all in progress
   const [showArchivedQueue, setShowArchivedQueue] = useState(false);
   const [taxSort, setTaxSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "manufacturer_sku", dir: "asc" });
 
@@ -733,13 +734,54 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
           suggestion = json.suggestion ?? null;
         }
       }
-      if (suggestion) setRunSuggestions((prev) => ({ ...prev, [key]: suggestion! }));
-      setClassifyingSkuKey(key);
+      if (suggestion) {
+        setRunSuggestions((prev) => ({ ...prev, [key]: suggestion! }));
+        setClassifyingSkuKey(key); // auto-open the form with suggestion pre-filled
+      }
     } catch (e) {
       showToast(e instanceof Error ? e.message : String(e), "err");
     } finally {
       setRunSuggestingKey(null);
     }
+  }
+
+  // -- AI Suggest All for all unresolved SKUs in a run --
+  async function handleRunSuggestAll(run: SkuRunException, unresolvedSkus: string[]) {
+    setSuggestAllRunId(run.id);
+    // Expand the run card so rows are visible
+    setExpandedRunIds((prev) => { const next = new Set(prev); next.add(run.id); return next; });
+    const newSuggestions: Record<string, TaxonomySuggestion> = {};
+    let firstKey: string | null = null;
+    await Promise.all(unresolvedSkus.map(async (sku) => {
+      const key = `${run.id}:${sku}`;
+      try {
+        const queueItem = queue.find((q) => q.manufacturer_sku.trim().toLowerCase() === sku.trim().toLowerCase());
+        let suggestion: TaxonomySuggestion | null = null;
+        if (queueItem) {
+          const res = await fetch("/api/sku-research-suggest", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ queue_id: queueItem.id }),
+          });
+          if (res.ok) suggestion = ((await res.json()) as { suggestion: TaxonomySuggestion }).suggestion;
+        } else {
+          const res = await fetch("/api/sku-research-suggest", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sku }),
+          });
+          if (res.ok) suggestion = ((await res.json()) as { suggestion?: TaxonomySuggestion }).suggestion ?? null;
+        }
+        if (suggestion) {
+          newSuggestions[key] = suggestion;
+          if (!firstKey) firstKey = key;
+        }
+      } catch { /* skip failed SKU */ }
+    }));
+    setRunSuggestions((prev) => ({ ...prev, ...newSuggestions }));
+    if (firstKey) setClassifyingSkuKey(firstKey); // auto-open first unresolved form
+    setSuggestAllRunId(null);
+    showToast(`AI suggestions ready for ${Object.keys(newSuggestions).length} of ${unresolvedSkus.length} SKU(s)`);
   }
 
   // -- Mark a run as resolved and navigate to scheduler for rerun --
@@ -907,6 +949,7 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                             (q.status === "ignored" || q.status === "skipped"));
                       });
                       const allClassified = classifiedSkus.length === uniqueSkus.length;
+                      const unresolvedSkus = uniqueSkus.filter((s) => !classifiedSkus.includes(s));
                       const isExpanded = expandedRunIds.has(run.id);
                       return (
                         <div key={run.id} className="bg-gray-900/60 border border-gray-800 rounded-xl overflow-hidden">
@@ -936,6 +979,19 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                                 }
                               </div>
                             </div>
+                            {run.status !== "resolved" && unresolvedSkus.length > 0 && (
+                              <button
+                                onClick={() => handleRunSuggestAll(run, unresolvedSkus)}
+                                disabled={suggestAllRunId === run.id}
+                                title="AI suggest all unresolved SKUs in this run"
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-600/20 hover:bg-purple-600/30 text-purple-400 border border-purple-500/20 transition-all disabled:opacity-50"
+                              >
+                                {suggestAllRunId === run.id
+                                  ? <Loader2 className="w-3 h-3 animate-spin" />
+                                  : <Sparkles className="w-3 h-3" />}
+                                Suggest All
+                              </button>
+                            )}
                             {run.status !== "resolved" && (
                               <button
                                 onClick={() => handleRerunJob(run)}
