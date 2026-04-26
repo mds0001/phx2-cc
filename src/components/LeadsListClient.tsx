@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Plus, Users, Trash2, X, Save, Search,
-  CheckCircle2, Clock, XCircle, Sparkles,
+  CheckCircle2, Clock, XCircle, Sparkles, TrendingUp,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
 import type { Lead, LeadStatus, LeadSource, TierInterest } from "@/lib/types";
@@ -58,6 +58,7 @@ export default function LeadsListClient({
   const [editing,   setEditing]   = useState<Partial<Lead>>(EMPTY);
   const [saving,    setSaving]    = useState(false);
   const [deleting,  setDeleting]  = useState<string | null>(null);
+  const [promoting, setPromoting] = useState<string | null>(null);
   const [error,     setError]     = useState<string | null>(null);
 
   function openNew() {
@@ -112,6 +113,23 @@ export default function LeadsListClient({
 
     setSaving(false);
     closePanel();
+  }
+
+  async function handlePromote(lead: Lead) {
+    if (!lead.email) { alert("This lead has no email address."); return; }
+    if (!confirm(`Promote "${lead.name}" to an opportunity and send an onboarding email?`)) return;
+    setPromoting(lead.id);
+    const res = await fetch("/api/pipeline/promote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ leadId: lead.id }),
+    });
+    const json = await res.json();
+    if (!res.ok) { alert(json.error ?? "Promote failed."); setPromoting(null); return; }
+    // Update lead status to contacted in local state
+    setLeads((p) => p.map((l) => l.id === lead.id ? { ...l, status: "contacted" } : l));
+    setPromoting(null);
+    router.push("/boh/opportunities");
   }
 
   async function handleDelete(id: string) {
@@ -193,6 +211,17 @@ export default function LeadsListClient({
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2 justify-end">
+                        {lead.status !== "qualified" && lead.status !== "disqualified" && (
+                          <button
+                            onClick={() => handlePromote(lead)}
+                            disabled={promoting === lead.id}
+                            title="Promote to opportunity"
+                            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-500/10 border border-indigo-500/25 text-indigo-400 hover:bg-indigo-500/20 transition-colors disabled:opacity-50"
+                          >
+                            <TrendingUp className="w-3.5 h-3.5" />
+                            {promoting === lead.id ? "Promoting..." : "Promote"}
+                          </button>
+                        )}
                         <button onClick={() => openEdit(lead)} className="p-1.5 rounded-md text-gray-600 hover:text-indigo-400 hover:bg-gray-800 transition-colors">
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
                         </button>
