@@ -372,6 +372,8 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
   const [reviewSavingKey,  setReviewSavingKey]  = useState<string | null>(null);
   const [showArchivedQueue, setShowArchivedQueue] = useState(false);
   const [taxSort, setTaxSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "manufacturer_sku", dir: "asc" });
+  const [selectedTaxIds, setSelectedTaxIds] = useState<Set<string>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   function showToast(msg: string, type: "ok" | "err" = "ok") {
     setToast({ msg, type });
@@ -908,6 +910,24 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
     }
   }
 
+  async function handleBulkDeleteTaxonomy() {
+    if (selectedTaxIds.size === 0) return;
+    setBulkDeleting(true);
+    let deleted = 0;
+    for (const sku of Array.from(selectedTaxIds)) {
+      try {
+        const res = await fetch(`/api/sku-taxonomy?sku=${encodeURIComponent(sku)}`, { method: "DELETE" });
+        if (res.ok) deleted++;
+      } catch {
+        // continue
+      }
+    }
+    setTaxonomy((prev) => prev.filter((t) => !selectedTaxIds.has(t.manufacturer_sku)));
+    setSelectedTaxIds(new Set());
+    setBulkDeleting(false);
+    showToast(`${deleted} SKU${deleted !== 1 ? "s" : ""} deleted`);
+  }
+
   return (
     <div className="flex flex-col bg-gray-950 text-white" style={{height:"calc(100vh - 44px)"}}>
       {/* Toast */}
@@ -1259,6 +1279,27 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
               </div>
             )}
 
+            {/* Bulk delete toolbar */}
+            {selectedTaxIds.size > 0 && (
+              <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 mb-2">
+                <span className="text-sm text-red-300 font-medium">{selectedTaxIds.size} selected</span>
+                <button
+                  onClick={handleBulkDeleteTaxonomy}
+                  disabled={bulkDeleting}
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white text-xs font-semibold transition-all"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  {bulkDeleting ? "Deleting..." : `Delete ${selectedTaxIds.size}`}
+                </button>
+                <button
+                  onClick={() => setSelectedTaxIds(new Set())}
+                  className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+                >
+                  Clear selection
+                </button>
+              </div>
+            )}
+
             {/* Table */}
             {filteredTaxonomy.length === 0 ? (
               <div className="text-center py-16 text-gray-600">
@@ -1270,6 +1311,20 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                 <table className="text-sm" style={{minWidth:"1800px"}}>
                   <thead className="sticky top-0 z-10 bg-gray-950">
                     <tr className="text-left text-xs text-gray-600 uppercase tracking-wider border-b border-gray-800">
+                      <th className="pb-2" style={{width:36,minWidth:36}}>
+                        <input
+                          type="checkbox"
+                          checked={sortedTaxonomy.length > 0 && sortedTaxonomy.every((t) => selectedTaxIds.has(t.manufacturer_sku))}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedTaxIds(new Set(sortedTaxonomy.map((t) => t.manufacturer_sku)));
+                            } else {
+                              setSelectedTaxIds(new Set());
+                            }
+                          }}
+                          className="accent-indigo-500 cursor-pointer"
+                        />
+                      </th>
                       <th className="pb-2" style={{width:80,minWidth:80}}></th>
                       {([
                         { label: "Updated",      col: "updated_at",       w: 110 },
@@ -1303,6 +1358,21 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                     {sortedTaxonomy.map((t) => (
                       <Fragment key={t.manufacturer_sku}>
                         <tr className={`transition-colors ${editingId === t.manufacturer_sku ? "bg-indigo-950/30" : "hover:bg-gray-900/50"}`}>
+                          <td className="py-2.5 pr-1" style={{width:36}}>
+                            <input
+                              type="checkbox"
+                              checked={selectedTaxIds.has(t.manufacturer_sku)}
+                              onChange={(e) => {
+                                setSelectedTaxIds((prev) => {
+                                  const next = new Set(prev);
+                                  if (e.target.checked) next.add(t.manufacturer_sku);
+                                  else next.delete(t.manufacturer_sku);
+                                  return next;
+                                });
+                              }}
+                              className="accent-indigo-500 cursor-pointer"
+                            />
+                          </td>
                           <td className="py-2.5 pr-2">
                             <div className="flex items-center gap-1">
                               <button
@@ -1349,7 +1419,7 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                         </tr>
                         {editingId === t.manufacturer_sku && (
                           <tr>
-                            <td colSpan={8} className="p-4 bg-gray-900/40 border-b border-gray-800">
+                            <td colSpan={9} className="p-4 bg-gray-900/40 border-b border-gray-800">
                               <TaxonomyForm
                                 sku={t.manufacturer_sku}
                                 initial={t}
