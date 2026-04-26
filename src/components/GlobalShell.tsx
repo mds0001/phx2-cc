@@ -131,13 +131,21 @@ export default function GlobalShell() {
       .eq("status", "pending")
       .then(({ count }) => { if (count != null) setSkuPending(count); });
 
-    supabase
-      .from("sku_run_exceptions")
-      .select("id", { count: "exact", head: true })
-      .neq("archived", true)
-      .then(({ count }) => { if (count != null) setSkuTweCount(count); });
+    function refreshTweCount() {
+      supabase
+        .from("sku_run_exceptions")
+        .select("id", { count: "exact", head: true })
+        .neq("archived", true)
+        .then(({ count }) => { if (count != null) setSkuTweCount(count); });
+    }
+    refreshTweCount();
 
-    return () => { supabase.removeChannel(chan); };
+    const tweChannel = supabase
+      .channel("global-shell-twe")
+      .on("postgres_changes", { event: "*", schema: "public", table: "sku_run_exceptions" }, refreshTweCount)
+      .subscribe();
+
+    return () => { supabase.removeChannel(chan); supabase.removeChannel(tweChannel); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hidden]);
 
