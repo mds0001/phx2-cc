@@ -240,6 +240,7 @@ export default function SchedulerClient({
   const [logsLoading, setLogsLoading] = useState<Record<string, boolean>>({});
   const [logCounts, setLogCounts] = useState<Record<string, number>>({});
   const [fullscreenTaskId, setFullscreenTaskId] = useState<string | null>(null);
+  const [fsLogSearch, setFsLogSearch] = useState("");
   // Summary popover: last SUMMARY log shown when user clicks the status badge.
   // Uses fixed positioning (via getBoundingClientRect) so no ancestor clip can hide it.
   const [summaryPopoverId, setSummaryPopoverId] = useState<string | null>(null);
@@ -3836,6 +3837,9 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
       {fullscreenTaskId && (() => {
         const fsTask = tasks.find((t) => t.id === fullscreenTaskId);
         const fsLogs = taskLogs[fullscreenTaskId] ?? [];
+        const fsLogsFiltered = fsLogSearch.trim()
+          ? fsLogs.filter((l) => (l.details ?? "").toLowerCase().includes(fsLogSearch.toLowerCase()) || l.action.toLowerCase().includes(fsLogSearch.toLowerCase()))
+          : fsLogs;
         const fsIsRunning = runningTasks.has(fullscreenTaskId);
         const fsIsCancelling = cancellingTasks.has(fullscreenTaskId);
         const levelColor: Record<string, string> = {
@@ -3882,6 +3886,23 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                 {fsErrored > 0  && <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-500/15 text-red-400 border border-red-500/25">{fsErrored} errors</span>}
               </div>
               <div className="flex items-center gap-2">
+                {/* Search */}
+                <div className="relative">
+                  <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-500 pointer-events-none" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                  <input
+                    type="text"
+                    placeholder="Search logs..."
+                    value={fsLogSearch}
+                    onChange={(e) => setFsLogSearch(e.target.value)}
+                    className="pl-7 pr-3 py-1 bg-gray-800 border border-gray-700 rounded-lg text-xs text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 w-44"
+                  />
+                  {fsLogSearch && (
+                    <button onClick={() => setFsLogSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 text-xs">
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                    </button>
+                  )}
+                </div>
+                <div className="w-px h-5 bg-gray-700" />
                 <button
                   onClick={() => fetchLogs(fullscreenTaskId)}
                   className="flex items-center gap-1 px-2.5 py-1 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 rounded-lg text-xs transition-all"
@@ -3984,10 +4005,10 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                   <Loader2 className="w-3 h-3 animate-spin" />
                   Loading logs…
                 </div>
-              ) : fsLogs.length === 0 ? (
-                <p className="text-gray-600">No logs yet for this task.</p>
+              ) : fsLogsFiltered.length === 0 ? (
+                <p className="text-gray-600">{fsLogSearch ? `No logs match "${fsLogSearch}".` : "No logs yet for this task."}</p>
               ) : (
-                fsLogs.map((log) => {
+                fsLogsFiltered.map((log) => {
                   const color = levelColor[log.action] ?? "text-gray-400";
                   const details = log.details ?? "";
 
