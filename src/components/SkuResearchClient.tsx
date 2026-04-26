@@ -357,6 +357,8 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
   const [runSuggestions, setRunSuggestions] = useState<Record<string, TaxonomySuggestion>>({});
   const [runSuggestingKey, setRunSuggestingKey] = useState<string | null>(null);
   const [suggestAllRunId,  setSuggestAllRunId]  = useState<string | null>(null); // run-level suggest-all in progress
+  const [suggestAllReview, setSuggestAllReview] = useState<{ runId: string; items: { key: string; sku: string; suggestion: TaxonomySuggestion; customerId: string | null }[] } | null>(null);
+  const [reviewSavingKey,  setReviewSavingKey]  = useState<string | null>(null);
   const [showArchivedQueue, setShowArchivedQueue] = useState(false);
   const [taxSort, setTaxSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "manufacturer_sku", dir: "asc" });
 
@@ -706,6 +708,55 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
     } catch { showToast("Failed to ignore", "err"); }
   }
 
+  // -- Review panel actions (Suggest All) --
+  async function handleReviewSave(item: { key: string; sku: string; suggestion: TaxonomySuggestion; customerId: string | null }) {
+    setReviewSavingKey(item.key);
+    try {
+      const res = await fetch("/api/sku-taxonomy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ manufacturer_sku: item.sku.trim().toUpperCase(), ...item.suggestion }),
+      });
+      if (res.ok) {
+        const json = await res.json() as { data: TaxonomyEntry };
+        setTaxonomy((prev) => {
+          const filtered = prev.filter((t) => t.manufacturer_sku !== json.data.manufacturer_sku);
+          return [...filtered, json.data].sort((a, b) => a.manufacturer_sku.localeCompare(b.manufacturer_sku));
+        });
+        await fetch("/api/sku-taxonomy/resolve-queue", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ manufacturer_sku: item.sku.trim().toUpperCase() }),
+        }).catch(() => null);
+        setSuggestAllReview((prev) => {
+          if (!prev) return null;
+          const remaining = prev.items.filter((i) => i.key !== item.key);
+          return remaining.length > 0 ? { ...prev, items: remaining } : null;
+        });
+        showToast(item.sku + " saved");
+      }
+    } catch { showToast("Save failed", "err"); }
+    setReviewSavingKey(null);
+  }
+
+  async function handleReviewSkip(item: { key: string; sku: string; customerId: string | null }) {
+    await handleRunSkip(item.sku, item.customerId);
+    setSuggestAllReview((prev) => {
+      if (!prev) return null;
+      const remaining = prev.items.filter((i) => i.key !== item.key);
+      return remaining.length > 0 ? { ...prev, items: remaining } : null;
+    });
+  }
+
+  async function handleReviewIgnore(item: { key: string; sku: string; customerId: string | null }) {
+    await handleRunIgnore(item.sku, item.customerId);
+    setSuggestAllReview((prev) => {
+      if (!prev) return null;
+      const remaining = prev.items.filter((i) => i.key !== item.key);
+      return remaining.length > 0 ? { ...prev, items: remaining } : null;
+    });
+  }
+
   // -- AI Suggest for a SKU in the exception runs view --
   async function handleRunAiSuggest(runId: string, sku: string) {
     const key = `${runId}:${sku}`;
@@ -778,35 +829,17 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
         }
       } catch { /* skip failed SKU */ }
     }));
-    // Auto-save all suggestions directly
-    let savedCount = 0;
-    await Promise.all(
-      Object.entries(newSuggestions).map(async ([key, suggestion]) => {
-        const sku = key.split(":").slice(1).join(":");
-        try {
-          const res = await fetch("/api/sku-taxonomy", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ manufacturer_sku: sku.trim().toUpperCase(), ...suggestion }),
-          });
-          if (res.ok) {
-            const json = await res.json() as { data: TaxonomyEntry };
-            setTaxonomy((prev) => {
-              const filtered = prev.filter((t) => t.manufacturer_sku !== json.data.manufacturer_sku);
-              return [...filtered, json.data].sort((a, b) => a.manufacturer_sku.localeCompare(b.manufacturer_sku));
-            });
-            await fetch("/api/sku-taxonomy/resolve-queue", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ manufacturer_sku: sku.trim().toUpperCase() }),
-            }).catch(() => null);
-            savedCount++;
-          }
-        } catch { /* skip failed */ }
-      })
-    );
+    // Open review panel instead of auto-saving
+    const reviewItems = Object.entries(newSuggestions).map(([key, suggestion]) => {
+      const sku = key.split(":").slice(1).join(":");
+      return { key, sku, suggestion, customerId: run.customer_id ?? null };
+    });
     setSuggestAllRunId(null);
-    showToast(`Suggest All: ${savedCount} of ${unresolvedSkus.length} SKU(s) classified`);
+    if (reviewItems.length > 0) {
+      setSuggestAllReview({ runId: run.id, items: reviewItems });
+    } else {
+      showToast("No suggestions generated", "err");
+    }
   }
 
   // -- Mark a run as resolved and navigate to scheduler for rerun --
@@ -874,6 +907,50 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
             : "bg-red-500/15 border-red-500/30 text-red-300"
         }`}>
           {toast.msg}
+        </div>
+      )}
+
+      {/* Suggest All Review Modal */}
+      {suggestAllReview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 shrink-0">
+              <div>
+                <h2 className="text-base font-semibold text-white">Review AI Suggestions</h2>
+                <p className="text-xs text-gray-500 mt-0.5">{suggestAllReview.items.length} SKU{suggestAllReview.items.length !== 1 ? "s" : ""} — choose an action for each</p>
+              </div>
+              <button onClick={() => setSuggestAllReview(null)} className="p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-all">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="overflow-y-auto flex-1 px-6 py-4 flex flex-col gap-3">
+              {suggestAllReview.items.map((item) => (
+                <div key={item.key} className="bg-gray-800/50 border border-gray-700/60 rounded-xl p-4 flex items-start gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-mono text-sm font-semibold text-white mb-2">{item.sku}</div>
+                    <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
+                      {item.suggestion.manufacturer && <div><span className="text-gray-500">Manufacturer </span><span className="text-gray-300">{item.suggestion.manufacturer}</span></div>}
+                      {item.suggestion.type        && <div><span className="text-gray-500">Type </span><span className="text-gray-300">{item.suggestion.type}</span></div>}
+                      {item.suggestion.subtype     && <div><span className="text-gray-500">Subtype </span><span className="text-gray-300">{item.suggestion.subtype}</span></div>}
+                      {item.suggestion.model       && <div><span className="text-gray-500">Model </span><span className="text-gray-300">{item.suggestion.model}</span></div>}
+                      {item.suggestion.description && <div className="col-span-2"><span className="text-gray-500">Description </span><span className="text-gray-400">{item.suggestion.description}</span></div>}
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-1.5 shrink-0">
+                    <button onClick={() => handleReviewSave(item)} disabled={reviewSavingKey === item.key}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/35 border border-indigo-500/30 transition-all disabled:opacity-50"
+                    >{reviewSavingKey === item.key ? "Saving..." : "Save"}</button>
+                    <button onClick={() => handleReviewSkip(item)}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 border border-blue-500/20 transition-all"
+                    >Skip for Now</button>
+                    <button onClick={() => handleReviewIgnore(item)}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20 transition-all"
+                    >Ignore Forever</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
