@@ -71,6 +71,9 @@ function SectionHeader({ label }: { label: string }) {
 }
 
 // Component
+const POLL_KEY     = "phx2_poll_interval";
+const DEFAULT_POLL = 30;
+
 export default function GlobalShell() {
   const pathname = usePathname();
   const router   = useRouter();
@@ -99,53 +102,27 @@ export default function GlobalShell() {
       });
     }
 
-    supabase
-      .from("scheduled_tasks")
-      .select("status")
-      .neq("is_system", true)
-      .then(({ data }) => {
-        if (data) {
-          refreshCounts(data);
-          setNonTemplateTasks(data.length);
-        }
+    function fetchAll() {
+      supabase.from("scheduled_tasks").select("status").neq("is_system", true).then(({ data }) => {
+        if (data) { refreshCounts(data); setNonTemplateTasks(data.length); }
       });
-
-    const chan = supabase
-      .channel("global-shell-tasks")
-      .on("postgres_changes", { event: "*", schema: "public", table: "scheduled_tasks" }, () => {
-        supabase.from("scheduled_tasks").select("status").neq("is_system", true).then(({ data }) => {
-          if (data) { refreshCounts(data); setNonTemplateTasks(data.length); }
-        });
-      })
-      .subscribe();
-
-    supabase
-      .from("customer_licenses")
-      .select("id, status")
-      .in("status", ["expired", "expiring_soon", "payment_failed"])
-      .then(({ data }) => { if (data) setBohAlerts(data.length); });
-
-    supabase
-      .from("sku_research_queue")
-      .select("id", { count: "exact", head: true })
-      .eq("status", "pending")
-      .then(({ count }) => { if (count != null) setSkuPending(count); });
-
-    function refreshTweCount() {
-      supabase
-        .from("sku_run_exceptions")
-        .select("id", { count: "exact", head: true })
+      supabase.from("customer_licenses").select("id, status")
+        .in("status", ["expired", "expiring_soon", "payment_failed"])
+        .then(({ data }) => { if (data) setBohAlerts(data.length); });
+      supabase.from("sku_research_queue").select("id", { count: "exact", head: true })
+        .eq("status", "pending")
+        .then(({ count }) => { if (count != null) setSkuPending(count); });
+      supabase.from("sku_run_exceptions").select("id", { count: "exact", head: true })
         .neq("archived", true)
         .then(({ count }) => { if (count != null) setSkuTweCount(count); });
     }
-    refreshTweCount();
 
-    const tweChannel = supabase
-      .channel("global-shell-twe")
-      .on("postgres_changes", { event: "*", schema: "public", table: "sku_run_exceptions" }, refreshTweCount)
-      .subscribe();
+    const stored = typeof window !== "undefined" ? localStorage.getItem(POLL_KEY) : null;
+    const pollMs  = (stored ? (parseInt(stored, 10) || DEFAULT_POLL) : DEFAULT_POLL) * 1000;
+    fetchAll();
+    const interval = setInterval(fetchAll, pollMs);
 
-    return () => { supabase.removeChannel(chan); supabase.removeChannel(tweChannel); };
+    return () => { clearInterval(interval); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hidden]);
 
