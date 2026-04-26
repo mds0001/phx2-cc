@@ -1,5 +1,39 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as net from "net";
+import { createClient } from "@/lib/supabase-server";
+import * as dns from "dns/promises";
+
+// ── SSRF guard ────────────────────────────────
+function isPrivateIp(ip: string): boolean {
+  // Block loopback, link-local, RFC-1918, and APIPA ranges
+  return (
+    /^127\./.test(ip) ||
+    /^::1$/.test(ip) ||
+    /^10\./.test(ip) ||
+    /^172\.(1[6-9]|2[0-9]|3[01])\./.test(ip) ||
+    /^192\.168\./.test(ip) ||
+    /^169\.254\./.test(ip) ||
+    /^fc[0-9a-f]{2}:/i.test(ip) ||
+    /^fd[0-9a-f]{2}:/i.test(ip)
+  );
+}
+
+async function isSsrfTarget(urlOrHost: string): Promise<boolean> {
+  try {
+    // If it looks like a URL, extract the hostname
+    let host = urlOrHost;
+    if (urlOrHost.startsWith("http://") || urlOrHost.startsWith("https://")) {
+      host = new URL(urlOrHost).hostname;
+    }
+    // Block bare IP addresses directly
+    if (isPrivateIp(host)) return true;
+    // Resolve hostnames and block if any resolved IP is private
+    const addrs = await dns.resolve(host).catch(() => [] as string[]);
+    return addrs.some(isPrivateIp);
+  } catch {
+    return false;
+  }
+}
 
 // ── Helpers ───────────────────────────────────────────────────
 function result(success: boolean, message: string) {
@@ -30,6 +64,11 @@ function tcpTest(host: string, port: number): Promise<NextResponse> {
 // ── Route handler ─────────────────────────────────────────────
 export async function POST(request: NextRequest) {
   try {
+    // Auth guard
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
     const { type, config, agent_id } = (await request.json()) as {
       type: string;
       config: Record<string, string>;
@@ -83,6 +122,7 @@ export async function POST(request: NextRequest) {
       case "cloud": {
         const { url } = config;
         if (!url) return result(false, "No URL configured");
+        if (await isSsrfTarget(url)) return result(false, "URL resolves to a private/internal address");
         try {
           const res = await fetch(url, {
             method: "GET",
@@ -98,6 +138,7 @@ export async function POST(request: NextRequest) {
       case "smtp": {
         const { server, port } = config;
         if (!server) return result(false, "No server configured");
+        if (await isSsrfTarget(server)) return result(false, "Host resolves to a private/internal address");
         return tcpTest(server, parseInt(port || "587", 10));
       }
 
@@ -105,6 +146,7 @@ export async function POST(request: NextRequest) {
       case "odbc": {
         const { server_name, port } = config;
         if (!server_name) return result(false, "No server name configured");
+        if (await isSsrfTarget(server_name)) return result(false, "Host resolves to a private/internal address");
         return tcpTest(server_name, parseInt(port || "1433", 10));
       }
 
@@ -112,6 +154,7 @@ export async function POST(request: NextRequest) {
       case "portal": {
         const { url } = config;
         if (!url) return result(false, "No URL configured");
+        if (await isSsrfTarget(url)) return result(false, "URL resolves to a private/internal address");
         try {
           const res = await fetch(url, {
             method: "GET",

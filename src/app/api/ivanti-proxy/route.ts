@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { pushBinaryRow, type StrategyAttempt } from "@/lib/dev-log";
 
-const FALLBACK_API_KEY = "251E668B0B42478EB3DA9D6E8446CA0B";
+// FALLBACK_API_KEY removed - do not hardcode credentials in source code.
 
 // Module-level cache: maps "${base}:${boName}" -> resolved (pluralized) BO name.
 // Avoids a $top=0 probe on every row — probe runs once per BO per process lifetime.
@@ -375,7 +375,7 @@ export async function POST(request: NextRequest) {
       if (!ceUrl || !Array.isArray(keyValues) || keyValues.length === 0) {
         return NextResponse.json({ existing: [] });
       }
-      const resolvedCeKey  = ceApiKey ?? FALLBACK_API_KEY;
+      const resolvedCeKey  = ceApiKey ?? "";
       const resolvedCeBo   = encodeBoForUrl(ceBo ?? "CI__Computers");
       const keyField       = ceKey ?? "Name";
       const base           = ceUrl.replace(/\/$/, "");
@@ -445,7 +445,7 @@ export async function POST(request: NextRequest) {
       }
 
       const m2mBase   = m2mUrl.replace(/\/$/, "");
-      const m2mApiKey = m2mApiKeyRaw ?? FALLBACK_API_KEY;
+      const m2mApiKey = m2mApiKeyRaw ?? "";
       const m2mHeaders: Record<string, string> = {
         Authorization: `rest_api_key=${m2mApiKey}`,
         Accept: "application/json",
@@ -788,7 +788,7 @@ export async function POST(request: NextRequest) {
     // Bypasses BO name probe and upsert lookup — just DELETE the record directly.
     if (method === "DELETE" && directRecId && directBoName) {
       const base = ivantiUrl.replace(/\/$/, "");
-      const resolvedKey = apiKey ?? FALLBACK_API_KEY;
+      const resolvedKey = apiKey ?? "";
       const hdrs: Record<string, string> = {
         Authorization: `rest_api_key=${resolvedKey}`,
         Accept: "application/json",
@@ -814,7 +814,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const resolvedKey    = apiKey         ?? FALLBACK_API_KEY;
+    const resolvedKey    = apiKey         ?? "";
     const resolvedObject = businessObject ?? "CI__Computers";
 
     // If the payload explicitly specifies a CIType, route to the matching Ivanti CI BO.
@@ -1622,7 +1622,7 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: "Missing ivantiUrl" }, { status: 400 });
     }
 
-    const resolvedKey    = apiKey         ?? FALLBACK_API_KEY;
+    const resolvedKey    = apiKey         ?? "";
     const resolvedObject = encodeBoForUrl(businessObject ?? "CI__Computers");
 
     // Ivanti enforces a hard cap of 100 records per page.

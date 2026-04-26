@@ -275,6 +275,16 @@ export default function GlobalShell() {
 
         </nav>
 
+        {/* Account / Security */}
+        <div className="shrink-0 border-t border-gray-800 px-2 pt-2">
+          <NavItem
+            icon={<ShieldCheck className="w-4 h-4 shrink-0" />}
+            label="Security"
+            href="/account"
+            active={pathname === "/account"}
+          />
+        </div>
+
         {/* Sign out */}
         <div className="shrink-0 border-t border-gray-800 px-2 py-2">
           <button
