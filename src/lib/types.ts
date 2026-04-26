@@ -476,3 +476,37 @@ export function applyMappingProfile(
 
   return result;
 }
+
+// Pipeline
+
+export type LeadStatus        = 'new' | 'contacted' | 'qualified' | 'disqualified';
+export type LeadSource        = 'website' | 'referral' | 'cold' | 'event' | 'other';
+export type OpportunityStatus = 'active' | 'won' | 'lost';
+export type TierInterest      = 'free' | 'pro' | 'master';
+
+export interface Lead {
+  id: string;
+  name: string;
+  email: string | null;
+  company: string | null;
+  phone: string | null;
+  tier_interest: TierInterest | null;
+  source: LeadSource | null;
+  status: LeadStatus;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Opportunity {
+  id: string;
+  lead_id: string | null;
+  tier: TierInterest | null;
+  estimated_close_date: string | null;
+  status: OpportunityStatus;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}

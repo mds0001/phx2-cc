@@ -6,6 +6,7 @@ import { createClient } from "@/lib/supabase-browser";
 import {
   CalendarClock, GitMerge, Plug, Building2, Users,
   FileText, BarChart3, Activity, ShieldCheck, LogOut, Bot, Tag,
+  TrendingUp, UserPlus,
 } from "lucide-react";
 
 // Types
@@ -84,6 +85,8 @@ export default function GlobalShell() {
   const [skuPending, setSkuPending] = useState(0);
   const [skuTweCount, setSkuTweCount] = useState(0);
   const [nonTemplateTasks, setNonTemplateTasks] = useState(0);
+  const [pipelineActive, setPipelineActive] = useState(0);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   const hidden = HIDDEN_PATHS.some((p) => pathname?.startsWith(p));
 
@@ -115,6 +118,14 @@ export default function GlobalShell() {
       supabase.from("sku_run_exceptions").select("id", { count: "exact", head: true })
         .neq("archived", true)
         .then(({ count }) => { if (count != null) setSkuTweCount(count); });
+      supabase.from("opportunities").select("id", { count: "exact", head: true })
+        .eq("status", "active")
+        .then(({ count }) => { if (count != null) setPipelineActive(count ?? 0); });
+      supabase.auth.getUser().then(({ data: { user } }) => {
+        if (!user) return;
+        supabase.from("profiles").select("role").eq("id", user.id).single()
+          .then(({ data }) => { if (data?.role === "administrator") setIsAdmin(true); });
+      });
     }
 
     const stored = typeof window !== "undefined" ? localStorage.getItem(POLL_KEY) : null;
@@ -190,7 +201,28 @@ export default function GlobalShell() {
             />
           </div>
 
-          {/* MANAGEMENT */}
+          {/* PIPELINE - admin only */}
+          {isAdmin && (
+          <div className="flex flex-col gap-0.5">
+            <SectionHeader label="Pipeline" />
+            <NavItem
+              icon={<UserPlus className="w-4 h-4" />}
+              label="Leads"
+              href="/boh/leads"
+              active={pathname?.startsWith("/boh/leads") === true}
+            />
+            <NavItem
+              icon={<TrendingUp className="w-4 h-4" />}
+              label="Opportunities"
+              href="/boh/opportunities"
+              active={pathname?.startsWith("/boh/opportunities") === true}
+              badge={pipelineActive > 0 ? pipelineActive : undefined}
+            />
+          </div>
+          )}
+
+          {/* MANAGEMENT - admin only */}
+          {isAdmin && (
           <div className="flex flex-col gap-0.5">
             <SectionHeader label="Management" />
             <NavItem
@@ -220,8 +252,10 @@ export default function GlobalShell() {
               badge={skuTweCount > 0 ? skuTweCount : undefined}
             />
           </div>
+          )}
 
-          {/* ADMIN */}
+          {/* ADMIN - admin only */}
+          {isAdmin && (
           <div className="flex flex-col gap-0.5">
             <SectionHeader label="Admin" />
             <NavItem
@@ -237,6 +271,7 @@ export default function GlobalShell() {
               active={pathname?.startsWith("/agents") === true}
             />
           </div>
+          )}
 
         </nav>
 

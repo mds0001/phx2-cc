@@ -213,7 +213,7 @@ export default function UsersListClient({ users, currentUserId, customers = [] }
             className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-xl text-sm font-semibold text-white transition-all shadow-lg shadow-indigo-600/20"
           >
             <Plus className="w-4 h-4" />
-            Invite User
+            New User
           </button>
         </div>
       </header>

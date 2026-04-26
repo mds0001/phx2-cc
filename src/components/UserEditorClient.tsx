@@ -145,6 +145,7 @@ export default function UserEditorClient({ user, isNew, currentUserId, customers
             last_name: lastName.trim() || undefined,
             role,
             customer_id: role === "schedule_administrator" ? (scopedCustomerId ?? null) : null,
+            ...(newPassword.trim() ? { password: newPassword.trim() } : {}),
           }),
         });
       } else {
@@ -206,9 +207,9 @@ export default function UserEditorClient({ user, isNew, currentUserId, customers
             {saved ? (
               <><Check className="w-4 h-4" />{isNew ? "Invited!" : "Saved!"}</>
             ) : saving ? (
-              <><Save className="w-4 h-4 animate-pulse" />{isNew ? "Sending..." : "Saving..."}</>
+              <><Save className="w-4 h-4 animate-pulse" />{isNew ? (newPassword.trim() ? "Creating..." : "Sending...") : "Saving..."}</>
             ) : (
-              <>{isNew ? <Send className="w-4 h-4" /> : <Save className="w-4 h-4" />}{isNew ? "Send Invite" : "Save Changes"}</>
+              <>{isNew ? <Send className="w-4 h-4" /> : <Save className="w-4 h-4" />}{isNew ? (newPassword.trim() ? "Create User" : "Send Invite") : "Save Changes"}</>
             )}
           </button>
         </div>
@@ -338,13 +339,15 @@ export default function UserEditorClient({ user, isNew, currentUserId, customers
           </div>
         </div>
 
-        {/* Password — edit mode only */}
-        {!isNew && (
+        {/* Password */}
+        {(
           <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-4">
             <div className="flex items-center gap-2">
               <KeyRound className="w-4 h-4 text-indigo-400" />
               <h3 className="text-sm font-semibold text-white">Set Password</h3>
-              <span className="ml-auto text-xs text-gray-600">Leave blank to keep current password</span>
+              <span className="ml-auto text-xs text-gray-600">
+                {isNew ? "Leave blank to send an invite email instead" : "Leave blank to keep current password"}
+              </span>
             </div>
             <div className="relative">
               <input
@@ -468,7 +471,9 @@ export default function UserEditorClient({ user, isNew, currentUserId, customers
 
         {isNew && (
           <p className="text-xs text-gray-600 text-center pb-4">
-            An invitation email will be sent to the provided address. The user will set their own password on first login.
+            {newPassword.trim()
+              ? "User will be created immediately with the password you set."
+              : "No password set -- an invite email will be sent and the user will set their own password on first login."}
           </p>
         )}
       </main>

@@ -175,8 +175,7 @@ export default function SchedulerClient({
   const router = useRouter();
   const searchParams = useSearchParams();
   const supabase = createClient();
-  const canControlPoll =
-    profile?.role === "administrator" || profile?.role === "schedule_administrator";
+  const canControlPoll = profile?.role === "administrator";
 
   const [tasks, setTasks] = useState<ScheduledTask[]>(initialTasks);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
