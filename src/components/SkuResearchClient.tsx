@@ -778,10 +778,35 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
         }
       } catch { /* skip failed SKU */ }
     }));
-    setRunSuggestions((prev) => ({ ...prev, ...newSuggestions }));
-    if (firstKey) setClassifyingSkuKey(firstKey); // auto-open first unresolved form
+    // Auto-save all suggestions directly
+    let savedCount = 0;
+    await Promise.all(
+      Object.entries(newSuggestions).map(async ([key, suggestion]) => {
+        const sku = key.split(":").slice(1).join(":");
+        try {
+          const res = await fetch("/api/sku-taxonomy", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ manufacturer_sku: sku.trim().toUpperCase(), ...suggestion }),
+          });
+          if (res.ok) {
+            const json = await res.json() as { data: TaxonomyEntry };
+            setTaxonomy((prev) => {
+              const filtered = prev.filter((t) => t.manufacturer_sku !== json.data.manufacturer_sku);
+              return [...filtered, json.data].sort((a, b) => a.manufacturer_sku.localeCompare(b.manufacturer_sku));
+            });
+            await fetch("/api/sku-taxonomy/resolve-queue", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ manufacturer_sku: sku.trim().toUpperCase() }),
+            }).catch(() => null);
+            savedCount++;
+          }
+        } catch { /* skip failed */ }
+      })
+    );
     setSuggestAllRunId(null);
-    showToast(`AI suggestions ready for ${Object.keys(newSuggestions).length} of ${unresolvedSkus.length} SKU(s)`);
+    showToast(`Suggest All: ${savedCount} of ${unresolvedSkus.length} SKU(s) classified`);
   }
 
   // -- Mark a run as resolved and navigate to scheduler for rerun --
