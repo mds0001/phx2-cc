@@ -1131,8 +1131,9 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                           {isExpanded && (
                             <div className="border-t border-gray-800 divide-y divide-gray-800/60">
                               {uniqueSkus.map((sku) => {
-                                const isClassified = taxonomy.some((t) => t.manufacturer_sku.trim().toLowerCase() === sku.trim().toLowerCase())
-                                  || queue.some((q) => q.manufacturer_sku.trim().toLowerCase() === sku.trim().toLowerCase() && (q.status === "ignored" || q.status === "skipped"));
+                                const inTaxonomy = taxonomy.some((t) => t.manufacturer_sku.trim().toLowerCase() === sku.trim().toLowerCase());
+                                const queueEntry = queue.find((q) => q.manufacturer_sku.trim().toLowerCase() === sku.trim().toLowerCase());
+                                const isClassified = inTaxonomy || queueEntry?.status === "ignored" || queueEntry?.status === "skipped";
                                 const skuKey = `${run.id}:${sku}`;
                                 const isResolving = classifyingSkuKey === skuKey;
                                 const isSuggestingThis = runSuggestingKey === skuKey;
@@ -1141,7 +1142,9 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                                   <div key={sku} className="px-4 py-3">
                                     <div className="flex items-center gap-3">
                                       {isClassified
-                                        ? <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                                        ? inTaxonomy
+                                          ? <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                                          : <CheckCircle2 className="w-4 h-4 text-gray-500 shrink-0" />
                                         : <XCircle className="w-4 h-4 text-amber-500 shrink-0" />
                                       }
                                       <span className="font-mono text-sm text-white">{sku}</span>
@@ -1168,7 +1171,9 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                                         </div>
                                       )}
                                       {isClassified && (
-                                        <span className="ml-auto text-xs text-emerald-500">Resolved</span>
+                                        <span className={"ml-auto text-xs font-medium " + (inTaxonomy ? "text-emerald-500" : queueEntry?.status === "skipped" ? "text-blue-400" : "text-gray-500")}>
+                                          {inTaxonomy ? "Resolved" : queueEntry?.status === "skipped" ? "Skipped" : "Ignored"}
+                                        </span>
                                       )}
                                     </div>
                                     {isResolving && (
