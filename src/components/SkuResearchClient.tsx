@@ -120,11 +120,11 @@ function TaxonomyForm({
   saving: boolean;
   saveLabel?: string;
 }) {
-  const [manufacturer, setManufacturer] = useState(initial?.manufacturer ?? "");
-  const [type, setType]                 = useState(initial?.type ?? "");
-  const [subtype, setSubtype]           = useState(initial?.subtype ?? "");
-  const [description, setDescription]   = useState(initial?.description ?? "");
-  const [model, setModel]               = useState(initial?.model ?? "");
+  const [manufacturer, setManufacturer] = useState(initial?.manufacturer ?? aiSuggestion?.manufacturer ?? "");
+  const [type, setType]                 = useState(initial?.type ?? aiSuggestion?.type ?? "");
+  const [subtype, setSubtype]           = useState(initial?.subtype ?? aiSuggestion?.subtype ?? "");
+  const [description, setDescription]   = useState(initial?.description ?? aiSuggestion?.description ?? "");
+  const [model, setModel]               = useState(initial?.model ?? aiSuggestion?.model ?? "");
   const [customSubtype, setCustomSubtype] = useState(false);
 
   const aiIsEmpty = aiSuggestion != null &&
