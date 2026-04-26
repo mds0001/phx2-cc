@@ -1158,13 +1158,13 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                     <tr className="text-left text-xs text-gray-600 uppercase tracking-wider border-b border-gray-800">
                       <th className="pb-2" style={{width:80,minWidth:80}}></th>
                       {([
+                        { label: "Updated",      col: "updated_at",       w: 110 },
                         { label: "SKU",         col: "manufacturer_sku", w: 200 },
                         { label: "Manufacturer", col: "manufacturer",     w: 140 },
                         { label: "Type",         col: "type",             w: 120 },
                         { label: "Subtype",      col: "subtype",          w: 150 },
                         { label: "Model",        col: "model",            w: 200 },
                         { label: "Description",  col: "description",      w: 300 },
-                        { label: "Updated",      col: "updated_at",       w: 110 },
                       ] as { label: string; col: string; w: number }[]).map(({ label, col, w }) => (
                         <th
                           key={col}
@@ -1224,13 +1224,14 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                               )}
                             </div>
                           </td>
+                          <td className="py-2.5 pr-4 text-xs text-gray-500">{timeAgo(t.updated_at)}</td>
                           <td className="py-2.5 pr-4 font-mono text-white font-medium">{t.manufacturer_sku}</td>
                           <td className="py-2.5 pr-4 text-gray-300">{t.manufacturer ?? <span className="text-gray-700">—</span>}</td>
                           <td className="py-2.5 pr-4 text-gray-300">{t.type ?? <span className="text-gray-700">—</span>}</td>
                           <td className="py-2.5 pr-4 text-gray-300">{t.subtype ?? <span className="text-gray-700">—</span>}</td>
                           <td className="py-2.5 pr-4 text-gray-300">{t.model ?? <span className="text-gray-700">—</span>}</td>
                           <td className="py-2.5 pr-4 text-gray-400 max-w-[220px] truncate">{t.description ?? <span className="text-gray-700">—</span>}</td>
-                          <td className="py-2.5 text-xs text-gray-600">{timeAgo(t.updated_at)}</td>
+                          
                         </tr>
                         {editingId === t.manufacturer_sku && (
                           <tr>
