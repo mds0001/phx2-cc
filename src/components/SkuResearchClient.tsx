@@ -2,7 +2,7 @@
 
 import { useState, useMemo, Fragment } from "react";
 import {
-  Search, CheckCircle2, XCircle, Plus, ChevronDown, ChevronUp,
+  Search, CheckCircle2, XCircle, Plus, ChevronDown, ChevronUp, X,
   Package, Clock, Eye, RotateCcw, Tag, Database, Pencil, Trash2, Sparkles, Loader2,
 } from "lucide-react";
 import CustomerSwitcher, { type CustomerOption } from "@/components/CustomerSwitcher";
