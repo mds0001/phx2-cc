@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, Fragment } from "react";
+import { useState, useMemo, Fragment, useEffect } from "react";
 import {
   Search, CheckCircle2, XCircle, Plus, ChevronDown, ChevronUp, X,
   Package, Clock, Eye, RotateCcw, Tag, Database, Pencil, Trash2, Sparkles, Loader2,
@@ -126,6 +126,17 @@ function TaxonomyForm({
   const [description, setDescription]   = useState(initial?.description ?? aiSuggestion?.description ?? "");
   const [model, setModel]               = useState(initial?.model ?? aiSuggestion?.model ?? "");
   const [customSubtype, setCustomSubtype] = useState(false);
+
+  useEffect(() => {
+    if (aiSuggestion && (aiSuggestion.manufacturer || aiSuggestion.type || aiSuggestion.subtype || aiSuggestion.model || aiSuggestion.description)) {
+      if (aiSuggestion.manufacturer) setManufacturer(aiSuggestion.manufacturer);
+      if (aiSuggestion.type)         setType(aiSuggestion.type);
+      if (aiSuggestion.subtype)      setSubtype(aiSuggestion.subtype);
+      if (aiSuggestion.description)  setDescription(aiSuggestion.description);
+      if (aiSuggestion.model)        setModel(aiSuggestion.model);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiSuggestion]);
 
   const aiIsEmpty = aiSuggestion != null &&
     !aiSuggestion.manufacturer && !aiSuggestion.type &&
@@ -1187,6 +1198,18 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                                     </div>
                                     {isResolving && (
                                       <div className="mt-3 pl-7">
+                                        {!suggestion && (
+                                          <div className="mb-2">
+                                            <button
+                                              onClick={() => handleRunAiSuggest(run.id, sku)}
+                                              disabled={isSuggestingThis}
+                                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600/20 hover:bg-purple-600/30 text-purple-400 text-xs font-medium transition-all border border-purple-500/20 disabled:opacity-50"
+                                            >
+                                              {isSuggestingThis ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                                              {isSuggestingThis ? "Fetching..." : "AI Suggest"}
+                                            </button>
+                                          </div>
+                                        )}
                                         <TaxonomyForm
                                           sku={sku}
                                           aiSuggestion={suggestion}
