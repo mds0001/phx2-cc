@@ -45,6 +45,10 @@ const selectCls = inputCls;
 
 function computeOppTotal(opp: OpportunityWithLead, licenseTypes: LicenseType[]): { cents: number; label: string } | null {
   if (opp.tier === "free") return { cents: 0, label: "Free" };
+  if (opp.quote_config?.customPriceCents != null) {
+    const label = opp.tier === "master" ? ((opp.quote_config.masterTerm ?? 1) === 3 ? "3yr" : "1yr") : opp.tier === "pro" ? (opp.quote_config.proTerm === "annual" ? "/yr" : "/mo") : "";
+    return { cents: opp.quote_config.customPriceCents, label };
+  }
   if (opp.tier === "master") {
     const term = opp.quote_config?.masterTerm ?? 1;
     const targetDays = term === 3 ? 1095 : 365;
@@ -72,6 +76,38 @@ function formatUSD(cents: number): string {
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
+
+function EditablePriceRow({ termLabel, listCents, displayCents, onChange, onReset }: {
+  termLabel: string; listCents: number; displayCents: number;
+  onChange: (cents: number) => void; onReset: () => void;
+}) {
+  const isCustom = displayCents !== listCents;
+  return (
+    <div className="flex flex-col gap-2 px-4 py-3 bg-gray-800/50 border border-gray-700 rounded-lg">
+      <div className="flex items-center justify-between">
+        <div className="flex items-baseline gap-2">
+          <span className="text-sm font-medium text-gray-400">Quote Total</span>
+          <span className="text-xs text-gray-600">{termLabel}</span>
+        </div>
+        {isCustom && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-600 line-through">{formatUSD(listCents)}</span>
+            <button type="button" onClick={onReset} className="text-xs text-gray-600 hover:text-indigo-400 transition-colors">Reset</button>
+          </div>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="text-gray-500 text-sm font-medium">$</span>
+        <input
+          type="number" min={0} step={1}
+          value={(displayCents / 100).toFixed(2)}
+          onChange={(e) => onChange(Math.round(parseFloat(e.target.value || "0") * 100))}
+          className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-base font-bold text-gray-100 focus:outline-none focus:border-indigo-500"
+        />
+      </div>
+    </div>
+  );
+}
 
 export default function OpportunitiesListClient({
   opportunities: initial,
@@ -507,42 +543,30 @@ export default function OpportunitiesListClient({
                   const masterLt = licenseTypes.find((lt) => lt.type === "subscription" && lt.duration_days === targetDays)
                                 ?? licenseTypes.find((lt) => lt.type === "subscription");
                   if (!masterLt) return null;
-                  const totalCents = masterLt.price_cents;
+                  const listCents = masterLt.price_cents;
+                  const customCents = editing.quote_config?.customPriceCents;
+                  const displayCents = customCents ?? listCents;
                   const termLabel = term === 3 ? "3-year contract" : "annual";
-                  return (
-                    <div className="flex items-center justify-between px-4 py-3 bg-gray-800/50 border border-gray-700 rounded-lg">
-                      <div className="flex items-baseline gap-2">
-                        <span className="text-sm font-medium text-gray-400">Quote Total</span>
-                        <span className="text-xs text-gray-600">{termLabel}</span>
-                      </div>
-                      <span className="text-base font-bold text-gray-100">
-                        {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(totalCents / 100)}
-                      </span>
-                    </div>
-                  );
+                  return <EditablePriceRow termLabel={termLabel} listCents={listCents} displayCents={displayCents}
+                    onChange={(cents) => setEditing((p) => ({ ...p, quote_config: { ...(p.quote_config ?? {}), customPriceCents: cents } }))}
+                    onReset={() => setEditing((p) => { const q = { ...(p.quote_config ?? {}) }; delete q.customPriceCents; return { ...p, quote_config: q }; })} />;
                 }
                 if (editing.tier === "pro") {
                   const endpoints = editing.quote_config?.proEndpoints ?? [];
                   if (endpoints.length === 0) return null;
                   const isAnnual = editing.quote_config?.proTerm === "annual";
-                  const totalCents = endpoints.reduce((sum, ep) => {
+                  const listCents = endpoints.reduce((sum, ep) => {
                     const lt = licenseTypes.find((l) => l.id === ep.licenseTypeId);
                     if (!lt) return sum;
                     const price = isAnnual && lt.yearly_price_cents != null ? lt.yearly_price_cents : lt.price_cents;
                     return sum + price * ep.qty;
                   }, 0);
+                  const customCents = editing.quote_config?.customPriceCents;
+                  const displayCents = customCents ?? listCents;
                   const termLabel = isAnnual ? "per year" : "per month";
-                  return (
-                    <div className="flex items-center justify-between px-4 py-3 bg-gray-800/50 border border-gray-700 rounded-lg">
-                      <div className="flex items-baseline gap-2">
-                        <span className="text-sm font-medium text-gray-400">Quote Total</span>
-                        <span className="text-xs text-gray-600">{termLabel}</span>
-                      </div>
-                      <span className="text-base font-bold text-gray-100">
-                        {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(totalCents / 100)}
-                      </span>
-                    </div>
-                  );
+                  return <EditablePriceRow termLabel={termLabel} listCents={listCents} displayCents={displayCents}
+                    onChange={(cents) => setEditing((p) => ({ ...p, quote_config: { ...(p.quote_config ?? {}), customPriceCents: cents } }))}
+                    onReset={() => setEditing((p) => { const q = { ...(p.quote_config ?? {}) }; delete q.customPriceCents; return { ...p, quote_config: q }; })} />;
                 }
                 return null;
               })()}

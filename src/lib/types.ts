@@ -509,6 +509,8 @@ export interface QuoteConfig {
   masterTerm?: 1 | 3;
   proTerm?: "monthly" | "annual";
   proEndpoints?: QuoteConfigEndpoint[];
+  /** Admin-set override price in cents; replaces the calculated total on the quote */
+  customPriceCents?: number;
 }
 
 export interface Opportunity {

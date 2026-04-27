@@ -75,7 +75,8 @@ export default function QuoteBuilderPanel({ opp, licenseTypes, onClose, onSent }
   const [sending, setSending] = useState(false);
 
   const lineItems = resolveLineItems(opp, licenseTypes);
-  const totalCents = lineItems.reduce((s, item) => s + item.unitPriceCents * item.qty, 0);
+  const calculatedCents = lineItems.reduce((s, item) => s + item.unitPriceCents * item.qty, 0);
+  const totalCents = opp.quote_config?.customPriceCents ?? calculatedCents;
   const hasEmail = !!opp.leads?.email;
   const tierLabel = opp.tier === "free" ? "Free" : opp.tier === "master" ? "Master" : opp.tier === "pro" ? "Pro" : "—";
   const tierColors: Record<string, string> = {
