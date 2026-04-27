@@ -60,4 +60,144 @@ body {
   box-shadow: 0 0 24px rgba(0, 245, 255, 0.20);
 }
 .lg-glow-violet {
-  box-shadow: 0 0 24px rgba(123, 
+  box-shadow: 0 0 24px rgba(123, 97, 255, 0.25);
+}
+
+/* === LIGHT / OFFICE MODE === */
+html.light { color-scheme: light; }
+html.light body { background: #f8fafc; color: #0f172a; }
+
+html.light ::-webkit-scrollbar-track  { background: #f1f5f9; }
+html.light ::-webkit-scrollbar-thumb  { background: #94a3b8; border-color: #f1f5f9; }
+html.light ::-webkit-scrollbar-corner { background: #f1f5f9; }
+
+/* Solid backgrounds */
+html.light .bg-gray-950 { background-color: #f8fafc !important; }
+html.light .bg-gray-900 { background-color: #f1f5f9 !important; }
+html.light .bg-gray-800 { background-color: #e2e8f0 !important; }
+html.light .bg-gray-700 { background-color: #cbd5e1 !important; }
+html.light .bg-gray-600 { background-color: #94a3b8 !important; }
+html.light .bg-gray-500 { background-color: #94a3b8 !important; }
+
+/* Opacity variants */
+html.light .bg-gray-950\/50  { background-color: rgba(248,250,252,0.5)  !important; }
+html.light .bg-gray-900\/80  { background-color: rgba(241,245,249,0.95) !important; }
+html.light .bg-gray-900\/60  { background-color: rgba(241,245,249,0.7)  !important; }
+html.light .bg-gray-900\/50  { background-color: rgba(241,245,249,0.5)  !important; }
+html.light .bg-gray-900\/40  { background-color: rgba(241,245,249,0.4)  !important; }
+html.light .bg-gray-800\/80  { background-color: rgba(226,232,240,0.8)  !important; }
+html.light .bg-gray-800\/60  { background-color: rgba(226,232,240,0.6)  !important; }
+html.light .bg-gray-800\/50  { background-color: rgba(226,232,240,0.5)  !important; }
+html.light .bg-gray-800\/40  { background-color: rgba(226,232,240,0.4)  !important; }
+html.light .bg-gray-800\/30  { background-color: rgba(226,232,240,0.3)  !important; }
+html.light .bg-gray-700\/50  { background-color: rgba(203,213,225,0.5)  !important; }
+html.light .bg-gray-700\/30  { background-color: rgba(203,213,225,0.3)  !important; }
+html.light .bg-gray-700\/20  { background-color: rgba(203,213,225,0.2)  !important; }
+html.light .bg-gray-500\/15  { background-color: rgba(148,163,184,0.12) !important; }
+html.light .bg-gray-500\/10  { background-color: rgba(148,163,184,0.08) !important; }
+html.light .bg-gray-500\/5   { background-color: rgba(148,163,184,0.05) !important; }
+
+/* Remove backdrop blur on light backgrounds */
+html.light .backdrop-blur-xl,
+html.light .backdrop-blur-lg,
+html.light .backdrop-blur-md,
+html.light .backdrop-blur-sm { backdrop-filter: none !important; }
+
+/* Text */
+html.light .text-white    { color: #0f172a !important; }
+html.light .text-gray-100 { color: #1e293b !important; }
+html.light .text-gray-200 { color: #1e293b !important; }
+html.light .text-gray-300 { color: #334155 !important; }
+html.light .text-gray-400 { color: #475569 !important; }
+html.light .text-gray-500 { color: #64748b !important; }
+html.light .text-gray-600 { color: #94a3b8 !important; }
+html.light .text-gray-700 { color: #94a3b8 !important; }
+
+/* Coloured buttons keep white text */
+html.light .bg-indigo-600.text-white,
+html.light .bg-indigo-500.text-white,
+html.light .bg-indigo-700.text-white,
+html.light .bg-emerald-600.text-white,
+html.light .bg-emerald-500.text-white,
+html.light .bg-red-600.text-white,
+html.light .bg-red-500.text-white,
+html.light .bg-violet-600.text-white,
+html.light .bg-cyan-600.text-white { color: #ffffff !important; }
+
+/* Borders */
+html.light .border-gray-800      { border-color: #e2e8f0 !important; }
+html.light .border-gray-700      { border-color: #cbd5e1 !important; }
+html.light .border-gray-800\/60  { border-color: rgba(226,232,240,0.6) !important; }
+html.light .divide-gray-800 > * + *     { border-color: #e2e8f0 !important; }
+html.light .divide-gray-800\/60 > * + * { border-color: rgba(226,232,240,0.6) !important; }
+
+/* Hover */
+html.light .hover\:bg-gray-900:hover { background-color: #f1f5f9 !important; }
+html.light .hover\:bg-gray-800:hover { background-color: #e2e8f0 !important; }
+html.light .hover\:bg-gray-700:hover { background-color: #cbd5e1 !important; }
+
+/* Inputs */
+html.light input::placeholder,
+html.light textarea::placeholder { color: #94a3b8 !important; }
+html.light input,
+html.light select,
+html.light textarea {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+/* Active nav */
+html.light .bg-indigo-600\/20 { background-color: rgba(99,102,241,0.12) !important; }
+
+/* Table headers */
+html.light table thead tr { background-color: #f1f5f9 !important; }
+
+
+/* === HIGH CONTRAST DARK === */
+html.high-contrast { color-scheme: dark; }
+html.high-contrast body { background: #000000; color: #ffffff; }
+
+/* Solid backgrounds - neutral, no purple tint */
+html.high-contrast .bg-gray-950 { background-color: #000000 !important; }
+html.high-contrast .bg-gray-900 { background-color: #0d0d0d !important; }
+html.high-contrast .bg-gray-800 { background-color: #1a1a1a !important; }
+html.high-contrast .bg-gray-700 { background-color: #262626 !important; }
+html.high-contrast .bg-gray-600 { background-color: #333333 !important; }
+
+/* Opacity variants */
+html.high-contrast .bg-gray-900\/80  { background-color: rgba(13,13,13,0.95) !important; }
+html.high-contrast .bg-gray-900\/60  { background-color: rgba(13,13,13,0.7)  !important; }
+html.high-contrast .bg-gray-900\/50  { background-color: rgba(13,13,13,0.5)  !important; }
+html.high-contrast .bg-gray-900\/40  { background-color: rgba(13,13,13,0.4)  !important; }
+html.high-contrast .bg-gray-950\/50  { background-color: rgba(0,0,0,0.5)     !important; }
+html.high-contrast .bg-gray-800\/80  { background-color: rgba(26,26,26,0.8)  !important; }
+html.high-contrast .bg-gray-800\/60  { background-color: rgba(26,26,26,0.6)  !important; }
+html.high-contrast .bg-gray-800\/50  { background-color: rgba(26,26,26,0.5)  !important; }
+html.high-contrast .bg-gray-800\/30  { background-color: rgba(26,26,26,0.3)  !important; }
+html.high-contrast .bg-gray-700\/50  { background-color: rgba(38,38,38,0.5)  !important; }
+
+/* Text - pushed toward white */
+html.high-contrast .text-white    { color: #ffffff !important; }
+html.high-contrast .text-gray-100 { color: #ffffff !important; }
+html.high-contrast .text-gray-200 { color: #f5f5f5 !important; }
+html.high-contrast .text-gray-300 { color: #ebebeb !important; }
+html.high-contrast .text-gray-400 { color: #d4d4d4 !important; }
+html.high-contrast .text-gray-500 { color: #a3a3a3 !important; }
+html.high-contrast .text-gray-600 { color: #737373 !important; }
+html.high-contrast .text-gray-700 { color: #525252 !important; }
+
+/* Borders */
+html.high-contrast .border-gray-800     { border-color: #2a2a2a !important; }
+html.high-contrast .border-gray-700     { border-color: #3a3a3a !important; }
+html.high-contrast .divide-gray-800 > * + * { border-color: #2a2a2a !important; }
+
+/* Accents */
+html.high-contrast .text-indigo-300 { color: #a5b4fc !important; }
+html.high-contrast .text-indigo-400 { color: #818cf8 !important; }
+html.high-contrast .bg-indigo-600\/20 { background-color: rgba(99,102,241,0.3) !important; }
+
+/* Scrollbars */
+html.high-contrast ::-webkit-scrollbar-track  { background: #000000; }
+html.high-contrast ::-webkit-scrollbar-thumb  { background: #404040; border-color: #000000; }
+html.high-contrast ::-webkit-scrollbar-corner { background: #000000; }

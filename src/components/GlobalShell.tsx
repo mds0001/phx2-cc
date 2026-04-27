@@ -81,6 +81,7 @@ export default function GlobalShell() {
   const router   = useRouter();
   const supabase = createClient();
   const { theme, setTheme } = useTheme();
+  const [themeMounted, setThemeMounted] = useState(false);
 
   const THEMES = ["dark", "light", "high-contrast"] as const;
   const THEME_META = {
@@ -104,6 +105,7 @@ export default function GlobalShell() {
   const hidden = HIDDEN_PATHS.some((p) => pathname?.startsWith(p));
 
   useEffect(() => {
+    setThemeMounted(true);
     if (hidden) return;
 
     function refreshCounts(rows: { status: string }[]) {
@@ -322,11 +324,11 @@ export default function GlobalShell() {
         <div className="ml-auto flex items-center gap-2">
           <button
             onClick={cycleTheme}
-            title={`Theme: ${THEME_META[(theme ?? "dark") as keyof typeof THEME_META]?.label ?? "Dark"} — click to switch`}
+            title={themeMounted ? `Theme: ${THEME_META[(theme ?? "dark") as keyof typeof THEME_META]?.label ?? "Dark"} — click to switch` : "Theme"}
             className="flex items-center gap-1.5 px-2 py-1 rounded-md text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-all text-[11px] font-medium"
           >
-            {THEME_META[(theme ?? "dark") as keyof typeof THEME_META]?.icon}
-            <span className="hidden sm:inline">{THEME_META[(theme ?? "dark") as keyof typeof THEME_META]?.label}</span>
+            {themeMounted ? THEME_META[(theme ?? "dark") as keyof typeof THEME_META]?.icon : <Moon className="w-3.5 h-3.5" />}
+            <span className="hidden sm:inline">{themeMounted ? THEME_META[(theme ?? "dark") as keyof typeof THEME_META]?.label : "Dark"}</span>
           </button>
           <span className="text-gray-800 text-xs">&middot;</span>
           <BarChart3 className="w-3 h-3 text-gray-700" />
