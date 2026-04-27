@@ -4,69 +4,129 @@
  *   - Implicit TLS (port 465)
  *   - STARTTLS (port 587 / 25)
  *   - AUTH LOGIN
+ *   - File attachments (multipart/mixed)
  */
 import * as net from "net";
 import * as tls from "tls";
+
+export interface SmtpAttachment {
+  filename: string;
+  content: Buffer;
+  contentType: string;
+}
 
 export interface SmtpSendOptions {
   server: string;
   port: number;
   login_name: string;
   password: string;
-  from?: string;       // defaults to login_name
+  from?: string;
   to: string[];
   subject: string;
   text: string;
   html?: string;
+  attachments?: SmtpAttachment[];
 }
 
 function b64(s: string): string {
   return Buffer.from(s).toString("base64");
 }
 
-function buildMessage(opts: SmtpSendOptions): string {
-  const from = opts.from ?? opts.login_name;
-  const boundary = `--LGBND${Date.now()}`;
-  const hasHtml = !!opts.html;
-  const date = new Date().toUTCString();
-
-  const headers = [
-    `Date: ${date}`,
-    `From: Threads by Cloud Weaver <${from}>`,
-    `To: ${opts.to.join(", ")}`,
-    `Subject: ${opts.subject}`,
-    `MIME-Version: 1.0`,
-  ];
-
-  let body: string;
-  if (hasHtml) {
-    headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
-    body = [
-      `--${boundary}`,
-      `Content-Type: text/plain; charset=utf-8`,
-      ``,
-      opts.text,
-      `--${boundary}`,
-      `Content-Type: text/html; charset=utf-8`,
-      ``,
-      opts.html!,
-      `--${boundary}--`,
-    ].join("\r\n");
-  } else {
-    headers.push(`Content-Type: text/plain; charset=utf-8`);
-    body = opts.text;
-  }
-
-  return headers.join("\r\n") + "\r\n\r\n" + body;
+function chunkBase64(buf: Buffer): string {
+  const str = buf.toString("base64");
+  const chunks: string[] = [];
+  for (let i = 0; i < str.length; i += 76) chunks.push(str.slice(i, i + 76));
+  return chunks.join("\r\n");
 }
 
-// Read lines from a socket until we get a complete SMTP response (no continuation hyphen).
+function buildMessage(opts: SmtpSendOptions): string {
+  const CRLF = "\r\n";
+  const from = opts.from ?? opts.login_name;
+  const date = new Date().toUTCString();
+  const hasHtml = !!opts.html;
+  const hasAttachments = !!(opts.attachments && opts.attachments.length > 0);
+
+  const baseHeaderLines = [
+    "Date: " + date,
+    "From: Threads by Cloud Weaver <" + from + ">",
+    "To: " + opts.to.join(", "),
+    "Subject: " + opts.subject,
+    "MIME-Version: 1.0",
+  ];
+
+  if (!hasHtml && !hasAttachments) {
+    baseHeaderLines.push("Content-Type: text/plain; charset=utf-8");
+    return baseHeaderLines.join(CRLF) + CRLF + CRLF + opts.text;
+  }
+
+  if (!hasAttachments) {
+    const bnd = "ALT" + Date.now();
+    baseHeaderLines.push("Content-Type: multipart/alternative; boundary=\"" + bnd + "\"");
+    const body = [
+      "--" + bnd,
+      "Content-Type: text/plain; charset=utf-8",
+      "",
+      opts.text,
+      "--" + bnd,
+      "Content-Type: text/html; charset=utf-8",
+      "",
+      opts.html!,
+      "--" + bnd + "--",
+    ].join(CRLF);
+    return baseHeaderLines.join(CRLF) + CRLF + CRLF + body;
+  }
+
+  const mixBnd = "MIX" + Date.now();
+  baseHeaderLines.push("Content-Type: multipart/mixed; boundary=\"" + mixBnd + "\"");
+
+  const parts: string[] = [];
+
+  if (hasHtml) {
+    const altBnd = "ALT" + (Date.now() + 1);
+    parts.push(
+      "--" + mixBnd,
+      "Content-Type: multipart/alternative; boundary=\"" + altBnd + "\"",
+      "",
+      "--" + altBnd,
+      "Content-Type: text/plain; charset=utf-8",
+      "",
+      opts.text,
+      "--" + altBnd,
+      "Content-Type: text/html; charset=utf-8",
+      "",
+      opts.html!,
+      "--" + altBnd + "--",
+    );
+  } else {
+    parts.push(
+      "--" + mixBnd,
+      "Content-Type: text/plain; charset=utf-8",
+      "",
+      opts.text,
+    );
+  }
+
+  for (const att of (opts.attachments ?? [])) {
+    parts.push(
+      "--" + mixBnd,
+      "Content-Type: " + att.contentType + "; name=\"" + att.filename + "\"",
+      "Content-Transfer-Encoding: base64",
+      "Content-Disposition: attachment; filename=\"" + att.filename + "\"",
+      "",
+      chunkBase64(att.content),
+    );
+  }
+
+  parts.push("--" + mixBnd + "--");
+
+  return baseHeaderLines.join(CRLF) + CRLF + CRLF + parts.join(CRLF);
+}
+
 async function readResponse(socket: net.Socket | tls.TLSSocket): Promise<string> {
   return new Promise((resolve, reject) => {
     let buffer = "";
     const handler = (chunk: Buffer) => {
       buffer += chunk.toString();
-      // SMTP multi-line: continuation lines have "NNN-" prefix; final has "NNN "
       const lines = buffer.split("\r\n");
       for (const line of lines) {
         if (line.length >= 4 && line[3] === " ") {
@@ -78,7 +138,10 @@ async function readResponse(socket: net.Socket | tls.TLSSocket): Promise<string>
     };
     socket.on("data", handler);
     socket.once("error", reject);
-    setTimeout(() => { socket.off("data", handler); reject(new Error("SMTP response timeout")); }, 10_000);
+    setTimeout(() => {
+      socket.off("data", handler);
+      reject(new Error("SMTP response timeout"));
+    }, 10000);
   });
 }
 
@@ -86,7 +149,7 @@ function expectCode(response: string, code: string): void {
   const lines = response.trim().split("\r\n");
   const last = lines[lines.length - 1] ?? "";
   if (!last.startsWith(code)) {
-    throw new Error(`SMTP expected ${code}, got: ${last}`);
+    throw new Error("SMTP expected " + code + ", got: " + last);
   }
 }
 
@@ -95,7 +158,9 @@ async function sendCommand(
   cmd: string,
   expectedCode: string
 ): Promise<string> {
-  await new Promise<void>((res, rej) => { socket.write(cmd + "\r\n", (err) => { if (err) rej(err); else res(); }); });
+  await new Promise<void>((res, rej) => {
+    socket.write(cmd + "\r\n", (err) => { if (err) rej(err); else res(); });
+  });
   const resp = await readResponse(socket);
   expectCode(resp, expectedCode);
   return resp;
@@ -104,18 +169,16 @@ async function sendCommand(
 export async function sendSmtpEmail(opts: SmtpSendOptions): Promise<void> {
   const useImplicitTls = opts.port === 465;
 
-  // Create socket
   const rawSocket: net.Socket = await new Promise((resolve, reject) => {
     const s = net.createConnection({ host: opts.server, port: opts.port });
     s.once("connect", () => resolve(s));
     s.once("error", reject);
-    setTimeout(() => reject(new Error(`SMTP connect timeout to ${opts.server}:${opts.port}`)), 10_000);
+    setTimeout(() => reject(new Error("SMTP connect timeout to " + opts.server + ":" + opts.port)), 10000);
   });
 
   let socket: net.Socket | tls.TLSSocket = rawSocket;
 
   if (useImplicitTls) {
-    // Wrap immediately in TLS
     socket = tls.connect({ socket: rawSocket, servername: opts.server });
     await new Promise<void>((resolve, reject) => {
       (socket as tls.TLSSocket).once("secureConnect", resolve);
@@ -124,15 +187,12 @@ export async function sendSmtpEmail(opts: SmtpSendOptions): Promise<void> {
   }
 
   try {
-    // Greeting
     const greeting = await readResponse(socket);
     expectCode(greeting, "2");
 
-    // EHLO
-    const ehloResp = await sendCommand(socket, `EHLO lumina`, "250");
+    const ehloResp = await sendCommand(socket, "EHLO lumina", "250");
 
     if (!useImplicitTls && ehloResp.includes("STARTTLS")) {
-      // Upgrade to TLS
       await sendCommand(socket, "STARTTLS", "220");
       const tlsSocket = tls.connect({ socket: rawSocket, servername: opts.server });
       await new Promise<void>((resolve, reject) => {
@@ -140,28 +200,25 @@ export async function sendSmtpEmail(opts: SmtpSendOptions): Promise<void> {
         tlsSocket.once("error", reject);
       });
       socket = tlsSocket;
-      // Re-EHLO after TLS
-      await sendCommand(socket, `EHLO lumina`, "250");
+      await sendCommand(socket, "EHLO lumina", "250");
     }
 
-    // AUTH LOGIN
     await sendCommand(socket, "AUTH LOGIN", "334");
     await sendCommand(socket, b64(opts.login_name), "334");
     await sendCommand(socket, b64(opts.password), "235");
 
-    // Envelope
     const from = opts.from ?? opts.login_name;
-    await sendCommand(socket, `MAIL FROM:<${from}>`, "250");
+    await sendCommand(socket, "MAIL FROM:<" + from + ">", "250");
     for (const recipient of opts.to) {
-      await sendCommand(socket, `RCPT TO:<${recipient}>`, "250");
+      await sendCommand(socket, "RCPT TO:<" + recipient + ">", "250");
     }
 
-    // Data
     await sendCommand(socket, "DATA", "354");
     const message = buildMessage(opts);
-    // Dot-stuffing: per RFC 5321, any line beginning with "." must have an extra "." prepended
     const stuffed = message.replace(/^\./gm, "..");
-    await new Promise<void>((res, rej) => { socket.write(stuffed + "\r\n.\r\n", (err) => { if (err) rej(err); else res(); }); });
+    await new Promise<void>((res, rej) => {
+      socket.write(stuffed + "\r\n.\r\n", (err) => { if (err) rej(err); else res(); });
+    });
     const dataResp = await readResponse(socket);
     expectCode(dataResp, "250");
 

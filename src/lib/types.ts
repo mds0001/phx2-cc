@@ -61,6 +61,8 @@ export interface LicenseType {
   description: string | null;
   type: LicenseTypeKind;
   price_cents: number;
+  /** Annual price per unit - set for by_endpoint types */
+  yearly_price_cents: number | null;
   renewal_notification_days: number;
   /** ConnectionType value — set only when type = "by_endpoint" */
   endpoint_type: string | null;
@@ -499,6 +501,17 @@ export interface Lead {
   updated_at: string;
 }
 
+export interface QuoteConfigEndpoint {
+  licenseTypeId: string;
+  qty: number;
+}
+
+export interface QuoteConfig {
+  masterTerm?: 1 | 3;
+  proTerm?: "monthly" | "annual";
+  proEndpoints?: QuoteConfigEndpoint[];
+}
+
 export interface Opportunity {
   id: string;
   lead_id: string | null;
@@ -506,6 +519,9 @@ export interface Opportunity {
   estimated_close_date: string | null;
   status: OpportunityStatus;
   notes: string | null;
+  quote_sent_at: string | null;
+  quote_config: QuoteConfig | null;
+  send_to_admin: boolean;
   created_by: string | null;
   created_at: string;
   updated_at: string;
