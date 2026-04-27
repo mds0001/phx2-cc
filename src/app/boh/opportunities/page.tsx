@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
-import { createAdminClient } from "@/lib/supabase-admin";
 import OpportunitiesListClient from "@/components/OpportunitiesListClient";
 
 export const dynamic = "force-dynamic";
@@ -27,8 +26,7 @@ export default async function OpportunitiesPage() {
     .select("id, name, email, company")
     .order("name");
 
-  const admin = createAdminClient();
-  const { data: licenseTypes, error: ltErr } = await admin
+  const { data: licenseTypes, error: ltErr } = await supabase
     .from("license_types")
     .select("*")
     .order("name");
