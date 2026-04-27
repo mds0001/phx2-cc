@@ -1,12 +1,13 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useTheme } from "next-themes";
 import { usePathname, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase-browser";
 import {
   CalendarClock, GitMerge, Plug, Building2, Users,
   FileText, BarChart3, Activity, ShieldCheck, LogOut, Bot, Tag,
-  TrendingUp, UserPlus,
+  TrendingUp, UserPlus, Sun, Moon, Contrast,
 } from "lucide-react";
 
 // Types
@@ -79,6 +80,18 @@ export default function GlobalShell() {
   const pathname = usePathname();
   const router   = useRouter();
   const supabase = createClient();
+  const { theme, setTheme } = useTheme();
+
+  const THEMES = ["dark", "light", "high-contrast"] as const;
+  const THEME_META = {
+    dark:            { label: "Dark",          icon: <Moon className="w-3.5 h-3.5" /> },
+    light:           { label: "Office",        icon: <Sun className="w-3.5 h-3.5" /> },
+    "high-contrast": { label: "High Contrast", icon: <Contrast className="w-3.5 h-3.5" /> },
+  } as const;
+  function cycleTheme() {
+    const idx = THEMES.indexOf((theme ?? "dark") as typeof THEMES[number]);
+    setTheme(THEMES[(idx + 1) % THEMES.length]);
+  }
 
   const [counts,    setCounts]    = useState<Counts>(EMPTY_COUNTS);
   const [bohAlerts, setBohAlerts] = useState(0);
@@ -306,7 +319,16 @@ export default function GlobalShell() {
             <span className="text-[11px] text-gray-600 ml-0.5">{s.label}</span>
           </div>
                ))}
-        <div className="ml-auto flex items-center gap-1.5">
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={cycleTheme}
+            title={`Theme: ${THEME_META[(theme ?? "dark") as keyof typeof THEME_META]?.label ?? "Dark"} — click to switch`}
+            className="flex items-center gap-1.5 px-2 py-1 rounded-md text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-all text-[11px] font-medium"
+          >
+            {THEME_META[(theme ?? "dark") as keyof typeof THEME_META]?.icon}
+            <span className="hidden sm:inline">{THEME_META[(theme ?? "dark") as keyof typeof THEME_META]?.label}</span>
+          </button>
+          <span className="text-gray-800 text-xs">&middot;</span>
           <BarChart3 className="w-3 h-3 text-gray-700" />
           <span className="text-[10px] text-gray-700">task stats</span>
         </div>
