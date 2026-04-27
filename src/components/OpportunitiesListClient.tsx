@@ -46,10 +46,12 @@ const selectCls = inputCls;
 function computeOppTotal(opp: OpportunityWithLead, licenseTypes: LicenseType[]): { cents: number; label: string } | null {
   if (opp.tier === "free") return { cents: 0, label: "Free" };
   if (opp.tier === "master") {
-    const lt = licenseTypes.find((l) => l.type === "subscription");
-    if (!lt) return null;
     const term = opp.quote_config?.masterTerm ?? 1;
-    return { cents: term === 3 ? lt.price_cents * 3 : lt.price_cents, label: term === 3 ? "3yr" : "1yr" };
+    const targetDays = term === 3 ? 1095 : 365;
+    const lt = licenseTypes.find((l) => l.type === "subscription" && l.duration_days === targetDays)
+            ?? licenseTypes.find((l) => l.type === "subscription");
+    if (!lt) return null;
+    return { cents: lt.price_cents, label: term === 3 ? "3yr" : "1yr" };
   }
   if (opp.tier === "pro") {
     const eps = opp.quote_config?.proEndpoints ?? [];
@@ -99,9 +101,56 @@ export default function OpportunitiesListClient({
   function openEdit(o: OpportunityWithLead) { setEditing({ ...o }); setError(null); setPanelOpen(true); }
   function closePanel() { setPanelOpen(false); setEditing(EMPTY); }
 
+  async function provisionLicense(opp: OpportunityWithLead) {
+    const lead = opp.leads;
+    if (!lead || !editing.tier) return;
+    // Create a Customer stub from the lead
+    const { data: customer, error: custErr } = await supabase
+      .from("customers")
+      .insert({ name: lead.name, email: lead.email, company: lead.company, created_by: userId })
+      .select("id").single();
+    if (custErr || !customer) return;
+
+    const today = new Date().toISOString().split("T")[0];
+
+    if (editing.tier === "free") {
+      await supabase.from("customer_licenses").insert({
+        customer_id: customer.id, product_name: "Threads Free",
+        start_date: today, status: "active",
+      });
+    } else if (editing.tier === "master") {
+      const termYears = editing.quote_config?.masterTerm ?? 1;
+      const targetDays = termYears === 3 ? 1095 : 365;
+      const masterLt = licenseTypes.find((lt) => lt.type === "subscription" && lt.duration_days === targetDays)
+                    ?? licenseTypes.find((lt) => lt.type === "subscription");
+      if (!masterLt) return;
+      const days = masterLt.duration_days ?? targetDays;
+      const expiry = new Date(); expiry.setDate(expiry.getDate() + days);
+      await supabase.from("customer_licenses").insert({
+        customer_id: customer.id, license_type_id: masterLt.id,
+        product_name: "Threads Master",
+        start_date: today, expiry_date: expiry.toISOString().split("T")[0],
+        status: "active",
+      });
+    } else if (editing.tier === "pro") {
+      const eps = editing.quote_config?.proEndpoints ?? [];
+      for (const ep of eps) {
+        const lt = licenseTypes.find((l) => l.id === ep.licenseTypeId);
+        if (!lt) continue;
+        await supabase.from("customer_licenses").insert({
+          customer_id: customer.id, license_type_id: lt.id,
+          product_name: `Threads Pro — ${lt.name}`,
+          seats: ep.qty, start_date: today, status: "active",
+        });
+      }
+    }
+  }
+
   async function handleSave() {
     setSaving(true); setError(null);
     if (editing.id) {
+      const originalOpp = opps.find((o) => o.id === editing.id);
+      const isNewWin = editing.status === "won" && originalOpp?.status !== "won";
       const { error: err } = await supabase.from("opportunities").update({
         lead_id: editing.lead_id, tier: editing.tier,
         estimated_close_date: editing.estimated_close_date || null,
@@ -111,6 +160,7 @@ export default function OpportunitiesListClient({
       }).eq("id", editing.id);
       if (err) { setError(err.message); setSaving(false); return; }
       setOpps((p) => p.map((o) => o.id === editing.id ? { ...o, ...editing } as OpportunityWithLead : o));
+      if (isNewWin && originalOpp) await provisionLicense(originalOpp);
     } else {
       const { data, error: err } = await supabase.from("opportunities").insert({
         lead_id: editing.lead_id, tier: editing.tier,
@@ -452,10 +502,12 @@ export default function OpportunitiesListClient({
                   );
                 }
                 if (editing.tier === "master") {
-                  const masterLt = licenseTypes.find((lt) => lt.type === "subscription");
-                  if (!masterLt) return null;
                   const term = editing.quote_config?.masterTerm ?? 1;
-                  const totalCents = term === 3 ? masterLt.price_cents * 3 : masterLt.price_cents;
+                  const targetDays = term === 3 ? 1095 : 365;
+                  const masterLt = licenseTypes.find((lt) => lt.type === "subscription" && lt.duration_days === targetDays)
+                                ?? licenseTypes.find((lt) => lt.type === "subscription");
+                  if (!masterLt) return null;
+                  const totalCents = masterLt.price_cents;
                   const termLabel = term === 3 ? "3-year contract" : "annual";
                   return (
                     <div className="flex items-center justify-between px-4 py-3 bg-gray-800/50 border border-gray-700 rounded-lg">

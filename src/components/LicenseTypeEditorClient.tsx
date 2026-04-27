@@ -81,8 +81,7 @@ export default function LicenseTypeEditorClient({
   const [defaultExecutions, setDefaultExecutions] = useState(
     String(licenseType?.default_executions ?? "")
   );
-  const [startDate, setStartDate] = useState(licenseType?.start_date ?? "");
-  const [endDate, setEndDate]     = useState(licenseType?.end_date ?? "");
+  const [durationDays, setDurationDays] = useState(String(licenseType?.duration_days ?? 365));
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -102,8 +101,7 @@ export default function LicenseTypeEditorClient({
       renewal_notification_days: parseInt(renewalDays) || 30,
       endpoint_type: kind === "by_endpoint" ? endpointType || null : null,
       default_executions: kind === "one_time" && defaultExecutions ? parseInt(defaultExecutions) : null,
-      start_date: kind === "subscription" && startDate ? startDate : null,
-      end_date: kind === "subscription" && endDate ? endDate : null,
+      duration_days: kind === "subscription" ? (parseInt(durationDays) || 365) : null,
     };
 
     setSaving(true);
@@ -124,11 +122,11 @@ export default function LicenseTypeEditorClient({
       setSaved(true);
       setTimeout(() => router.push("/boh/license-types"), 1000);
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : String(err));
+      setSaveError(err instanceof Error ? err.message : (err as { message?: string }).message ?? String(err));
     } finally {
       setSaving(false);
     }
-  }, [name, description, kind, priceDollars, renewalDays, endpointType, defaultExecutions, startDate, endDate, isNew, licenseType, userId, supabase, router]);
+  }, [name, description, kind, priceDollars, renewalDays, endpointType, defaultExecutions, durationDays, isNew, licenseType, userId, supabase, router]);
 
   const KIND_OPTIONS: { value: LicenseTypeKind; label: string; desc: string; icon: React.ReactNode }[] = [
     {
@@ -140,7 +138,7 @@ export default function LicenseTypeEditorClient({
     {
       value: "subscription",
       label: "Subscription",
-      desc: "All tasks run freely within a start/end date window. Renewable.",
+      desc: "All tasks run freely for the configured duration. Renewable.",
       icon: <RefreshCw className="w-4 h-4" />,
     },
     {
@@ -297,11 +295,13 @@ export default function LicenseTypeEditorClient({
 
             {kind === "subscription" && (
               <>
-                <Field label="Start Date" hint="When the subscription period begins">
-                  <TextInput value={startDate} onChange={setStartDate} type="date" />
-                </Field>
-                <Field label="End Date" hint="When the subscription period expires">
-                  <TextInput value={endDate} onChange={setEndDate} type="date" />
+                <Field label="Duration (days)" hint="How long one term lasts, e.g. 365 for annual">
+                  <TextInput
+                    value={durationDays}
+                    onChange={(v) => setDurationDays(v.replace(/\D/g, ""))}
+                    placeholder="365"
+                    type="number"
+                  />
                 </Field>
                 <Field label="Renewal Notification (days)" hint="Alert days before expiry">
                   <TextInput

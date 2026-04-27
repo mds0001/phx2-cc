@@ -68,9 +68,8 @@ export interface LicenseType {
   endpoint_type: string | null;
   /** Default execution block — set only when type = "one_time" */
   default_executions: number | null;
-  /** Subscription validity window — only when type = "subscription" */
-  start_date: string | null;
-  end_date: string | null;
+  /** Duration in days per term unit — set for subscription types (e.g. 365 for annual) */
+  duration_days: number | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;

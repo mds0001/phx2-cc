@@ -174,8 +174,10 @@ export default function CustomerEditorClient({ customer, licenses: initialLicens
       product_name: lt.name,
       license_key: null,
       seats: 1,
-      start_date: lt.type === "subscription" ? (lt.start_date ?? null) : null,
-      expiry_date: lt.type === "subscription" ? (lt.end_date ?? null) : null,
+      start_date: lt.type === "subscription" ? new Date().toISOString().split("T")[0] : null,
+      expiry_date: lt.type === "subscription" ? (() => {
+        const d = new Date(); d.setDate(d.getDate() + (lt.duration_days ?? 365)); return d.toISOString().split("T")[0];
+      })() : null,
       status: "active",
       renewal_type: "manual",
       notes: null,

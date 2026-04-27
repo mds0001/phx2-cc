@@ -35,13 +35,15 @@ function resolveLineItems(opp: OpportunityWithLead, licenseTypes: LicenseType[])
   }
 
   if (tier === "master") {
-    const masterLt = licenseTypes.find((lt) => lt.type === "subscription");
-    if (!masterLt) return [];
     const term = config?.masterTerm ?? 1;
-    const unitCents = term === 3 ? masterLt.price_cents * 3 : masterLt.price_cents;
+    const targetDays = term === 3 ? 1095 : 365;
+    const masterLt = licenseTypes.find((lt) => lt.type === "subscription" && lt.duration_days === targetDays)
+                  ?? licenseTypes.find((lt) => lt.type === "subscription");
+    if (!masterLt) return [];
+    const unitCents = masterLt.price_cents;
     const termLabel = term === 3 ? "3-Year Term" : "Annual";
     const desc = masterLt.description
-      ? masterLt.description + " — " + termLabel
+      ? masterLt.description + " (" + termLabel + ")"
       : termLabel;
     return [{ name: masterLt.name, description: desc, unitPriceCents: unitCents, qty: 1 }];
   }
