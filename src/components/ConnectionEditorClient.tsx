@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
-  ArrowLeft, Plug, Save, Check, Eye, EyeOff, Copy,
+  ArrowLeft, Plug, Save, Check, Eye, EyeOff, Copy, CopyPlus,
   File, Cloud, Mail, Database, Globe,
   Upload, X, FileText, Loader2, Zap, Download,
   FolderOpen, Folder, ChevronRight, Home,
@@ -57,11 +57,12 @@ const TYPE_RING: Record<ConnectionType, string> = {
 };
 
 // ── Field helper components ──────────────────────────────────
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
     <div className="flex flex-col gap-2">
       <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{label}</label>
       {children}
+      {hint && <p className="text-xs text-gray-500">{hint}</p>}
     </div>
   );
 }
@@ -551,62 +552,60 @@ function PortalForm({ config, onChange }: { config: Record<string, string>; onCh
 }
 
 function InsightForm({ config, onChange }: { config: Record<string, string>; onChange: (k: string, v: string) => void }) {
+  const ENV_OPTIONS = [
+    { value: "prod-na",  label: "Production — North America" },
+    { value: "prod-emea",label: "Production — EMEA" },
+    { value: "test-na",  label: "Test — North America" },
+    { value: "test-emea",label: "Test — EMEA" },
+  ];
   return (
     <>
       <div className="flex items-center gap-2 px-4 py-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl">
         <Link2 className="w-4 h-4 text-emerald-400 shrink-0" />
-        <p className="text-xs text-emerald-300">Insight Enterprises Digital Platform API — OAuth 2.0 client credentials flow</p>
+        <p className="text-xs text-emerald-300">Insight Enterprises Digital Platform API — OAuth 2.0 client credentials (Basic auth)</p>
       </div>
 
-      <Field label="Base URL">
-        <TextInput
-          value={config.url ?? ""}
-          onChange={(v) => onChange("url", v)}
-          placeholder="https://insight-qa2.test01.apimanagement.us20.hana.ondemand.com"
-          type="url"
-        />
+      <Field label="Environment">
+        <select
+          value={config.environment ?? "prod-na"}
+          onChange={(e) => onChange("environment", e.target.value)}
+          className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+        >
+          {ENV_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
       </Field>
-      <Field label="OAuth Token Path">
-        <TextInput
-          value={config.oauth_token_path ?? ""}
-          onChange={(v) => onChange("oauth_token_path", v)}
-          placeholder="/oauth/token?grant_type=client_credentials"
-        />
-      </Field>
-      <Field label="Invoice Path">
-        <TextInput
-          value={config.invoice_path ?? ""}
-          onChange={(v) => onChange("invoice_path", v)}
-          placeholder="/NA/CustomerInvoice"
-        />
-      </Field>
-      <Field label="Status Path">
-        <TextInput
-          value={config.status_path ?? ""}
-          onChange={(v) => onChange("status_path", v)}
-          placeholder="/NA/GetStatus"
-        />
-      </Field>
-      <Field label="Client ID (Key)">
+
+      <Field label="Client ID" hint="Your numeric Insight account / customer ID (sent as ClientID header)">
         <TextInput
           value={config.client_id ?? ""}
           onChange={(v) => onChange("client_id", v)}
-          placeholder="OAuth client_id / API key"
+          placeholder="e.g. 9373908"
         />
       </Field>
-      <Field label="Client Secret">
+
+      <Field label="Client Key" hint="OAuth2 Basic-auth username (clientKey)">
+        <TextInput
+          value={config.client_key ?? ""}
+          onChange={(v) => onChange("client_key", v)}
+          placeholder="OAuth client key"
+        />
+      </Field>
+
+      <Field label="Client Secret" hint="OAuth2 Basic-auth password (clientSecret)">
         <PasswordInput
           value={config.client_secret ?? ""}
           onChange={(v) => onChange("client_secret", v)}
         />
       </Field>
-      <Field label="ClientID Header">
+
+      <Field label="Lookback Days" hint="How many days back to pull shipped orders on each poll (default: 1 = yesterday only)">
         <TextInput
-          value={config.client_id_header ?? ""}
-          onChange={(v) => onChange("client_id_header", v)}
-          placeholder="e.g. 9373908"
+          value={config.lookback_days ?? ""}
+          onChange={(v) => onChange("lookback_days", v)}
+          placeholder="e.g. 30"
         />
-        <p className="text-xs text-gray-500 mt-1">Passed as a <span className="font-mono">ClientID</span> header on every API request.</p>
       </Field>
     </>
   );
@@ -1085,6 +1084,40 @@ export default function ConnectionEditorClient({
     }
   }, [name, type, config, customerId, agentId, userId, isNew, connection, supabase, router]);
 
+  const [cloning, setCloning] = useState(false);
+  const [cloneError, setCloneError] = useState<string | null>(null);
+
+  const handleClone = useCallback(async () => {
+    if (!connection) return;
+    setCloning(true);
+    setCloneError(null);
+    try {
+      const payload = {
+        name: `${connection.name} (copy)`,
+        type: connection.type,
+        config: connection.config,
+        created_by: userId,
+        customer_id: connection.customer_id ?? null,
+        agent_id: connection.agent_id ?? null,
+      };
+      const { data, error } = await supabase
+        .from("endpoint_connections")
+        .insert(payload)
+        .select("id")
+        .single();
+      if (error) throw error;
+      router.push(`/connections/${data.id}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message
+        : typeof err === "object" && err !== null && "message" in err
+        ? String((err as { message: unknown }).message)
+        : JSON.stringify(err);
+      setCloneError(msg || "Clone failed");
+    } finally {
+      setCloning(false);
+    }
+  }, [connection, userId, supabase, router]);
+
   const selectedMeta = TYPE_OPTIONS.find((t) => t.value === type)!;
 
   return (
@@ -1114,6 +1147,20 @@ export default function ConnectionEditorClient({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            {!isNew && (
+              <button
+                type="button"
+                onClick={handleClone}
+                disabled={cloning || saving || testing}
+                title="Clone this connection"
+                className="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-xl text-sm font-medium transition-all disabled:opacity-50"
+              >
+                {cloning
+                  ? <Loader2 className="w-4 h-4 animate-spin" />
+                  : <CopyPlus className="w-4 h-4" />}
+                {cloning ? "Cloning…" : "Clone"}
+              </button>
+            )}
             <button
               type="button"
               onClick={handleTest}
@@ -1148,6 +1195,15 @@ export default function ConnectionEditorClient({
         </div>
       </header>
 
+      {cloneError && (
+        <div className="max-w-2xl mx-auto w-full px-6 pt-6">
+          <div className="flex items-start gap-3 px-4 py-3 rounded-xl border bg-red-500/10 border-red-500/25 text-red-300 text-sm">
+            <span className="mt-0.5 shrink-0">⚠</span>
+            <span className="flex-1">Clone failed: {cloneError}</span>
+            <button type="button" onClick={() => setCloneError(null)} className="shrink-0 text-red-400 hover:text-red-200 transition-colors"><X className="w-3.5 h-3.5" /></button>
+          </div>
+        </div>
+      )}
       {saveError && (
         <div className="max-w-2xl mx-auto w-full px-6 pt-6">
           <div className="flex items-start gap-3 px-4 py-3 rounded-xl border bg-red-500/10 border-red-500/25 text-red-300 text-sm">

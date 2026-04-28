@@ -126,13 +126,17 @@ export async function POST(req: NextRequest) {
     //    issues with special characters like '#' in SKU names.
     const { data: taxRows } = await admin
       .from("sku_taxonomy")
-      .select("type, subtype, description, model, manufacturer")
+      .select("type, subtype, description, model, manufacturer, ignore")
       .eq("manufacturer_sku", normalizedSku)
       .limit(1);
 
     const taxonomy = taxRows?.[0] ?? null;
 
     if (taxonomy) {
+      // Taxonomy-level ignore: skip this SKU permanently during imports
+      if (taxonomy.ignore) {
+        return result(false, "__IGNORED__", normalizedSku);
+      }
       const field = result_field ?? "type";
       const value = (taxonomy as Record<string, string | null>)[field] ?? null;
       return result(true, value, normalizedSku);

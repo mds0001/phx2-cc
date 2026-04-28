@@ -820,6 +820,8 @@ export async function POST(request: NextRequest) {
     // If the payload explicitly specifies a CIType, route to the matching Ivanti CI BO.
     // Ivanti validates ivnt_AssetSubtype (and other _Valid fields) per BO; writing a
     // PeripheralDevice record to CI__Computers fails with "not in validation list".
+    // Keys are bare type names; we strip the "ivnt_" prefix before lookup so both
+    // "ivnt_Infrastructure" and "Infrastructure" resolve correctly.
     const CI_TYPE_BO_MAP: Record<string, string> = {
       "Computer":         "CI__Computers",
       "PeripheralDevice": "CI__PeripheralDevices",
@@ -827,13 +829,29 @@ export async function POST(request: NextRequest) {
       "NetworkDevice":    "CI__NetworkDevices",
       "Server":           "CI__Servers",
       "Printer":          "CI__Printers",
+      "Infrastructure":   "CI__ivnt_Infrastructure",
+      "GeneralAsset":     "CI__ivnt_GeneralAssets",
     };
     const payloadCIType = (data as Record<string, unknown>)?.CIType as string | undefined;
-    const effectiveObject = (payloadCIType && CI_TYPE_BO_MAP[payloadCIType])
-      ? CI_TYPE_BO_MAP[payloadCIType]
+    // Normalize: strip leading "ivnt_" prefix so taxonomy types like "ivnt_Infrastructure"
+    // resolve the same as bare "Infrastructure".
+    const normalizedCIType = payloadCIType?.startsWith("ivnt_")
+      ? payloadCIType.slice("ivnt_".length)
+      : payloadCIType;
+    const effectiveObject = (normalizedCIType && CI_TYPE_BO_MAP[normalizedCIType])
+      ? CI_TYPE_BO_MAP[normalizedCIType]
       : resolvedObject;
     if (effectiveObject !== resolvedObject) {
-      console.log(`[ivanti-proxy] CIType="${payloadCIType}" → routing to BO: ${effectiveObject}`);
+      console.log(`[ivanti-proxy] CIType="${payloadCIType}" (normalized: "${normalizedCIType}") → routing to BO: ${effectiveObject}`);
+    }
+
+    // Auto-BO with no mapping: skip gracefully rather than sending "auto" to Ivanti.
+    if (resolvedObject?.toLowerCase() === "auto" && effectiveObject?.toLowerCase() === "auto") {
+      const unmappedType = (payloadCIType as string | undefined)?.trim() || "(empty)";
+      return NextResponse.json(
+        { _skip: true, reason: `CIType "${unmappedType}" has no Ivanti BO mapping -- row skipped` },
+        { status: 200 }
+      );
     }
 
     // Convert Excel serial dates to ISO strings before posting
@@ -915,7 +933,15 @@ export async function POST(request: NextRequest) {
     if (filterParts.length > 0) {
       try {
         const filter = filterParts.join(" and ");
-        const selectFields = ["RecId", ...(preserveOnOrderFields ?? [])].join(",");
+        // Include the non-link key fields in $select so we can verify the returned record
+        // actually matches our filter.  Some Ivanti BOs (e.g. CI__PeripheralDevices) silently
+        // ignore $filter on certain fields (e.g. SerialNumber) and return the first row in the
+        // table instead, causing the upsert lookup to falsely "find" an unrelated record.
+        const verifyKeys = keyFields.filter(
+          (f) => !linkFieldSet.has(f) &&
+            resolvedData[f] !== null && resolvedData[f] !== undefined && resolvedData[f] !== ""
+        );
+        const selectFields = ["RecId", ...verifyKeys, ...(preserveOnOrderFields ?? [])].join(",");
         const lookupUrl = `${endpoint}?$filter=${encodeURIComponent(filter)}&$select=${encodeURIComponent(selectFields)}&$top=1`;
         console.log("[ivanti-proxy] Upsert lookup:", lookupUrl);
         const lookupRes = await fetch(lookupUrl, { method: "GET", headers });
@@ -924,11 +950,30 @@ export async function POST(request: NextRequest) {
           const text = await lookupRes.text();
           if (text.trim()) {
             const j = JSON.parse(text) as { value?: Array<Record<string, unknown>> };
-            existingRecId = (j.value?.[0]?.RecId as string | undefined) ?? null;
-            // Capture preserve-on-order field values from the existing record
-            if (j.value?.[0] && preserveOnOrderFields?.length) {
-              for (const f of preserveOnOrderFields) {
-                existingFieldValues[f] = j.value[0][f] ?? null;
+            const candidate = j.value?.[0];
+            if (candidate) {
+              // Verify the returned record actually matches our filter keys.
+              // If every verifyKey matches, the filter was honoured — accept the RecId.
+              // If any key mismatches, Ivanti silently dropped the filter — treat as not found.
+              const allMatch = verifyKeys.every((f) => {
+                const want = String(resolvedData[f] ?? "").toLowerCase();
+                const got  = String(candidate[f]   ?? "").toLowerCase();
+                return want === got;
+              });
+              if (allMatch) {
+                existingRecId = (candidate.RecId as string | undefined) ?? null;
+                // Capture preserve-on-order field values from the existing record
+                if (preserveOnOrderFields?.length) {
+                  for (const f of preserveOnOrderFields) {
+                    existingFieldValues[f] = candidate[f] ?? null;
+                  }
+                }
+              } else {
+                console.warn(
+                  `[ivanti-proxy] Upsert lookup on ${resolvedBoName} ignored filter — ` +
+                  `searched [${verifyKeys.map((f) => `${f}='${resolvedData[f]}'`).join(", ")}], ` +
+                  `got [${verifyKeys.map((f) => `${f}='${candidate[f]}'`).join(", ")}] — treating as no match`
+                );
               }
             }
           }
@@ -1070,7 +1115,7 @@ export async function POST(request: NextRequest) {
     // is not in CI.Computer's list even though it exists in the global picklist).
     if (response.status === 400 && typeof responseBody === "object" && responseBody !== null) {
       const messages: string[] = (responseBody as { message?: string[] }).message ?? [];
-      const invalidFieldRx = /UndefinedValidatedValue: '[^']+' is not in the validation list of validated field [^.]+\.([^\s;,.]+)/g;
+      const invalidFieldRx = /UndefinedValidatedValue: '[^']+' is not in the validation list of validated field (?:[^\s;,.]+\.)+([^\s;,.]+)/g;
       const invalidFields = new Set<string>();
       for (const msg of messages) {
         let m: RegExpExecArray | null;
@@ -1089,6 +1134,8 @@ export async function POST(request: NextRequest) {
         const retry = await sendRequest(stripped);
         response      = retry.res;
         responseBody  = retry.body;
+        // Update sendPayload so subsequent retries (e.g. link-not-found) build on this stripped version.
+        sendPayload = stripped;
         // Attach to outer scope so the final return can include them.
         (response as Response & { _strippedFields?: string[]; _strippedValues?: Record<string, unknown> })._strippedFields = strippedFieldsList;
         (response as Response & { _strippedFields?: string[]; _strippedValues?: Record<string, unknown> })._strippedValues = strippedFieldValues;
@@ -1117,7 +1164,33 @@ export async function POST(request: NextRequest) {
           for (const entry of resolvedLinks) delete strippedLinkPayload[entry.field];
 
           console.log(`[ivanti-proxy] POST link-not-found; retrying without: ${resolvedLinks.map((e) => e.field).join(", ")}`);
-          const { res: linkRetryRes, body: linkRetryBody } = await sendRequest(strippedLinkPayload);
+          console.log(`[ivanti-proxy] POST link-not-found retry payload:`, JSON.stringify(strippedLinkPayload));
+          let { res: linkRetryRes, body: linkRetryBody } = await sendRequest(strippedLinkPayload);
+          let activeLinkPayload = strippedLinkPayload;
+
+          // If the link-stripped retry ALSO fails due to UndefinedValidatedValue, strip
+          // those fields too and retry once more.  This handles the case where the initial
+          // POST fails on a link field, and the stripped retry then exposes a validation
+          // field error (e.g. ivnt_AssetSubtype "UPS" not in CI__PeripheralDevices list).
+          if (!linkRetryRes.ok && linkRetryRes.status === 400) {
+            const lrMsgs: string[] = (linkRetryBody as { message?: string[] })?.message ?? [];
+            const uvRx = /UndefinedValidatedValue: '[^']+' is not in the validation list of validated field (?:[^\s;,.]+\.)+([^\s;,.]+)/g;
+            const uvFields = new Set<string>();
+            for (const msg of lrMsgs) {
+              let m: RegExpExecArray | null;
+              while ((m = uvRx.exec(msg)) !== null) uvFields.add(m[1]);
+            }
+            if (uvFields.size > 0) {
+              console.warn(`[ivanti-proxy] Link-not-found retry: also stripping UndefinedValidatedValue fields: ${[...uvFields].join(", ")}`);
+              const doublyStripped = { ...strippedLinkPayload };
+              for (const f of uvFields) delete doublyStripped[f];
+              const uvRetry = await sendRequest(doublyStripped);
+              linkRetryRes   = uvRetry.res;
+              linkRetryBody  = uvRetry.body;
+              activeLinkPayload = doublyStripped;
+              console.log(`[ivanti-proxy] Link+UV retry status: ${linkRetryRes.status}`);
+            }
+          }
 
           if (linkRetryRes.ok || linkRetryRes.status === 204 || linkRetryRes.status === 201) {
             const newRecId = (linkRetryBody as Record<string, unknown> | null)?.RecId as string | undefined;
@@ -1141,8 +1214,59 @@ export async function POST(request: NextRequest) {
                 console.warn(`[ivanti-proxy] Post-create link PATCH error:`, lpe);
               }
             }
+            // Update sendPayload so subsequent retries build on this stripped version.
+            sendPayload  = activeLinkPayload;
             response     = linkRetryRes;
             responseBody = linkRetryBody;
+          } else {
+            // Retry also failed — surface the retry error so the client can see
+            // what the actual underlying failure is (not the original link-not-found error).
+            console.warn(`[ivanti-proxy] POST link-not-found retry also failed (${linkRetryRes.status}):`, JSON.stringify(linkRetryBody));
+            response     = linkRetryRes;
+            responseBody = linkRetryBody;
+          }
+        }
+      }
+    }
+
+    // Auto-retry: if Ivanti returns 400 CIAssetTagUniqueIndex conflict, the upsert
+    // lookup missed the existing record (likely because the upsert key is Name/serial
+    // but AssetTag is the unique index field).  Fetch the record by AssetTag and PATCH.
+    if (!existingRecId && response.status === 400) {
+      const assetTagConflictMsgs: string[] = (responseBody as { body?: { message?: string[] }; message?: string[] })?.body?.message
+        ?? (responseBody as { message?: string[] })?.message ?? [];
+      const hasAssetTagConflict = assetTagConflictMsgs.some((m) => /CIAssetTagUniqueIndex already exists/i.test(m));
+
+      if (hasAssetTagConflict) {
+        const assetTagValue = (sendPayload as Record<string, unknown>)["AssetTag"] as string | undefined;
+        if (assetTagValue) {
+          console.log(`[ivanti-proxy] CIAssetTagUniqueIndex conflict -- looking up existing record by AssetTag='${assetTagValue}'`);
+          try {
+            const escaped = assetTagValue.replace(/'/g, "''");
+            const assetTagLookupUrl = `${endpoint}?$filter=${encodeURIComponent(`AssetTag eq '${escaped}'`)}&$select=RecId&$top=1`;
+            const atLookupRes = await fetch(assetTagLookupUrl, { method: "GET", headers });
+            if (atLookupRes.ok) {
+              const atText = await atLookupRes.text();
+              if (atText.trim()) {
+                const atJ = JSON.parse(atText) as { value?: Array<Record<string, unknown>> };
+                const atRecId = (atJ.value?.[0]?.RecId as string | undefined) ?? null;
+                if (atRecId) {
+                  console.log(`[ivanti-proxy] Found existing record RecId=${atRecId} by AssetTag -- PATCHing`);
+                  const patchUrl = `${endpoint}('${atRecId}')`;
+                  const atPatchRes = await fetch(patchUrl, {
+                    method: "PATCH",
+                    headers,
+                    body: JSON.stringify(sendPayload),
+                  });
+                  const atPatchBody = await atPatchRes.json().catch(() => null);
+                  response     = atPatchRes;
+                  responseBody = atPatchBody;
+                  (response as Response & { _assetTagFallbackRecId?: string })._assetTagFallbackRecId = atRecId;
+                }
+              }
+            }
+          } catch (atErr) {
+            console.warn(`[ivanti-proxy] AssetTag fallback lookup error:`, atErr);
           }
         }
       }
@@ -1182,11 +1306,12 @@ export async function POST(request: NextRequest) {
     }
 
     // Extract any retry-stripping metadata attached above.
-    const _resp = response as Response & { _strippedFields?: string[]; _strippedValues?: Record<string, unknown> };
+    const _resp = response as Response & { _strippedFields?: string[]; _strippedValues?: Record<string, unknown>; _assetTagFallbackRecId?: string };
     const strippedFields = _resp._strippedFields;
     const strippedValues = _resp._strippedValues;
+    const assetTagFallbackRecId = _resp._assetTagFallbackRecId;
 
-    const upsertMethod = existingRecId ? "PATCH" : "POST";
+    const upsertMethod = (existingRecId || assetTagFallbackRecId) ? "PATCH" : "POST";
     console.log(`[ivanti-proxy] ${upsertMethod} response status:`, response.status);
     console.log("[ivanti-proxy] Response body:", JSON.stringify(responseBody));
 
@@ -1452,7 +1577,7 @@ export async function POST(request: NextRequest) {
         body: responseBody,
         linkResolution: resolveLog,
         resolvedBoName,
-        upsert: { method: upsertMethod, existingRecId },
+        upsert: { method: upsertMethod, existingRecId: existingRecId ?? assetTagFallbackRecId ?? null },
         ...(strippedFields?.length ? { strippedFields, strippedValues } : {}),
         ...(Object.keys(binaryUploadResults).length > 0 ? { binaryUploadResults } : {}),
       },

@@ -108,6 +108,8 @@ export interface ScheduledTask {
   /** Ordered list of mapping profile slots for multi-BO tasks.
    *  When non-empty, overrides the legacy mapping_profile_id field. */
   mapping_slots?: MappingSlot[] | null;
+  /** Insight pipeline steps: purchase_line_item -> purchase_order -> ci */
+  insight_steps?: InsightStep[] | null;
   /** Controls how existing records are handled.
    *  "upsert" (default) — create new or update existing.
    *  "create_only"      — skip the row if a record with the same key already exists. */
@@ -116,6 +118,11 @@ export interface ScheduledTask {
   /** When true, this is a locked system-provided template. Admins can promote/demote;
    *  all users can clone it via "Use as Template". */
   is_system?: boolean;
+  /** Import window for vendor API sources (Insight, Dell, CDW).
+   *  Both fields are ISO date strings (YYYY-MM-DD). When set, scope the data
+   *  pull to this range instead of the connection's default lookback. */
+  import_window_start?: string | null;
+  import_window_end?:   string | null;
   /** When true, every successful create/update stores the Ivanti RecID in
    *  task_created_records, enabling the Undo button to delete by RecID directly. */
   debug_mode?: boolean;
@@ -231,6 +238,16 @@ export interface MappingSlot {
   enabled?: boolean;
 }
 
+export type InsightRecordType = "purchase_line_item" | "purchase_order" | "ci";
+
+export interface InsightStep {
+  id: string;
+  record_type: InsightRecordType;
+  mapping_profile_id: string | null;
+  target_connection_id: string | null;
+  enabled?: boolean;
+}
+
 // ── Endpoint connections ──────────────────────────────────────
 
 export type ConnectionType = "file" | "cloud" | "smtp" | "odbc" | "portal" | "ivanti" | "ivanti_neurons" | "dell" | "cdw" | "azure" | "insight";
@@ -303,8 +320,16 @@ export interface AzureConfig {
   base_url: string;    // API base URL after auth
 }
 
+export interface InsightConfig {
+  client_id: string;
+  client_key: string;
+  client_secret: string;
+  environment: "prod-na" | "prod-emea" | "test-na" | "test-emea";
+}
+
 export type ConnectionConfig =
-  | FileConfig | CloudConfig | SmtpConfig | OdbcConfig | PortalConfig | IvantiConfig | IvantiNeuronsConfig | DellConfig | CdwConfig | AzureConfig;
+  | FileConfig | CloudConfig | SmtpConfig | OdbcConfig | PortalConfig
+  | IvantiConfig | IvantiNeuronsConfig | DellConfig | CdwConfig | AzureConfig | InsightConfig;
 
 export interface EndpointConnection {
   id: string;
@@ -401,7 +426,8 @@ export function applyMappingProfile(
         // Strip surrounding double-quotes if the whole value is wrapped in them —
         // this happens when users type "Production" instead of Production in the editor,
         // or when values were saved with extra quotes from a previous import.
-        let sv = mapping.transformValue ?? "";
+        // Fall back to staticValue for seeded/legacy mappings that predate the transformValue rename.
+        let sv = mapping.transformValue ?? (mapping as unknown as Record<string, unknown>).staticValue as string ?? "";
         if (sv.length >= 2 && sv.startsWith('"') && sv.endsWith('"')) {
           sv = sv.slice(1, -1);
         }

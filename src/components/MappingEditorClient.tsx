@@ -406,25 +406,27 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
           }
         }
       } else if (conn.type === "file") {
-        const cfg = conn.config as { file_path?: string; file_mode?: string; file_name?: string };
-        if (!cfg.file_path) throw new Error("No file path configured on this connection.");
-        if (cfg.file_mode === "directory") throw new Error("Directory-mode connections cannot be enumerated. Set the connection to file mode with a specific file selected.");
-const { data: fileData, error: dlErr } = await supabase.storage.from("task_files").download(cfg.file_path);
-        if (dlErr || !fileData) throw new Error("Failed to download file: " + dlErr?.message);
-        const buf = await fileData.arrayBuffer();
-        const wb = XLSX.read(buf, { type: "array" });
-        const sheet = wb.Sheets[wb.SheetNames[0]];
-        const xlRows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
-        const headers = (xlRows[0] as string[]) ?? [];
-        const sample  = (xlRows[1] as unknown[]) ?? [];
-        const fields: FieldDef[] = headers
-          .filter((h) => h !== null && h !== undefined && String(h).trim() !== "")
-          .map((h, i) => ({
-            id: uid(),
-            name: String(h).trim(),
-            sample: sample[i] !== undefined ? String(sample[i]) : undefined,
-          }));
         if (side === "source") {
+          // Source file — read headers from the stored XLSX/CSV
+          const cfg = conn.config as { file_path?: string; file_mode?: string; file_name?: string };
+          if (!cfg.file_path) throw new Error("No file path configured on this connection.");
+          if (cfg.file_mode === "directory") throw new Error("Directory-mode connections cannot be enumerated. Set the connection to file mode with a specific file selected.");
+          const { data: fileData, error: dlErr } = await supabase.storage.from("task_files").download(cfg.file_path);
+          if (dlErr || !fileData) throw new Error("Failed to download file: " + dlErr?.message);
+          const buf = await fileData.arrayBuffer();
+          const wb = XLSX.read(buf, { type: "array" });
+          const sheet = wb.Sheets[wb.SheetNames[0]];
+          const xlRows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
+          const headers = (xlRows[0] as string[]) ?? [];
+          const sample  = (xlRows[1] as unknown[]) ?? [];
+          const fields: FieldDef[] = headers
+            .filter((h) => h !== null && h !== undefined && String(h).trim() !== "")
+            .map((h, i) => ({
+              id: uid(),
+              name: String(h).trim(),
+              sample: sample[i] !== undefined ? String(sample[i]) : undefined,
+            }));
+          if (true) {  // scope block (was: if (side === "source"))
           // Always include a virtual __embedded_image__ field for file connections.
           // It maps to a binary target field (e.g. ivnt_CatalogImage on FRS_PriceItem).
           // At run time the scheduler extracts per-row images from the xlsx zip and
@@ -451,7 +453,72 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
           const validSourceIds = new Set(mergedFields.map((f) => f.id));
           setMappings((prev) => prev.filter((m) => validSourceIds.has(m.sourceFieldId)));
           setSelectedSourceId(null);
-          } else { setTargetFields(fields); }
+          } // end if (true) scope
+        } else {
+          // Target is a file connection — mirror source field names
+          // so the output file columns match the source columns 1-to-1.
+          if (sourceFields.length === 0) {
+            throw new Error("Load source fields first, then load destination fields to mirror them.");
+          }
+            // Reuse any existing target field ID whose name already matches,
+            // so existing mapping rows remain valid after re-enumeration.
+            const existingByName = new Map(targetFields.map((f) => [f.name, f.id]));
+            const mirroredFields: FieldDef[] = sourceFields
+              .filter((sf) => sf.name !== "__embedded_image__")
+              .map((sf) => ({
+                id: existingByName.get(sf.name) ?? uid(),
+                name: sf.name,
+              }));
+            setTargetFields(mirroredFields);
+            // Auto-wire pass-through mappings for any field not yet mapped
+            setMappings((prev) => {
+              const alreadyMapped = new Set(prev.map((m) => m.sourceFieldId));
+              const newMappings: MappingRow[] = mirroredFields
+                .map((tf) => {
+                  const sf = sourceFields.find((s) => s.name === tf.name);
+                  if (!sf || alreadyMapped.has(sf.id)) return null;
+                  return {
+                    id: uid(),
+                    sourceFieldId: sf.id,
+                    targetFieldId: tf.id,
+                    transform: "none" as const,
+                  };
+                })
+                .filter((m): m is NonNullable<typeof m> => m !== null) as MappingRow[];
+              return [...prev, ...newMappings];
+            });
+          }
+      } else if (conn.type === "insight") {
+        // Insight GetStatus2 response fields (static — shape is fixed by the API spec)
+        const insightFields: string[] = [
+          // order-level
+          "customerOrderNumber", "insightOrderNumber", "customerPONumber",
+          "orderDate", "orderStatus", "currencyCode",
+          "billToName", "billToAddress1", "billToCity", "billToState", "billToZip", "billToCountry",
+          "shipToName", "shipToAddress1", "shipToCity", "shipToState", "shipToZip", "shipToCountry",
+          // line-level
+          "lineNumber", "manufacturerPartNumber", "insightPartNumber",
+          "manufacturerName", "itemDescription", "productCategory",
+          "quantityOrdered", "quantityShipped", "unitPrice", "extendedPrice",
+          "lineStatus", "shipDate",
+          "serialNumber", "serialNumbers",
+          "trackingNumber", "carrier", "contractNumber", "warrantyMonths",
+        ];
+        const fields: FieldDef[] = insightFields.map((name) => ({ id: uid(), name }));
+        if (side === "source") {
+          const existingByName = new Map(sourceFields.map((f) => [f.name, f.id]));
+          const mergedFields = fields.map((f) => ({ ...f, id: existingByName.get(f.name) ?? f.id }));
+          setSourceFields(mergedFields);
+          const validSourceIds = new Set(mergedFields.map((f) => f.id));
+          setMappings((prev) => prev.filter((m) => validSourceIds.has(m.sourceFieldId)));
+          setSelectedSourceId(null);
+        } else {
+          const existingByName = new Map(targetFields.map((f) => [f.name, f.id]));
+          const mergedFields = fields.map((f) => ({ ...f, id: existingByName.get(f.name) ?? f.id }));
+          setTargetFields(mergedFields);
+          const validTargetIds = new Set(mergedFields.map((f) => f.id));
+          setMappings((prev) => prev.filter((m) => validTargetIds.has(m.targetFieldId)));
+        }
       } else {
         alert(`Auto field enumeration is not supported for ${conn.type.toUpperCase()} connections.`);
       }
@@ -2086,7 +2153,7 @@ const { data: fileData, error: dlErr } = await supabase.storage.from("task_files
                             }
                             className="w-full appearance-none bg-gray-800 border border-gray-700 rounded-lg pl-3 pr-7 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
                           >
-                            {TRANSFORMS.filter((t) => t.value !== "ai_lookup" && t.value !== "ai_guess" && t.value !== "sku_lookup").map((t) => (
+                            {TRANSFORMS.filter((t) => t.value !== "ai_lookup" && t.value !== "ai_guess").map((t) => (
                               <option key={t.value} value={t.value}>
                                 {t.label}
                               </option>

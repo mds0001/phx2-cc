@@ -3,7 +3,7 @@
 import { useState, useMemo, Fragment, useEffect } from "react";
 import {
   Search, CheckCircle2, XCircle, Plus, ChevronDown, ChevronUp, X,
-  Package, Clock, Eye, RotateCcw, Tag, Database, Pencil, Trash2, Sparkles, Loader2,
+  Package, Clock, Eye, RotateCcw, Tag, Database, Pencil, Trash2, Sparkles, Loader2, Ban,
 } from "lucide-react";
 import CustomerSwitcher, { type CustomerOption } from "@/components/CustomerSwitcher";
 
@@ -48,6 +48,7 @@ interface TaxonomyEntry {
   subtype: string | null;
   description: string | null;
   model: string | null;
+  ignore: boolean;
   updated_at: string;
 }
 
@@ -605,6 +606,22 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
     } finally {
       setAddSaving(false);
     }
+  }
+
+  // -- Toggle ignore flag on a taxonomy entry --
+  async function handleToggleIgnore(entry: TaxonomyEntry) {
+    const next = !entry.ignore;
+    try {
+      const res = await fetch("/api/sku-taxonomy", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ manufacturer_sku: entry.manufacturer_sku, ignore: next }),
+      });
+      const json = await res.json() as { data: TaxonomyEntry };
+      if (!res.ok) { showToast("Failed to update ignore flag"); return; }
+      setTaxonomy((prev) => prev.map((t) => t.manufacturer_sku === entry.manufacturer_sku ? json.data : t));
+      showToast(next ? `SKU ${entry.manufacturer_sku} will be ignored on import` : `SKU ${entry.manufacturer_sku} ignore removed`);
+    } catch { showToast("Error updating ignore flag"); }
   }
 
   // -- Edit existing taxonomy entry --
@@ -1357,7 +1374,7 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                   <tbody className="divide-y divide-gray-800/60">
                     {sortedTaxonomy.map((t) => (
                       <Fragment key={t.manufacturer_sku}>
-                        <tr className={`transition-colors ${editingId === t.manufacturer_sku ? "bg-indigo-950/30" : "hover:bg-gray-900/50"}`}>
+                        <tr className={`transition-colors ${editingId === t.manufacturer_sku ? "bg-indigo-950/30" : t.ignore ? "opacity-40 hover:opacity-60" : "hover:bg-gray-900/50"}`}>
                           <td className="py-2.5 pr-1" style={{width:36}}>
                             <input
                               type="checkbox"
@@ -1406,6 +1423,13 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
                               )}
+                              <button
+                                onClick={() => handleToggleIgnore(t)}
+                                title={t.ignore ? "Remove ignore (will import again)" : "Ignore forever (skip on import)"}
+                                className={`p-1.5 rounded-lg transition-all ${t.ignore ? "text-orange-400 bg-orange-500/10 hover:bg-orange-500/20" : "text-gray-600 hover:text-orange-400 hover:bg-gray-800"}`}
+                              >
+                                <Ban className="w-3.5 h-3.5" />
+                              </button>
                             </div>
                           </td>
                           <td className="py-2.5 pr-4 text-xs text-gray-500">{timeAgo(t.updated_at)}</td>
@@ -1419,15 +1443,17 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                         </tr>
                         {editingId === t.manufacturer_sku && (
                           <tr>
-                            <td colSpan={9} className="p-4 bg-gray-900/40 border-b border-gray-800">
-                              <TaxonomyForm
-                                sku={t.manufacturer_sku}
-                                initial={t}
-                                saving={editSaving}
-                                saveLabel="Save"
-                                onCancel={() => setEditingId(null)}
-                                onSave={(data) => handleUpdateTaxonomy(t, data)}
-                              />
+                            <td colSpan={9} className="p-0 bg-gray-900/40 border-b border-gray-800">
+                              <div className="p-4" style={{maxWidth: "min(1100px, 100vw)"}}>
+                                <TaxonomyForm
+                                  sku={t.manufacturer_sku}
+                                  initial={t}
+                                  saving={editSaving}
+                                  saveLabel="Save"
+                                  onCancel={() => setEditingId(null)}
+                                  onSave={(data) => handleUpdateTaxonomy(t, data)}
+                                />
+                              </div>
                             </td>
                           </tr>
                         )}

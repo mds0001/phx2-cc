@@ -62,6 +62,31 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ data });
 }
 
+// PATCH — toggle or set the ignore flag on a taxonomy entry
+export async function PATCH(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+    const body = await req.json() as { manufacturer_sku: string; ignore: boolean };
+    if (!body.manufacturer_sku) return NextResponse.json({ error: "manufacturer_sku required" }, { status: 400 });
+
+    const admin = createAdminClient();
+    const { data, error } = await admin
+      .from("sku_taxonomy")
+      .update({ ignore: body.ignore, updated_at: new Date().toISOString() })
+      .eq("manufacturer_sku", body.manufacturer_sku.trim().toUpperCase())
+      .select()
+      .single();
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ data });
+  } catch (err) {
+    return NextResponse.json({ error: String(err) }, { status: 500 });
+  }
+}
+
 // DELETE — remove a taxonomy entry by ?sku= query param
 export async function DELETE(req: NextRequest) {
   try {

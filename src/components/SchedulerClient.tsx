@@ -26,6 +26,8 @@ import {
   Minimize2,
   Save,
   Bug,
+  GripVertical,
+  CalendarRange,
 } from "lucide-react";
 import type {
   Profile,
@@ -35,6 +37,8 @@ import type {
   MappingProfile,
   EndpointConnection,
   AttachmentRule,
+  InsightStep,
+  InsightRecordType,
 } from "@/lib/types";
 import { applyMappingProfile, MappingSlot } from "@/lib/types";
 import { evaluateFilter } from "@/lib/filterExpression";
@@ -146,6 +150,11 @@ interface FormState {
    *  e.g. "mikeco" → resolves Assets.xlsx as "mikeco/Assets.xlsx" */
   sourceDirectory: string;
   debugMode: boolean;
+  /** Insight multi-step config (one step per Ivanti record class) */
+  insightSteps: InsightStep[];
+  /** Import window for vendor API sources (Insight, Dell, CDW). ISO date strings YYYY-MM-DD. */
+  importWindowStart: string;
+  importWindowEnd:   string;
 }
 
 const EMPTY_FORM: FormState = {
@@ -159,6 +168,9 @@ const EMPTY_FORM: FormState = {
   targetConnectionId: null,
   sourceDirectory: "",
   debugMode: false,
+  insightSteps: [],
+  importWindowStart: "",
+  importWindowEnd:   "",
 };
 
 // ─── Component ───────────────────────────────────────────────
@@ -235,6 +247,7 @@ export default function SchedulerClient({
   const [editSubmitting, setEditSubmitting] = useState(false);
 
   const [expandedLogs, setExpandedLogs] = useState<Record<string, boolean>>({});
+  const [expandedLogEntries, setExpandedLogEntries] = useState<Record<string, boolean>>({});
   const [taskLogs, setTaskLogs] = useState<Record<string, TaskLog[]>>({});
   const [logsLoading, setLogsLoading] = useState<Record<string, boolean>>({});
   const [logCounts, setLogCounts] = useState<Record<string, number>>({});
@@ -330,6 +343,8 @@ export default function SchedulerClient({
   // overwrite the badge with stale "active" data from the DB before replication catches up.
   // Entries are cleared once the DB confirms the terminal status, or after 90 seconds.
   const recentlyFinishedRef = useRef<Map<string, { status: import("@/lib/types").TaskStatus; finishedAt: number }>>(new Map());
+  const dragSlotIdxRef = useRef<number | null>(null);
+  const dragEditSlotIdxRef = useRef<number | null>(null);
 
   // ── Fetch tasks ──────────────────────────────────────────
   const fetchTasks = useCallback(async () => {
@@ -1929,13 +1944,29 @@ await taskLog("ROW", `Sending row ${i + 1}/${rows.length}${isMultiSn ? ` [SN: ${
           }
 
         } else if (sourceConnType === "portal" || sourceConnType === "insight") {
-          // ── Insight / portal REST API → target ───────────────────────────
-          await taskLog("INFO", "Fetching data from Insight / portal source...");
+          // ── Insight / portal REST API → target ───────────────────────
+          // Pre-detect raw dump mode: task-level file target with output_file_name starting "raw_"
+          let insightIsRawDump = false;
+          const preTargetConnId = task.target_connection_id ?? null;
+          if (preTargetConnId) {
+            const { data: preTgt } = await supabase.from("endpoint_connections").select("type, config").eq("id", preTargetConnId).single();
+            if (preTgt?.type === "file") {
+              const preCfg = preTgt.config as { output_file_name?: string };
+              insightIsRawDump = (preCfg?.output_file_name ?? "").startsWith("raw_");
+            }
+          }
+
+          await taskLog("INFO", insightIsRawDump ? "Fetching RAW (unflattened) data from Insight..." : "Fetching data from Insight source...");
 
           const insightRes = await fetch("/api/insight-proxy", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ connection_id: resolvedSourceConnId }),
+            body: JSON.stringify({
+              connection_id: resolvedSourceConnId,
+              ...(task.import_window_start ? { ship_date_from: task.import_window_start } : {}),
+              ...(task.import_window_end   ? { ship_date_to:   task.import_window_end   } : {}),
+              ...(insightIsRawDump ? { _raw: true } : {}),
+            }),
           });
 
           if (!insightRes.ok) {
@@ -1946,96 +1977,335 @@ await taskLog("ROW", `Sending row ${i + 1}/${rows.length}${isMultiSn ? ` [SN: ${
             throw new Error(`Insight proxy failed (HTTP ${insightRes.status}): ${insightErrMsg}`);
           }
 
-          const { rows: insightRawRows, invoice_count, line_count } =
+          // Raw dump path: export unflattened Insight API response and skip step processing
+          if (insightIsRawDump && preTargetConnId) {
+            const rawJson = await insightRes.json() as { raw_days: unknown[] };
+            const { data: preTgtFull } = await supabase.from("endpoint_connections").select("config").eq("id", preTargetConnId).single();
+            const rawCfg = preTgtFull?.config as { file_type?: string; file_path?: string; output_file_name?: string } | null;
+            const rawFileType = rawCfg?.file_type ?? "json";
+            const rawTimestamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
+            const rawRand = Math.random().toString(36).slice(2, 8);
+            const rawFileName = rawCfg?.output_file_name?.trim()
+              ? `${rawCfg.output_file_name.trim().replace(/\.[^.]+$/, "")}.${rawFileType}`
+              : `insight_raw_${rawTimestamp}_${rawRand}.${rawFileType}`;
+            const rawDir = (rawCfg?.file_path ?? "exports/").replace(/\/?$/, "/");
+            const rawStoragePath = `${rawDir}${rawFileName}`;
+            const rawBlob = new Blob([JSON.stringify(rawJson.raw_days, null, 2)], { type: "application/json" });
+            const { error: rawUpErr } = await supabase.storage.from("task_files").upload(rawStoragePath, rawBlob, { upsert: true });
+            if (rawUpErr) throw new Error(`Failed to upload raw dump: ${rawUpErr.message}`);
+            const { data: rawSigned } = await supabase.storage.from("task_files").createSignedUrl(rawStoragePath, 60 * 60 * 24);
+            await taskLog("SUCCESS", `Raw dump complete — ${rawJson.raw_days.length} day(s) of unflattened Insight data — Download: ${rawSigned?.signedUrl ?? ""}`);
+            continue;
+          }
+
+          const { rows: insightRawRows, order_count, line_count } =
             await insightRes.json() as {
               rows: Record<string, string>[];
-              invoice_count: number;
+              order_count: number;
               line_count: number;
             };
 
-          await taskLog("INFO", `Fetched ${invoice_count} invoice(s) with ${line_count} line item(s)`);
-
+          await taskLog("INFO", `Fetched ${order_count} order(s) with ${line_count} line item(s)`);
           if (insightRawRows.length > 0) {
-            await taskLog("INFO", `Source fields available: ${Object.keys(insightRawRows[0]).join(", ")}`);
+            await taskLog("INFO", `Source fields: ${Object.keys(insightRawRows[0]).join(", ")}`);
           }
 
-          if (mappingProfile?.filter_expression) {
-            await taskLog("INFO", `Row filter expression: ${mappingProfile.filter_expression}`);
+          // ── Determine step list ────────────────────────────────────
+          // Use task.insight_steps if configured (FK-safe order enforced below),
+          // otherwise fall back to the slot-level mapping + task target (legacy).
+          const FK_ORDER: InsightRecordType[] = ["purchase_order", "purchase_line_item", "ci"];
+          const rawInsightSteps = (task.insight_steps as InsightStep[] | null) ?? [];
+          const activeInsightSteps: InsightStep[] = rawInsightSteps.length > 0
+            ? FK_ORDER
+                .map((rt) => rawInsightSteps.find((s) => s.record_type === rt))
+                .filter((s): s is InsightStep => !!s && s.enabled !== false)
+            : [{
+                id: "legacy",
+                record_type: "purchase_line_item" as InsightRecordType,
+                mapping_profile_id: slot.mapping_profile_id ?? null,
+                target_connection_id: task.target_connection_id ?? null,
+                enabled: true,
+              }];
+
+          if (activeInsightSteps.length === 0) {
+            await taskLog("INFO", "No enabled Insight steps configured — skipping writes.");
           }
 
-          // Apply rowFilter (exception rerun support)
-          const insightRowsToProcess = (rowFilter && rowFilter.size > 0)
-            ? insightRawRows.filter((_, idx) => rowFilter.has(idx + 1))
-            : insightRawRows;
+          for (const iStep of activeInsightSteps) {
+            if (cancelledRef.current.has(task.id)) { await taskLog("WARN", "Task cancelled."); break; }
 
-          if (rowFilter && rowFilter.size > 0) {
-            await taskLog("INFO", `Rerun mode: processing ${insightRowsToProcess.length} exception row(s) only`);
-          }
+            await taskLog("INFO", `── Step: ${iStep.record_type.replace(/_/g, " ")} ──`);
 
-          // Apply filter expression
-          let insightFilteredCount = 0;
-          const insightFiltered = insightRowsToProcess.filter((row, idx) => {
-            if (!mappingProfile?.filter_expression) return true;
-            const { pass, error } = evaluateFilter(row as Record<string, unknown>, mappingProfile.filter_expression);
-            if (error) console.warn(`Insight row filter error (row ${idx + 1}):`, error);
-            if (!pass) { insightFilteredCount++; return false; }
-            return true;
-          });
-
-          if (insightFilteredCount > 0) {
-            await taskLog("INFO", `Row filter: ${insightFilteredCount} row(s) skipped (did not match expression)`);
-          }
-
-          // Apply mapping profile
-          const insightMapped = insightFiltered.map((row) =>
-            mappingProfile ? applyMappingProfile(row, mappingProfile, undefined) : row
-          );
-
-          // ── Route to target ────────────────────────────────────
-          if (targetConnType === "ivanti") {
-            const tgtRaw = targetConnRawConfig as Record<string, string> | null;
-            await taskLog("INFO", `Sending ${insightMapped.length} record(s) to Ivanti ITSM target`);
-
-            let insightRowErrors = 0;
-            let insightRowWarns = 0;
-            for (let i = 0; i < insightMapped.length; i++) {
-              if (cancelledRef.current.has(task.id)) {
-                await taskLog("WARN", "Task cancelled by user.");
-                break;
-              }
-              const payload = insightMapped[i];
-              try {
-                await new Promise((r) => setTimeout(r, 75));
-                const res = await fetchWithRetry("/api/ivanti-proxy", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    ivantiUrl:      tgtRaw?.url,
-                    data:           payload,
-                    apiKey:         tgtRaw?.api_key,
-                    businessObject: tgtRaw?.business_object,
-                    tenantId:       tgtRaw?.tenant_id,
-                  }),
-                });
-                const json = await res.json() as Record<string, unknown>;
-                if (!res.ok) {
-                  insightRowErrors++;
-                  await taskLog("ERROR", `Row ${i + 1} failed: ${JSON.stringify(json)}`);
-                } else {
-                  await taskLog("SUCCESS", `Row ${i + 1}: ${JSON.stringify(json)}`);
-                }
-              } catch (rowErr: unknown) {
-                insightRowErrors++;
-                await taskLog("ERROR", `Row ${i + 1} failed: ${rowErr instanceof Error ? rowErr.message : String(rowErr)}`);
+            // Load step mapping profile
+            let iMappingProfile: MappingProfile | null = null;
+            if (iStep.mapping_profile_id) {
+              const { data: iMp } = await supabase
+                .from("mapping_profiles")
+                .select("*")
+                .eq("id", iStep.mapping_profile_id)
+                .single();
+              iMappingProfile = iMp ?? null;
+              if (iMappingProfile) {
+                await taskLog("INFO", `Mapping: "${iMappingProfile.name}" (${iMappingProfile.mappings.length} fields)`);
               }
             }
-            rowErrorCount += insightRowErrors;
-            rowWarnCount  += insightRowWarns;
 
-          } else {
-            await taskLog("INFO", `Insight/portal source → ${targetConnType ?? "no"} target: no handler configured for this target type`);
-          }
+            // Apply filter expression first (so rowFilter indices align with post-filter positions)
+            let iFilteredCount = 0;
+            const iAllFiltered = insightRawRows.filter((row, idx) => {
+              if (!iMappingProfile?.filter_expression) return true;
+              const { pass, error } = evaluateFilter(row as Record<string, unknown>, iMappingProfile.filter_expression);
+              if (error) console.warn(`Insight row filter error (row ${idx + 1}):`, error);
+              if (!pass) { iFilteredCount++; return false; }
+              return true;
+            });
+            if (iFilteredCount > 0) {
+              await taskLog("INFO", `Row filter: ${iFilteredCount} row(s) skipped`);
+            }
 
+            // Apply rowFilter for exception reruns (indices now match post-filter positions)
+            const iFiltered = (rowFilter && rowFilter.size > 0)
+              ? iAllFiltered.filter((_, idx) => rowFilter.has(idx + 1))
+              : iAllFiltered;
+
+            // Pre-fetch SKU lookup results per row, then apply mapping
+            const iSkuLookupCache = new Map<string, string>();
+            const iSkuLookupMappings = iMappingProfile?.mappings.filter(
+              (m) => m.transform === "sku_lookup"
+            ) ?? [];
+            const iMapped: Record<string, unknown>[] = [];
+            let iSkuSkippedCount = 0;
+            for (let si = 0; si < iFiltered.length; si++) {
+              const row = iFiltered[si] as Record<string, unknown>;
+              let skuLookupResults: Record<string, string> | undefined;
+              let iSkipRow = false;
+              if (iSkuLookupMappings.length > 0 && iMappingProfile) {
+                skuLookupResults = {};
+                for (const sm of iSkuLookupMappings) {
+                  const srcField = iMappingProfile.source_fields.find((f) => f.id === sm.sourceFieldId);
+                  if (!srcField) continue;
+                  const skuRaw = String(row[srcField.name] ?? "").trim().toUpperCase();
+                  if (!skuRaw) continue;
+                  const resultField = sm.skuResultField ?? "type";
+                  const cacheKey = `${sm.id}:${skuRaw}`;
+                  if (iSkuLookupCache.has(cacheKey)) {
+                    const cached = iSkuLookupCache.get(cacheKey)!;
+                    if (cached === "__NOT_FOUND__" || cached === "__IGNORED__") { iSkipRow = true; break; }
+                    skuLookupResults[sm.id] = cached;
+                  } else {
+                    try {
+                      const res = await fetch("/api/sku-lookup", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          sku: skuRaw,
+                          result_field: resultField,
+                          customer_id: task.customer_id ?? null,
+                          context: Object.fromEntries(
+                            Object.entries(row)
+                              .filter(([, v]) => typeof v === "string" || typeof v === "number")
+                              .map(([k, v]) => [k, String(v)])
+                          ),
+                        }),
+                      });
+                      const json = await res.json() as { found: boolean; value: string | null };
+                      if (json.value === "__IGNORED__") {
+                        iSkuLookupCache.set(cacheKey, "__IGNORED__");
+                        iSkipRow = true;
+                        await taskLog("SKIP", `CI row ${si + 1}: SKU "${skuRaw}" is marked as ignored — skipped.`);
+                        break;
+                      } else if (json.found) {
+                        const resolvedValue = json.value ?? "";
+                        iSkuLookupCache.set(cacheKey, resolvedValue);
+                        if (resolvedValue) skuLookupResults[sm.id] = resolvedValue;
+                      } else {
+                        iSkuLookupCache.set(cacheKey, "__NOT_FOUND__");
+                        iSkipRow = true;
+                        await taskLog("SKIP", `CI row ${si + 1}: SKU "${skuRaw}" not found in taxonomy — row skipped. Queued for research.`);
+                        skuExceptions.push({ sku: skuRaw, row: si + 1, targetField: sm.skuResultField ?? "type" });
+                        break;
+                      }
+                    } catch {
+                      iSkuLookupCache.set(cacheKey, "__NOT_FOUND__");
+                      iSkipRow = true;
+                      await taskLog("SKIP", `CI row ${si + 1}: SKU lookup error — row skipped.`);
+                      break;
+                    }
+                  }
+                }
+              }
+              if (iSkipRow) { iSkuSkippedCount++; continue; }
+              const mapped = iMappingProfile ? applyMappingProfile(row, iMappingProfile, undefined, undefined, skuLookupResults) : row;
+              iMapped.push(mapped);
+            }
+            if (iSkuSkippedCount > 0) {
+              await taskLog("INFO", `SKU lookup: ${iSkuSkippedCount} row(s) skipped (not in taxonomy)`);
+            }
+
+            // Resolve target connection for this step
+            const stepTargetConnId = iStep.target_connection_id ?? task.target_connection_id ?? null;
+            let stepTargetRawConfig: Record<string, string> | null = null;
+            let stepTargetType: string | null = null;
+            if (stepTargetConnId) {
+              const { data: sTgt } = await supabase
+                .from("endpoint_connections")
+                .select("*")
+                .eq("id", stepTargetConnId)
+                .single();
+              if (sTgt) {
+                stepTargetType = sTgt.type;
+                stepTargetRawConfig = sTgt.config as Record<string, string>;
+              }
+            }
+
+            // Write to target
+            if (stepTargetType === "ivanti") {
+              // Build upsert keys and link field metadata from mapping profile
+              const iUpsertKeys = (iMappingProfile?.mappings ?? [])
+                .filter((m) => m.isKey)
+                .map((m) => iMappingProfile?.target_fields.find((f) => f.id === m.targetFieldId)?.name)
+                .filter((n): n is string => !!n);
+              const iLinkMappings = (iMappingProfile?.mappings ?? []).filter((m) => m.isLinkField);
+              const iSkuManuMappings = (iMappingProfile?.mappings ?? []).filter(
+                (m) => m.transform === "sku_lookup" && m.skuResultField === "manufacturer"
+              );
+              const iAllLinkMappings = [...iLinkMappings, ...iSkuManuMappings];
+              const iLinkFieldNames = iAllLinkMappings
+                .map((m) => iMappingProfile?.target_fields.find((f) => f.id === m.targetFieldId)?.name)
+                .filter((n): n is string => !!n);
+              const iLinkFieldBoNames: Record<string, string> = {};
+              const iLinkFieldLookupFields: Record<string, string> = {};
+              for (const m of iAllLinkMappings) {
+                const fn = iMappingProfile?.target_fields.find((f) => f.id === m.targetFieldId)?.name;
+                if (fn && m.linkFieldBoName) iLinkFieldBoNames[fn] = m.linkFieldBoName;
+                if (fn && m.linkFieldLookupField) iLinkFieldLookupFields[fn] = m.linkFieldLookupField;
+              }
+              const iAutoCreateLinkFields = (iMappingProfile?.mappings ?? [])
+                .filter((m) => m.linkFieldAutoCreate)
+                .map((m) => iMappingProfile?.target_fields.find((f) => f.id === m.targetFieldId)?.name)
+                .filter((n): n is string => !!n);
+              const iPreserveOnOrderFields = (iMappingProfile?.mappings ?? [])
+                .filter((m) => m.transform === "on_order_status")
+                .map((m) => iMappingProfile?.target_fields.find((f) => f.id === m.targetFieldId)?.name)
+                .filter((n): n is string => !!n);
+              const iBusinessObject = iMappingProfile?.target_business_object ?? stepTargetRawConfig?.business_object;
+              const iIsAutoBO = iBusinessObject?.toLowerCase() === "auto";
+              await taskLog("INFO", `Sending ${iMapped.length} record(s) to Ivanti (${iStep.record_type})`);
+              let iRowErrors = 0;
+              for (let i = 0; i < iMapped.length; i++) {
+                if (cancelledRef.current.has(task.id)) { await taskLog("WARN", "Task cancelled."); break; }
+                const payload = iMapped[i];
+                // Auto-BO: skip rows with no CIType so we never send "auto" as a BO name to Ivanti.
+                if (iIsAutoBO) {
+                  const iCiType = String((payload as Record<string, unknown>)["CIType"] ?? "").trim();
+                  if (!iCiType) {
+                    rowSkipCount++;
+                    await taskLog("SKIP", `[${iStep.record_type}] Row ${i + 1}: auto-BO but CIType empty (no taxonomy match) -- skipped.`);
+                    continue;
+                  }
+                }
+                try {
+                  await new Promise((r) => setTimeout(r, 75));
+                  const res = await fetchWithRetry("/api/ivanti-proxy", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      ivantiUrl:      stepTargetRawConfig?.url,
+                      data:           payload,
+                      apiKey:         stepTargetRawConfig?.api_key,
+                      businessObject: iBusinessObject,
+                      tenantId:       stepTargetRawConfig?.tenant_id,
+                      ...(iUpsertKeys.length > 0 && { upsertKeys: iUpsertKeys }),
+                      ...(iLinkFieldNames.length > 0 && { linkFieldNames: iLinkFieldNames }),
+                      ...(Object.keys(iLinkFieldBoNames).length > 0 && { linkFieldBoNames: iLinkFieldBoNames }),
+                      ...(Object.keys(iLinkFieldLookupFields).length > 0 && { linkFieldLookupFields: iLinkFieldLookupFields }),
+                      ...(iAutoCreateLinkFields.length > 0 && { autoCreateLinkFields: iAutoCreateLinkFields }),
+                      ...(iPreserveOnOrderFields.length > 0 && { preserveOnOrderFields: iPreserveOnOrderFields }),
+                    }),
+                  });
+                  const json = await res.json() as Record<string, unknown>;
+                  if (json._skip) {
+                    rowSkipCount++;
+                    await taskLog("SKIP", `[${iStep.record_type}] Row ${i + 1}: ${String(json.reason ?? "skipped")}`);
+                  } else if (!res.ok) {
+                    iRowErrors++;
+                    await taskLog("ERROR", `Row ${i + 1} failed: ${JSON.stringify(json)}`);
+                  } else {
+                    const _upsertMethod = (json?.upsert as { method?: string } | undefined)?.method;
+                    if (_upsertMethod === "PATCH") rowUpdatedCount++;
+                    else rowCreatedCount++;
+                    await taskLog("SUCCESS", `Row ${i + 1}: ${JSON.stringify(json)}`);
+                  }
+                } catch (rowErr: unknown) {
+                  iRowErrors++;
+                  await taskLog("ERROR", `Row ${i + 1} failed: ${rowErr instanceof Error ? rowErr.message : String(rowErr)}`);
+                }
+              }
+              rowErrorCount += iRowErrors;
+            } else if (stepTargetType === "file" || !stepTargetType) {
+              // ── File / no-target: write rows to Supabase storage ──
+              const tgtCfg = stepTargetRawConfig as {
+                file_type?: string; file_mode?: string;
+                file_path?: string; output_file_name?: string;
+              } | null;
+
+              const fileType  = (tgtCfg?.file_type ?? "xlsx") as string;
+              const fileMode  = (tgtCfg?.file_mode ?? "directory") as string;
+              const dirPath   = tgtCfg?.file_path?.replace(/\/?$/, "/") ?? `exports/${task.id}/`;
+              const timestamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
+              const rand      = Math.random().toString(36).slice(2, 8);
+              const autoName  = `insight_${iStep.record_type}_${timestamp}_${rand}.${fileType}`;
+              const withExt   = (name: string) => `${name.replace(/\.[^.]+$/, "")}.${fileType}`;
+              const fileName  = fileMode === "file" && tgtCfg?.file_path
+                ? withExt(tgtCfg.file_path.split("/").pop() ?? autoName)
+                : tgtCfg?.output_file_name?.trim()
+                  ? withExt(tgtCfg.output_file_name.trim())
+                  : autoName;
+              const storagePath = fileMode === "file" && tgtCfg?.file_path
+                ? tgtCfg.file_path
+                : `${dirPath}${fileName}`;
+
+              let uploadBlob: Blob;
+              // For raw-dump mode: if output_file_name starts with "raw_", export insightRawRows unfiltered/unmapped
+              const isRawDump = (tgtCfg?.output_file_name ?? "").startsWith("raw_");
+              const iExportRows = isRawDump ? insightRawRows : iMapped;
+              if (fileType === "json") {
+                uploadBlob = new Blob([JSON.stringify(iExportRows, null, 2)], { type: "application/json" });
+              } else if (fileType === "csv") {
+                const ws = XLSX.utils.json_to_sheet(iExportRows);
+                uploadBlob = new Blob([XLSX.utils.sheet_to_csv(ws)], { type: "text/csv" });
+              } else if (fileType === "xml") {
+                const xmlRows = iExportRows.map((row) => {
+                  const fields = Object.entries(row)
+                    .map(([k, v]) => `  <${k}>${String(v ?? "").replace(/[<>&]/g, (ch) => ch === "<" ? "&lt;" : ch === ">" ? "&gt;" : "&amp;")}</${k}>`)
+                    .join("\n");
+                  return `<record>\n${fields}\n</record>`;
+                }).join("\n");
+                uploadBlob = new Blob([`<?xml version="1.0" encoding="UTF-8"?>\n<records>\n${xmlRows}\n</records>`], { type: "application/xml" });
+              } else {
+                const ws = XLSX.utils.json_to_sheet(iExportRows);
+                const wb2 = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb2, ws, "Export");
+                const buf = XLSX.write(wb2, { type: "array", bookType: "xlsx" }) as unknown as ArrayBuffer;
+                uploadBlob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+              }
+
+              const { error: iUploadErr } = await supabase.storage
+                .from("task_files")
+                .upload(storagePath, uploadBlob, { upsert: true });
+              if (iUploadErr) throw new Error(`Failed to upload export file: ${iUploadErr.message}`);
+
+              const { data: iSigned } = await supabase.storage
+                .from("task_files")
+                .createSignedUrl(storagePath, 60 * 60 * 24);
+              const iUrl = iSigned?.signedUrl ?? null;
+              const exportLabel = isRawDump ? `raw dump (${insightRawRows.length} rows)` : `${iExportRows.length} records`;
+              await taskLog("SUCCESS", `Export complete — ${exportLabel} written to "${fileName}" [${fileType.toUpperCase()}]${iUrl ? ` — Download: ${iUrl}` : ""}`);
+
+            } else {
+              await taskLog("INFO", `Step target type "${stepTargetType}" — no handler configured for this target`);
+            }
+          } // end for iStep
         } else {
           await taskLog("INFO", sourceConnType
             ? `Source is a ${sourceConnType.toUpperCase()} endpoint — no handler configured for this source type`
@@ -2808,6 +3078,9 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
       targetConnectionId: task.target_connection_id ?? null,
       sourceDirectory: task.source_file_path ?? "",
       debugMode: task.debug_mode ?? false,
+      insightSteps: (task.insight_steps as InsightStep[] | null) ?? [],
+      importWindowStart: task.import_window_start ?? "",
+      importWindowEnd:   task.import_window_end   ?? "",
     });
   }
 
@@ -2839,6 +3112,9 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
           write_mode: editForm.writeMode ?? "upsert",
           customer_id: editForm.customerId ?? null,
           debug_mode: editForm.debugMode ?? false,
+          insight_steps: editForm.insightSteps.length > 0 ? editForm.insightSteps : null,
+          import_window_start: editForm.importWindowStart.trim() || null,
+          import_window_end:   editForm.importWindowEnd.trim()   || null,
         })
         .eq("id", editTask.id)
         .select("id");
@@ -3043,10 +3319,28 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                     </div>
                     <div className="space-y-2">
                       {form.mappingSlots.map((slot, slotIdx) => (
-                        <div key={slot.id} className={`flex gap-2 items-start transition-opacity ${slot.enabled === false ? "opacity-40" : ""}`}>
+                        <div
+                            key={slot.id}
+                            draggable={form.mappingSlots.length > 1}
+                            onDragStart={() => { dragSlotIdxRef.current = slotIdx; }}
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={() => {
+                              const from = dragSlotIdxRef.current;
+                              if (from === null || from === slotIdx) return;
+                              setForm((p) => {
+                                const slots = [...p.mappingSlots];
+                                const [moved] = slots.splice(from, 1);
+                                slots.splice(slotIdx, 0, moved);
+                                return { ...p, mappingSlots: slots };
+                              });
+                              dragSlotIdxRef.current = null;
+                            }}
+                            className={`flex gap-2 items-start transition-opacity ${slot.enabled === false ? "opacity-40" : ""}${form.mappingSlots.length > 1 ? " cursor-grab active:cursor-grabbing" : ""}`}
+                          >
                           {/* Enable/disable toggle + slot number */}
                           {form.mappingSlots.length > 1 && (
                             <div className="flex flex-col items-center gap-0.5 shrink-0 pt-2.5">
+                              <GripVertical className="w-3 h-3 text-gray-600 hover:text-gray-400 mb-0.5" />
                               <button
                                 type="button"
                                 onClick={() => setForm((p) => ({
@@ -3420,6 +3714,19 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                               </span>
                             ) : null;
                           })()}
+                          {(() => {
+                            const steps = (task.insight_steps as InsightStep[] | null)?.filter(s => s.enabled !== false) ?? [];
+                            if (steps.length === 0) return null;
+                            return (
+                              <span
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-medium shrink-0 cursor-default"
+                                title={`Insight pipeline: ${steps.map(s => s.record_type.replace(/_/g, ' ')).join(' → ')}`}
+                              >
+                                <Zap className="w-2.5 h-2.5" />
+                                {steps.length} steps
+                              </span>
+                            );
+                          })()}
                         </div>
                         <p className="text-xs text-gray-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
                           <span>{task.recurrence.charAt(0).toUpperCase() + task.recurrence.slice(1)}</span>
@@ -3646,7 +3953,7 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                           </div>
                         </div>
 
-                        <div className="px-5 py-4 max-h-64 overflow-y-auto font-mono text-xs space-y-1.5">
+                        <div className="px-5 py-4 max-h-[calc(100vh-380px)] overflow-y-auto font-mono text-xs space-y-1.5">
                           {logsLoading[task.id] ? (
                             <div className="flex items-center gap-2 text-gray-500">
                               <Loader2 className="w-3 h-3 animate-spin" />
@@ -3656,8 +3963,23 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                             <p className="text-gray-600">
                               No logs yet for this task.
                             </p>
-                          ) : (
-                            logs.map((log) => {
+                          ) : (() => {
+                            const _si: number[] = []; let _g = -1;
+                            for (const l of logs) {
+                              if (l.action === "INFO" && (l.details ?? "").startsWith("── Step: ")) _g++;
+                              _si.push(_g);
+                            }
+                            const _ss: { name: string; ok: number; err: number; skip: number }[] = [];
+                            for (let g = 0; g <= _g; g++) {
+                              const gl = logs.filter((_, i) => _si[i] === g);
+                              _ss.push({
+                                name: (gl[0]?.details ?? "").replace("── Step: ", "").replace(" ──", ""),
+                                ok:   gl.filter(l => l.action === "SUCCESS").length,
+                                err:  gl.filter(l => l.action === "ERROR").length,
+                                skip: gl.filter(l => l.action === "SKIP").length,
+                              });
+                            }
+                            return logs.map((log, _li) => {
                               const levelColor: Record<string, string> = {
                                 ERROR: "text-red-400",
                                 WARN: "text-yellow-400",
@@ -3671,7 +3993,26 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                               const color =
                                 levelColor[log.action] ?? "text-gray-400";
 
-                              // ── SUMMARY: rendered as a stat card ────────────
+                              // ── STEP HEADER: section divider with inline stats ────
+                              if (log.action === "INFO" && (log.details ?? "").startsWith("── Step: ")) {
+                                const gs = _ss[_si[_li]] ?? { name: "", ok: 0, err: 0, skip: 0 };
+                                const hasR = gs.ok + gs.err + gs.skip > 0;
+                                return (
+                                  <div key={log.id} className="mt-3 mb-1 flex items-center gap-2">
+                                    <div className="flex-1 h-px bg-indigo-500/20" />
+                                    <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-indigo-500/20 bg-indigo-950/40">
+                                      <span className="text-[10px] font-bold text-indigo-300 uppercase tracking-wider">{gs.name}</span>
+                                      {hasR && <span className="w-px h-3 bg-indigo-500/30" />}
+                                      {gs.ok   > 0 && <span className="text-[10px] text-emerald-400 font-semibold">{gs.ok}✓</span>}
+                                      {gs.err  > 0 && <span className="text-[10px] text-red-400 font-semibold">{gs.err}✗</span>}
+                                      {gs.skip > 0 && <span className="text-[10px] text-sky-400">{gs.skip} skip</span>}
+                                    </div>
+                                    <div className="flex-1 h-px bg-indigo-500/20" />
+                                  </div>
+                                );
+                              }
+
+                              // ── SUMMARY: stat card with per-step breakdown ────
                               if (log.action === "SUMMARY") {
                                 const parts = (log.details ?? "").split(" | ");
                                 return (
@@ -3691,6 +4032,19 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                                         );
                                       })}
                                     </div>
+                                    {_ss.length > 0 && (
+                                      <div className="mt-2 pt-2 border-t border-violet-500/15 space-y-1">
+                                        {_ss.map((s, si) => (
+                                          <div key={si} className="flex items-center gap-2 text-[10px]">
+                                            <span className="text-gray-500 w-28 truncate font-medium">{s.name}</span>
+                                            {s.ok   > 0 && <span className="text-emerald-400">{s.ok} written</span>}
+                                            {s.err  > 0 && <span className="text-red-400">{s.err} error{s.err !== 1 ? "s" : ""}</span>}
+                                            {s.skip > 0 && <span className="text-sky-400">{s.skip} skipped</span>}
+                                            {s.ok + s.err + s.skip === 0 && <span className="text-gray-600">no records</span>}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
                                   </div>
                                 );
                               }
@@ -3703,7 +4057,7 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                               const bodyText   = slotMatch ? rawDetails.slice(slotMatch[0].length) : rawDetails;
 
                               return (
-                                <div key={log.id} className="flex gap-2 items-baseline">
+                                <div key={log.id} className="flex gap-2 items-start">
                                   <span className="text-gray-600 shrink-0 text-[11px]">
                                     {new Date(log.created_at).toLocaleTimeString()}
                                   </span>
@@ -3715,18 +4069,35 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                                       {slotNum}<span className="text-indigo-500 font-normal">/{slotTotal}</span>
                                     </span>
                                   )}
-                                  <span className="text-gray-300 break-all text-[12px] flex-1">
+                                  <span className="text-gray-300 break-all text-[12px] flex-1 min-w-0">
                                     {(() => {
-                                      // Render clickable links for "— Download: <url>" and "— Details: <url>".
                                       const lnkMatch = bodyText.match(/— (Download|Details): (https?:\/\/\S+)/);
-                                      if (lnkMatch) {
+                                      const renderedBody = lnkMatch ? (() => {
                                         const fullMarker = lnkMatch[0];
                                         const label = lnkMatch[1] === "Download" ? "Download" : "View Record";
                                         const url = lnkMatch[2];
                                         const before = bodyText.slice(0, bodyText.indexOf(fullMarker));
                                         return <>{before}<a href={url} target="_blank" rel="noopener noreferrer" className="underline text-indigo-400 hover:text-indigo-300">{label}</a></>;
-                                      }
-                                      return <>{bodyText}</>;
+                                      })() : <>{bodyText}</>;
+                                      const isLong = bodyText.length > 300;
+                                      const isExpanded = !!expandedLogEntries[log.id];
+                                      if (!isLong) return renderedBody;
+                                      return (
+                                        <span className="block">
+                                          <span
+                                            className="block overflow-hidden transition-all"
+                                            style={isExpanded ? undefined : { maxHeight: "5.5rem" }}
+                                          >
+                                            {renderedBody}
+                                          </span>
+                                          <button
+                                            onClick={() => setExpandedLogEntries(prev => ({ ...prev, [log.id]: !prev[log.id] }))}
+                                            className="text-[10px] text-indigo-400 hover:text-indigo-300 underline underline-offset-2 mt-0.5 block"
+                                          >
+                                            {isExpanded ? "show less" : "show more"}
+                                          </button>
+                                        </span>
+                                      );
                                     })()}
                                   </span>
                                   {/* For ERROR logs — quick link to edit the mapping */}
@@ -3746,8 +4117,8 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                                   })()}
                                 </div>
                               );
-                            })
-                          )}
+                            });
+                          })()}
                         </div>
                       </div>
                     )}
@@ -3865,7 +4236,7 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
         const fsErrored = fsLogs.filter(l => l.action === "ERROR").length;
         return (
           <div
-            className="fixed inset-0 z-50 flex flex-col bg-gray-950"
+            className="fixed inset-0 bottom-[44px] z-50 flex flex-col bg-gray-950"
             style={{ fontFamily: "inherit" }}
           >
             {/* Header */}
@@ -4036,25 +4407,30 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                   }
 
                   const lnkMatch = details.match(/— (Download|Details): (https?:\/\/\S+)/);
+                  const fsRenderedBody = lnkMatch ? (
+                    <>{details.slice(0, details.indexOf(lnkMatch[0]))}<a href={lnkMatch[2]} target="_blank" rel="noopener noreferrer" className="underline text-indigo-400 hover:text-indigo-300">{lnkMatch[1] === "Download" ? "Download" : "View Record"}</a></>
+                  ) : <>{details}</>;
+                  const fsIsLong = details.length > 300;
+                  const fsIsExpanded = !!expandedLogEntries[log.id];
                   return (
-                    <div key={log.id} className="flex gap-3">
+                    <div key={log.id} className="flex gap-3 items-start">
                       <span className="text-gray-600 shrink-0">
                         {new Date(log.created_at).toLocaleTimeString()}
                       </span>
                       <span className={`shrink-0 font-bold ${color}`}>
                         [{log.action}]
                       </span>
-                      <span className="text-gray-300 break-all">
-                        {lnkMatch ? (
-                          <>
-                            {details.slice(0, details.indexOf(lnkMatch[0]))}
-                            <a href={lnkMatch[2]} target="_blank" rel="noopener noreferrer" className="underline text-indigo-400 hover:text-indigo-300">
-                              {lnkMatch[1] === "Download" ? "Download" : "View Record"}
-                            </a>
-                          </>
-                        ) : (
-                          <>{details}</>
-                        )}
+                      <span className="text-gray-300 break-all flex-1 min-w-0">
+                        {fsIsLong ? (
+                          <span className="block">
+                            <span className="block overflow-hidden transition-all" style={fsIsExpanded ? undefined : { maxHeight: "5.5rem" }}>
+                              {fsRenderedBody}
+                            </span>
+                            <button onClick={() => setExpandedLogEntries(prev => ({ ...prev, [log.id]: !prev[log.id] }))} className="text-[10px] text-indigo-400 hover:text-indigo-300 underline underline-offset-2 mt-0.5 block">
+                              {fsIsExpanded ? "show less" : "show more"}
+                            </button>
+                          </span>
+                        ) : fsRenderedBody}
                       </span>
                     </div>
                   );
@@ -4247,10 +4623,28 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                     </div>
                     <div className="space-y-2">
                       {editForm.mappingSlots.map((slot, slotIdx) => (
-                        <div key={slot.id} className={`flex gap-2 items-start transition-opacity ${slot.enabled === false ? "opacity-40" : ""}`}>
+                        <div
+                            key={slot.id}
+                            draggable={editForm.mappingSlots.length > 1}
+                            onDragStart={() => { dragEditSlotIdxRef.current = slotIdx; }}
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={() => {
+                              const from = dragEditSlotIdxRef.current;
+                              if (from === null || from === slotIdx) return;
+                              setEditForm((p) => {
+                                const slots = [...p.mappingSlots];
+                                const [moved] = slots.splice(from, 1);
+                                slots.splice(slotIdx, 0, moved);
+                                return { ...p, mappingSlots: slots };
+                              });
+                              dragEditSlotIdxRef.current = null;
+                            }}
+                            className={`flex gap-2 items-start transition-opacity ${slot.enabled === false ? "opacity-40" : ""}${editForm.mappingSlots.length > 1 ? " cursor-grab active:cursor-grabbing" : ""}`}
+                          >
                           {/* Enable/disable toggle + slot number */}
                           {editForm.mappingSlots.length > 1 && (
                             <div className="flex flex-col items-center gap-0.5 shrink-0 pt-2.5">
+                              <GripVertical className="w-3 h-3 text-gray-600 hover:text-gray-400 mb-0.5" />
                               <button
                                 type="button"
                                 onClick={() => setEditForm((p) => ({
@@ -4436,6 +4830,227 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                     )}
                   </div>
 
+                {/* Import Window -- shown when any slot uses a vendor API source */}
+                {(() => {
+                  const VENDOR_TYPES = ["insight", "dell", "cdw"];
+                  const anyVendorSource = editForm.mappingSlots.some((slot) => {
+                    const mp = mappingProfiles.find((p) => p.id === slot.mapping_profile_id);
+                    const src = endpointConnections.find((c) => c.id === mp?.source_connection_id);
+                    return src?.type && VENDOR_TYPES.includes(src.type);
+                  });
+                  if (!anyVendorSource) return null;
+                  return (
+                    <div className="md:col-span-2">
+                      <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                        <CalendarRange className="w-3 h-3 text-amber-400" />
+                        Import Window
+                        <span className="text-gray-600 normal-case font-normal ml-1">(optional — leave blank to use connection default)</span>
+                      </label>
+                      <div className="flex items-center gap-3">
+                        <div className="flex-1">
+                          <label className="block text-[11px] text-gray-500 mb-1">From</label>
+                          <input
+                            type="date"
+                            value={editForm.importWindowStart}
+                            onChange={(e) => setEditForm((p) => ({ ...p, importWindowStart: e.target.value }))}
+                            className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent"
+                          />
+                        </div>
+                        <div className="flex-1">
+                          <label className="block text-[11px] text-gray-500 mb-1">To</label>
+                          <input
+                            type="date"
+                            value={editForm.importWindowEnd}
+                            onChange={(e) => setEditForm((p) => ({ ...p, importWindowEnd: e.target.value }))}
+                            className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent"
+                          />
+                        </div>
+                        {(editForm.importWindowStart || editForm.importWindowEnd) && (
+                          <button
+                            type="button"
+                            onClick={() => setEditForm((p) => ({ ...p, importWindowStart: "", importWindowEnd: "" }))}
+                            className="mt-5 p-2 text-gray-500 hover:text-red-400 hover:bg-gray-800 rounded-lg transition-colors"
+                            title="Clear window"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                      {editForm.importWindowStart && editForm.importWindowEnd && (
+                        <p className="text-xs text-amber-400/70 mt-1.5 flex items-center gap-1">
+                          <Check className="w-3 h-3" />
+                          Fetching {editForm.importWindowStart} – {editForm.importWindowEnd}
+                        </p>
+                      )}
+                      {editForm.importWindowStart && !editForm.importWindowEnd && (
+                        <p className="text-xs text-amber-400/70 mt-1.5 flex items-center gap-1">
+                          <Check className="w-3 h-3" />
+                          Fetching from {editForm.importWindowStart} through yesterday
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* Insight Steps */}
+                {(() => {
+                  const hasInsightSteps = editForm.insightSteps.length > 0;
+                  const anyInsightSource = editForm.mappingSlots.some((slot) => {
+                    const mp = mappingProfiles.find((p) => p.id === slot.mapping_profile_id);
+                    const src = endpointConnections.find((c) => c.id === mp?.source_connection_id);
+                    return src?.type === "insight";
+                  });
+                  if (!hasInsightSteps && !anyInsightSource) return null;
+
+                  const RECORD_TYPES: { value: InsightRecordType; label: string; dot: string }[] = [
+                    { value: "purchase_line_item", label: "Purchase Line Item", dot: "bg-emerald-400" },
+                    { value: "purchase_order",     label: "Purchase Order",     dot: "bg-cyan-400"    },
+                    { value: "ci",                 label: "CI (Asset)",         dot: "bg-violet-400"  },
+                  ];
+
+                  return (
+                    <div className="space-y-3 w-full md:col-span-2">
+                      <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-1.5 flex-wrap">
+                        <Plug className="w-3 h-3 text-emerald-400" />
+                        Insight Steps
+                        <span className="text-gray-600 normal-case font-normal">
+                          FK-safe order: Line Items → Orders → CIs
+                        </span>
+                        {(() => {
+                          const n = editForm.insightSteps.filter(s => s.enabled !== false).length;
+                          if (n === 0) return null;
+                          return <span className="ml-auto text-[10px] font-normal normal-case text-emerald-500/70">1 API call → {n} write{n !== 1 ? "s" : ""}</span>;
+                        })()}
+                      </label>
+
+                      <div className="space-y-2">
+                        {RECORD_TYPES.map(({ value: rtype, label, dot }) => {
+                          const step = editForm.insightSteps.find((s) => s.record_type === rtype);
+                          const isOn = !!step && step.enabled !== false;
+
+                          return (
+                            <div
+                              key={rtype}
+                              className={`rounded-xl border px-3 py-2.5 transition-all ${
+                                step
+                                  ? isOn
+                                    ? "border-indigo-500/40 bg-indigo-500/5"
+                                    : "border-gray-700 bg-gray-800/30 opacity-50"
+                                  : "border-gray-700/50 bg-gray-800/20"
+                              }`}
+                            >
+                              <div className="flex items-center gap-2 mb-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (!step) {
+                                      setEditForm((p) => ({
+                                        ...p,
+                                        insightSteps: [
+                                          ...p.insightSteps,
+                                          {
+                                            id: `step-${rtype}-${Date.now()}`,
+                                            record_type: rtype as InsightRecordType,
+                                            mapping_profile_id: null,
+                                            target_connection_id: null,
+                                            enabled: true,
+                                          },
+                                        ],
+                                      }));
+                                    } else {
+                                      setEditForm((p) => ({
+                                        ...p,
+                                        insightSteps: p.insightSteps.map((s) =>
+                                          s.record_type === rtype
+                                            ? { ...s, enabled: s.enabled === false ? true : false }
+                                            : s
+                                        ),
+                                      }));
+                                    }
+                                  }}
+                                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 ${
+                                    isOn ? "bg-indigo-500" : "bg-gray-600"
+                                  }`}
+                                  title={step ? (isOn ? "Disable step" : "Enable step") : "Add step"}
+                                >
+                                  <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${isOn ? "translate-x-4" : "translate-x-0.5"}`} />
+                                </button>
+                                <span className="text-xs font-semibold text-gray-300 flex-1">{label}</span>
+                                <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${isOn ? "text-indigo-400" : "text-gray-600"}`}>
+                                  {isOn ? "ON" : step ? "OFF" : "—"}
+                                </span>
+                                {step && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setEditForm((p) => ({
+                                        ...p,
+                                        insightSteps: p.insightSteps.filter((s) => s.record_type !== rtype),
+                                      }))
+                                    }
+                                    className="text-gray-600 hover:text-red-400 transition-colors"
+                                    title="Remove step"
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </div>
+
+                              {step && (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pl-6">
+                                  <select
+                                    value={step.mapping_profile_id ?? ""}
+                                    onChange={(e) =>
+                                      setEditForm((p) => ({
+                                        ...p,
+                                        insightSteps: p.insightSteps.map((s) =>
+                                          s.record_type === rtype
+                                            ? { ...s, mapping_profile_id: e.target.value || null }
+                                            : s
+                                        ),
+                                      }))
+                                    }
+                                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                  >
+                                    <option value="">-- No mapping (send raw) --</option>
+                                    {mappingProfiles.map((mp) => (
+                                      <option key={mp.id} value={mp.id}>
+                                        {mp.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <select
+                                    value={step.target_connection_id ?? ""}
+                                    onChange={(e) =>
+                                      setEditForm((p) => ({
+                                        ...p,
+                                        insightSteps: p.insightSteps.map((s) =>
+                                          s.record_type === rtype
+                                            ? { ...s, target_connection_id: e.target.value || null }
+                                            : s
+                                        ),
+                                      }))
+                                    }
+                                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                  >
+                                    <option value="">-- Target from mapping --</option>
+                                    {endpointConnections
+                                      .filter((c) => c.type !== "file" && c.type !== "insight")
+                                      .map((c) => (
+                                        <option key={c.id} value={c.id}>
+                                          {c.name} [{c.type.toUpperCase()}]
+                                        </option>
+                                      ))}
+                                  </select>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
                 </div>
               <p className="text-xs text-yellow-400/70 bg-yellow-500/10 border border-yellow-500/20 rounded-xl px-4 py-3">
                 ⚠️ Saving will reset this task&apos;s status back to
