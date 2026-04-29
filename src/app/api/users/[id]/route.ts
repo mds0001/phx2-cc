@@ -26,7 +26,7 @@ export async function PATCH(
     const body = await req.json() as {
       first_name?: string;
       last_name?: string;
-      role?: "administrator" | "schedule_administrator" | "basic";
+      role?: "administrator" | "schedule_administrator" | "basic" | "schedule_auditor";
       customer_id?: string | null;
       password?: string;
     };
@@ -51,12 +51,12 @@ export async function PATCH(
     if (body.role       !== undefined) {
       patch.role      = body.role;
       patch.user_type = body.role === "administrator" ? "admin" : body.role === "basic" ? "basic" : "user";
-      // Clear customer scope when role is not schedule_administrator
-      if (body.role !== "schedule_administrator") patch.customer_id = null;
+      // Clear customer scope when role is not schedule_administrator or schedule_auditor
+      if (body.role !== "schedule_administrator" && body.role !== "schedule_auditor") patch.customer_id = null;
     }
     // Persist customer scope for schedule_administrators
     if (body.customer_id !== undefined) {
-      patch.customer_id = body.role === "schedule_administrator" ? body.customer_id : null;
+      patch.customer_id = (body.role === "schedule_administrator" || body.role === "schedule_auditor") ? body.customer_id : null;
     }
 
     // Use admin client to bypass RLS for profile updates

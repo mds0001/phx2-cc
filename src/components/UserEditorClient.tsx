@@ -56,6 +56,11 @@ const ROLES: { value: UserRole; label: string; desc: string }[] = [
     label: "Basic",
     desc: "Read-only access to Scheduler, Field Mappings, and Endpoint Connections. Cannot create, edit, or delete anything.",
   },
+  {
+    value: "schedule_auditor",
+    label: "Schedule Auditor",
+    desc: "Read-only access to Scheduler and run history only. No access to Mappings, Endpoints, or BOH. Receives email notifications when tasks complete.",
+  },
 ];
 
 export default function UserEditorClient({ user, isNew, currentUserId, customers = [] }: Props) {
@@ -412,7 +417,7 @@ export default function UserEditorClient({ user, isNew, currentUserId, customers
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
           <h3 className="text-sm font-semibold text-white mb-4">Access Summary</h3>
           {/* Customer scope for schedule_administrator */}
-          {role === "schedule_administrator" && (
+          {(role === "schedule_administrator" || role === "schedule_auditor") && (
             <div className="flex flex-col gap-2">
               <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
                 Assigned Customer

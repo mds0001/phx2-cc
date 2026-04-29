@@ -100,7 +100,8 @@ export default function GlobalShell() {
   const [skuTweCount, setSkuTweCount] = useState(0);
   const [nonTemplateTasks, setNonTemplateTasks] = useState(0);
   const [pipelineActive, setPipelineActive] = useState(0);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [isAdmin,   setIsAdmin]   = useState(false);
+  const [isAuditor, setIsAuditor] = useState(false);
 
   const hidden = HIDDEN_PATHS.some((p) => pathname?.startsWith(p));
 
@@ -139,7 +140,10 @@ export default function GlobalShell() {
       supabase.auth.getUser().then(({ data: { user } }) => {
         if (!user) return;
         supabase.from("profiles").select("role").eq("id", user.id).single()
-          .then(({ data }) => { if (data?.role === "administrator") setIsAdmin(true); });
+          .then(({ data }) => {
+            if (data?.role === "administrator") setIsAdmin(true);
+            if (data?.role === "schedule_auditor") setIsAuditor(true);
+          });
       });
     }
 
@@ -202,18 +206,22 @@ export default function GlobalShell() {
               active={pathname?.startsWith("/scheduler") === true}
               badge={schedulerBadge}
             />
-            <NavItem
-              icon={<GitMerge className="w-4 h-4" />}
-              label="Mappings"
-              href="/mappings"
-              active={pathname?.startsWith("/mappings") === true}
-            />
-            <NavItem
-              icon={<Plug className="w-4 h-4" />}
-              label="Endpoints"
-              href="/connections"
-              active={pathname?.startsWith("/connections") === true}
-            />
+            {!isAuditor && (
+              <NavItem
+                icon={<GitMerge className="w-4 h-4" />}
+                label="Mappings"
+                href="/mappings"
+                active={pathname?.startsWith("/mappings") === true}
+              />
+            )}
+            {!isAuditor && (
+              <NavItem
+                icon={<Plug className="w-4 h-4" />}
+                label="Endpoints"
+                href="/connections"
+                active={pathname?.startsWith("/connections") === true}
+              />
+            )}
           </div>
 
           {/* PIPELINE - admin only */}

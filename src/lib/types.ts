@@ -1,5 +1,5 @@
 export type UserType = "admin" | "user" | "basic";
-export type UserRole = "administrator" | "schedule_administrator" | "basic";
+export type UserRole = "administrator" | "schedule_administrator" | "basic" | "schedule_auditor";
 
 // ── Back of House ─────────────────────────────────────────────
 

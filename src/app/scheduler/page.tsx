@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
 import SchedulerClient from "@/components/SchedulerClient";
-import { isReadOnly } from "@/lib/permissions";
+import { isReadOnly, isAuditor } from "@/lib/permissions";
 import { resolveCustomerFilter } from "@/lib/customer-context";
 
 export const dynamic = 'force-dynamic';
@@ -20,7 +20,8 @@ export default async function SchedulerPage() {
 
   // Fetch customers for the switcher (non-basic users only)
   const role = (profile as { role?: string } | null)?.role;
-  const isAdmin = role === "administrator";
+  const isAdmin    = role === "administrator";
+  const auditor    = isAuditor(role);
   const activeCustomerId = await resolveCustomerFilter(role, (profile as { customer_id?: string | null } | null)?.customer_id);
   const { data: customers } = role !== "basic"
     ? await supabase.from("customers").select("id, name, company").order("name")
@@ -41,6 +42,7 @@ export default async function SchedulerPage() {
         userId={user.id}
         isReadOnly={isReadOnly(role)}
         isAdmin={isAdmin}
+        isAuditor={auditor}
         customers={customers ?? []}
         activeCustomerId={activeCustomerId}
       />

@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
 import ConnectionsListClient from "@/components/ConnectionsListClient";
-import { isReadOnly } from "@/lib/permissions";
+import { isReadOnly, isAuditor } from "@/lib/permissions";
 import { resolveCustomerFilter } from "@/lib/customer-context";
 
 export const dynamic = 'force-dynamic';
@@ -14,6 +14,7 @@ export default async function ConnectionsPage() {
   const { data: profile } = await supabase.from("profiles").select("role, customer_id").eq("id", user.id).single();
 
   const role = profile?.role;
+  if (isAuditor(role)) redirect("/scheduler");
   const isAdmin = role === "administrator";
   const activeCustomerId = await resolveCustomerFilter(role, profile?.customer_id);
 

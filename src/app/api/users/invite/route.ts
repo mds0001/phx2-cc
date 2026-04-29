@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
       email: string;
       first_name?: string;
       last_name?: string;
-      role: "administrator" | "schedule_administrator" | "basic";
+      role: "administrator" | "schedule_administrator" | "basic" | "schedule_auditor";
       customer_id?: string | null;
       password?: string;
     };
@@ -65,7 +65,7 @@ export async function POST(req: NextRequest) {
         last_name: last_name ?? null,
         role,
         user_type: role === "administrator" ? "admin" : role === "basic" ? "basic" : "user",
-        customer_id: role === "schedule_administrator" ? (customer_id ?? null) : null,
+        customer_id: (role === "schedule_administrator" || role === "schedule_auditor") ? (customer_id ?? null) : null,
       }, { onConflict: "id" });
     }
 

@@ -14,7 +14,7 @@ git diff --cached --stat
 Write-Host ""
 $msg = Read-Host "Commit message (leave blank for default)"
 if ([string]::IsNullOrWhiteSpace($msg)) {
-    $msg = "feat: Insight CI import - dynamic BO routing, import window, SKU ignore, on-order status"
+    $msg = "feat: Schedule Auditor role - read-only scheduler access, run completion email notifications, per-customer scoping"
 }
 
 git commit -m $msg

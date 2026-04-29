@@ -133,6 +133,7 @@ interface Props {
   userId: string;
   isReadOnly?: boolean;
   isAdmin?: boolean;
+  isAuditor?: boolean;
   customers?: CustomerOption[];
   activeCustomerId?: string | null;
 }
@@ -181,6 +182,7 @@ export default function SchedulerClient({
   userId,
   isReadOnly = false,
   isAdmin = false,
+  isAuditor = false,
   customers = [],
   activeCustomerId = null,
 }: Props) {
@@ -2419,6 +2421,27 @@ await taskLog("ROW", `Sending row ${i + 1}/${rows.length}${isMultiSn ? ` [SN: ${
         }
 
         await taskLog("COMPLETED", `${statusLabel} at ${new Date().toISOString()}`);
+
+        // -- Notify per-customer Schedule Auditors --
+        if (task.customer_id) {
+          fetch("/api/auditor-run-notify", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              task_id:        task.id,
+              task_name:      task.task_name,
+              customer_id:    task.customer_id,
+              status:         statusLabel,
+              duration:       durationStr,
+              rows_processed: rowsProcessed,
+              rows_created:   rowCreatedCount,
+              rows_updated:   rowUpdatedCount,
+              rows_skipped:   rowSkipCount,
+              rows_errors:    rowErrorCount,
+              warnings:       rowWarnCount,
+            }),
+          }).catch(() => null);
+        }
 
         // Always store the final run result so the user can see it.
         // For recurring tasks also advance start_date_time to the next interval;

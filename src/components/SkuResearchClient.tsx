@@ -369,6 +369,7 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
   const [runSuggestions, setRunSuggestions] = useState<Record<string, TaxonomySuggestion>>({});
   const [runSuggestingKey, setRunSuggestingKey] = useState<string | null>(null);
   const [suggestAllRunId,  setSuggestAllRunId]  = useState<string | null>(null); // run-level suggest-all in progress
+  const [deletingRunId,    setDeletingRunId]    = useState<string | null>(null);
   const [suggestAllReview, setSuggestAllReview] = useState<{ runId: string; items: { key: string; sku: string; suggestion: TaxonomySuggestion; customerId: string | null }[] } | null>(null);
   const [reviewSavingKey,  setReviewSavingKey]  = useState<string | null>(null);
   const [showArchivedQueue, setShowArchivedQueue] = useState(false);
@@ -912,6 +913,17 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
     } catch { showToast("Failed to unarchive run", "err"); }
   }
 
+  // -- Delete a run exception record --
+  async function handleDeleteRun(run: SkuRunException) {
+    try {
+      const res = await fetch(`/api/sku-run-exceptions/${run.id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(await res.text());
+      setRuns((prev) => prev.filter((r) => r.id !== run.id));
+      setDeletingRunId(null);
+      showToast("Run deleted");
+    } catch { showToast("Failed to delete run", "err"); }
+  }
+
   // -- Delete taxonomy entry --
   async function handleDeleteTaxonomy(entry: TaxonomyEntry) {
     try {
@@ -1173,6 +1185,28 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                                 title="Archive this resolved run"
                               >
                                 Archive
+                              </button>
+                            )}
+                            {deletingRunId === run.id ? (
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-xs text-red-400">Delete?</span>
+                                <button
+                                  onClick={() => handleDeleteRun(run)}
+                                  className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-600 hover:bg-red-500 text-white transition-all"
+                                >Yes</button>
+                                <button
+                                  onClick={() => setDeletingRunId(null)}
+                                  className="px-2.5 py-1 rounded-lg text-xs font-medium text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-all border border-gray-800"
+                                >No</button>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => setDeletingRunId(run.id)}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-500 hover:text-red-400 hover:bg-gray-800 transition-all border border-gray-800"
+                                title="Permanently delete this run record"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                                Delete
                               </button>
                             )}
                           </div>

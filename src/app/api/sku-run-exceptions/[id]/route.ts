@@ -38,3 +38,31 @@ export async function PATCH(
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
+
+/**
+ * DELETE /api/sku-run-exceptions/[id]
+ * Permanently delete a run exception record.
+ */
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+    const { id } = await params;
+    const admin = createAdminClient();
+
+    const { error } = await admin
+      .from("sku_run_exceptions")
+      .delete()
+      .eq("id", id);
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ success: true });
+  } catch (err) {
+    return NextResponse.json({ error: String(err) }, { status: 500 });
+  }
+}

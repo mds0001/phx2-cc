@@ -45,6 +45,12 @@ const ROLE_META: Record<UserRole, { label: string; color: string; bg: string; bo
     bg: "bg-amber-500/10",
     border: "border-amber-500/20",
   },
+  schedule_auditor: {
+    label: "Schedule Auditor",
+    color: "text-violet-400",
+    bg: "bg-violet-500/10",
+    border: "border-violet-500/20",
+  },
 };
 
 export default function UsersListClient({ users, currentUserId, customers = [] }: Props) {
@@ -81,6 +87,7 @@ export default function UsersListClient({ users, currentUserId, customers = [] }
 
   const admins = filtered.filter((u) => u.role === "administrator");
   const schedAdmins = filtered.filter((u) => u.role === "schedule_administrator");
+  const auditors = filtered.filter((u) => u.role === "schedule_auditor");
   const basicUsers = filtered.filter((u) => !u.role || u.role === "basic");
 
   function UserCard({ user }: { user: Profile }) {
@@ -123,7 +130,7 @@ export default function UsersListClient({ users, currentUserId, customers = [] }
               <Shield className="w-3 h-3" />
               {meta.label}
             </span>
-            {user.role === "schedule_administrator" && (
+            {(user.role === "schedule_administrator" || user.role === "schedule_auditor") && (
               user.customer_id
                 ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
                     {customers.find((cu) => cu.id === user.customer_id)?.name ?? "Unknown customer"}
@@ -270,6 +277,18 @@ export default function UsersListClient({ users, currentUserId, customers = [] }
             </h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {schedAdmins.map((u) => <UserCard key={u.id} user={u} />)}
+            </div>
+          </section>
+        )}
+
+        {auditors.length > 0 && (
+          <section className="space-y-3">
+            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest flex items-center gap-2">
+              <Eye className="w-3.5 h-3.5 text-violet-400" />
+              {"Schedule Auditors (" + auditors.length + ")"}
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {auditors.map((u) => <UserCard key={u.id} user={u} />)}
             </div>
           </section>
         )}

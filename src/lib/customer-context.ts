@@ -36,7 +36,7 @@ export async function resolveCustomerFilter(
   role: UserRole | string | null | undefined,
   profileCustomerId: string | null | undefined,
 ): Promise<string | null> {
-  if (role === "schedule_administrator") {
+  if (role === "schedule_administrator" || role === "schedule_auditor") {
     return profileCustomerId ?? null;
   }
   if (role === "administrator") {
