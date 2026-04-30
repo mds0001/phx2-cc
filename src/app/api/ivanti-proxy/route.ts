@@ -62,6 +62,27 @@ function convertExcelDates(payload: Record<string, unknown>): Record<string, unk
   return result;
 }
 
+// Strip currency formatting from fields whose name suggests a price/cost value.
+// e.g. "$1,234.56" -> 1234.56 | "1,000" -> 1000 | 1234.56 -> 1234.56 (unchanged)
+const PRICE_FIELD_KEYWORDS = ["price", "cost", "amount", "value", "fee", "charge", "rate", "msrp"];
+function looksLikePriceField(key: string): boolean {
+  const k = key.toLowerCase().replace(/[_\s]/g, "");
+  return PRICE_FIELD_KEYWORDS.some((kw) => k.includes(kw));
+}
+function sanitizePriceFields(payload: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...payload };
+  for (const [key, value] of Object.entries(result)) {
+    if (!looksLikePriceField(key)) continue;
+    if (typeof value === "number") continue; // already numeric
+    if (typeof value === "string" && value.trim() !== "") {
+      const stripped = value.replace(/[$,\s]/g, "");
+      const num = parseFloat(stripped);
+      if (!isNaN(num)) result[key] = num;
+    }
+  }
+  return result;
+}
+
 
 
 type ResolvedField = { field: string; value: string; recId: string } | { field: string; value: string; error: string };
@@ -855,7 +876,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Convert Excel serial dates to ISO strings before posting
-    const dateConvertedData = convertExcelDates(data);
+    const dateConvertedData = sanitizePriceFields(convertExcelDates(data));
 
     // For DELETE mode we only need key fields to locate the record — skip expensive
     // link-field resolution (which fires 50+ HTTP probes per link field).

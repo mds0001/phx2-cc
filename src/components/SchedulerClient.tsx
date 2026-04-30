@@ -1981,22 +1981,40 @@ await taskLog("ROW", `Sending row ${i + 1}/${rows.length}${isMultiSn ? ` [SN: ${
 
           // Raw dump path: export unflattened Insight API response and skip step processing
           if (insightIsRawDump && preTargetConnId) {
-            const rawJson = await insightRes.json() as { raw_days: unknown[] };
+            const rawJson = await insightRes.json() as { raw_days: unknown[]; invoice_raw?: unknown };
             const { data: preTgtFull } = await supabase.from("endpoint_connections").select("config").eq("id", preTargetConnId).single();
             const rawCfg = preTgtFull?.config as { file_type?: string; file_path?: string; output_file_name?: string } | null;
             const rawFileType = rawCfg?.file_type ?? "json";
             const rawTimestamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
             const rawRand = Math.random().toString(36).slice(2, 8);
+            const rawDir = (rawCfg?.file_path ?? "exports/").replace(/\/?$/, "/");
+
+            // Upload GetStatus (shipping) dump
             const rawFileName = rawCfg?.output_file_name?.trim()
               ? `${rawCfg.output_file_name.trim().replace(/\.[^.]+$/, "")}.${rawFileType}`
               : `insight_raw_${rawTimestamp}_${rawRand}.${rawFileType}`;
-            const rawDir = (rawCfg?.file_path ?? "exports/").replace(/\/?$/, "/");
             const rawStoragePath = `${rawDir}${rawFileName}`;
             const rawBlob = new Blob([JSON.stringify(rawJson.raw_days, null, 2)], { type: "application/json" });
             const { error: rawUpErr } = await supabase.storage.from("task_files").upload(rawStoragePath, rawBlob, { upsert: true });
             if (rawUpErr) throw new Error(`Failed to upload raw dump: ${rawUpErr.message}`);
             const { data: rawSigned } = await supabase.storage.from("task_files").createSignedUrl(rawStoragePath, 60 * 60 * 24);
             await taskLog("SUCCESS", `Raw dump complete — ${rawJson.raw_days.length} day(s) of unflattened Insight data — Download: ${rawSigned?.signedUrl ?? ""}`);
+
+            // Upload CustomerInvoice dump (if returned)
+            if (rawJson.invoice_raw !== null && rawJson.invoice_raw !== undefined) {
+              const invBaseName = rawCfg?.output_file_name?.trim()
+                ? `${rawCfg.output_file_name.trim().replace(/\.[^.]+$/, "")}_invoice.${rawFileType}`
+                : `insight_invoice_${rawTimestamp}_${rawRand}.${rawFileType}`;
+              const invStoragePath = `${rawDir}${invBaseName}`;
+              const invBlob = new Blob([JSON.stringify(rawJson.invoice_raw, null, 2)], { type: "application/json" });
+              const { error: invUpErr } = await supabase.storage.from("task_files").upload(invStoragePath, invBlob, { upsert: true });
+              if (invUpErr) {
+                await taskLog("WARN", `Invoice dump upload failed: ${invUpErr.message}`);
+              } else {
+                const { data: invSigned } = await supabase.storage.from("task_files").createSignedUrl(invStoragePath, 60 * 60 * 24);
+                await taskLog("SUCCESS", `Invoice dump complete — Download: ${invSigned?.signedUrl ?? ""}`);
+              }
+            }
             continue;
           }
 
@@ -2347,16 +2365,18 @@ await taskLog("ROW", `Sending row ${i + 1}/${rows.length}${isMultiSn ? ` [SN: ${
           : "Completed successfully";
 
         // ── Write run SUMMARY ────────────────────────────────────────
+        let durationStr  = "";
+        let rowsProcessed = 0;
         {
           const durationMs   = Date.now() - taskStartTime;
           const durationSec  = Math.round(durationMs / 1000);
-          const durationStr  = durationSec >= 60
+          durationStr  = durationSec >= 60
             ? `${Math.floor(durationSec / 60)}m ${durationSec % 60}s`
             : `${durationSec}s`;
           const totalTokens  = totalInputTokens + totalOutputTokens;
           // Pricing: Haiku input $0.80/M, output $4.00/M
           const tokenCost    = (totalInputTokens / 1_000_000) * 0.80 + (totalOutputTokens / 1_000_000) * 4.00;
-          const rowsProcessed = rowCreatedCount + rowUpdatedCount + rowSkipCount + rowErrorCount;
+          rowsProcessed = rowCreatedCount + rowUpdatedCount + rowSkipCount + rowErrorCount;
 
           const summaryParts: string[] = [
             `Duration: ${durationStr}`,

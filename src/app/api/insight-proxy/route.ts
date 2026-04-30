@@ -14,7 +14,8 @@ const ENV_BASE: Record<string, string> = {
 };
 
 const OAUTH_PATH  = "/oauth2/token";
-const STATUS_PATH = "/MT/GetStatus2";
+const STATUS_PATH   = "/MT/GetStatus2";
+const INVOICE_PATH  = "/NA/CustomerInvoice";
 
 // -- Token cache (keyed by connection id)
 interface TokenEntry { token: string; expiresAt: number }
@@ -521,7 +522,23 @@ export async function POST(req: NextRequest) {
 
     // _raw mode: return the unflattened API responses directly
     if (isRaw) {
-      return NextResponse.json({ raw_days: allRawDays });
+      // Also probe the CustomerInvoice endpoint with the first date we queried
+      let invoiceRaw: unknown = null;
+      try {
+        const invoiceUrl = base + INVOICE_PATH;
+        const firstDate  = datesToQuery[0];
+        const invBody    = { "MT_WebInvoiceRequest": { "InvoiceRequest": { ...(clientId ? { ClientID: clientId } : {}), SearchBy: "DATE", LanguageKey: "EN" } } };
+        const invRes     = await fetch(invoiceUrl, {
+          method:  "POST",
+          headers: reqHeaders,
+          body:    JSON.stringify(invBody),
+        });
+        const invTxt = await invRes.text();
+        try { invoiceRaw = JSON.parse(invTxt); } catch { invoiceRaw = invTxt; }
+      } catch (e) {
+        invoiceRaw = { error: e instanceof Error ? e.message : String(e) };
+      }
+      return NextResponse.json({ raw_days: allRawDays, invoice_raw: invoiceRaw });
     }
 
     const orderSet = new Set(

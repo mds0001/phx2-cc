@@ -99,6 +99,24 @@ When a task runs in `SchedulerClient`, it reads Excel source data, applies the m
 - Tailwind CSS for all styling
 - No UI component library — all components are hand-rolled
 
+## ⚠️ Update / Test / Push — MANDATORY WORKFLOW (CRITICAL)
+
+**NEVER push code or apply changes to prod without explicit user confirmation that dev testing passed. No exceptions.**
+
+### The only allowed workflow is:
+1. **Update** — make the change (code or DB) on **dev only** (`lxcentwfpiefosjkarlx`)
+2. **Test** — tell the user to test on dev and wait for explicit confirmation ("works", "good", "confirmed", etc.)
+3. **Push** — only then push code to Vercel / apply to prod (`ogolfqzuqnfslyjivntm`)
+
+### This applies to ALL changes:
+- Code changes (always test locally or on dev Vercel before push)
+- Supabase `execute_sql` (mapping profiles, schema, data mutations)
+- Any change that affects live data or the production app
+
+### After completing every change, Claude MUST:
+- Remind the user: **"Please test on dev before I push."**
+- Wait for confirmation before running `push.ps1` or touching prod Supabase
+
 ## Shell Command Formatting
 
 - When providing shell commands (PowerShell, bash, etc.) for the user to copy and paste, always end the code block with a trailing newline after the last command so that it executes when pasted into a terminal
