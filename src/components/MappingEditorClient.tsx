@@ -493,16 +493,19 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
         const insightFields: string[] = [
           // order-level
           "customerOrderNumber", "insightOrderNumber", "customerPONumber",
-          "orderDate", "orderStatus", "currencyCode",
+          "orderDate", "orderStatus", "currencyCode", "webref", "shippingCondition",
           "billToName", "billToAddress1", "billToCity", "billToState", "billToZip", "billToCountry",
           "shipToName", "shipToAddress1", "shipToCity", "shipToState", "shipToZip", "shipToCountry",
           // line-level
-          "lineNumber", "manufacturerPartNumber", "insightPartNumber",
-          "manufacturerName", "itemDescription", "productCategory",
-          "quantityOrdered", "quantityShipped", "unitPrice", "extendedPrice",
-          "lineStatus", "shipDate",
+          "insightOrderItem", "lineNumber", "manufacturerPartNumber", "insightPartNumber",
+          "manufacturerName", "itemDescription", "productCategory", "productCategoryName",
+          "quantityOrdered", "quantityShipped", "salesUoM",
+          "unitPrice", "extendedPrice",
+          "lineStatus", "shipDate", "estimatedDeliveryDate", "deliveryNumber",
           "serialNumber", "serialNumbers",
           "trackingNumber", "carrier", "contractNumber", "warrantyMonths",
+          // invoice-level (from CustomerInvoice enrichment)
+          "invoiceDate", "invoiceNumber",
         ];
         const fields: FieldDef[] = insightFields.map((name) => ({ id: uid(), name }));
         if (side === "source") {

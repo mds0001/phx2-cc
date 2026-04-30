@@ -179,6 +179,163 @@ function extractSerialNumbers(raw: unknown): string[] {
   return [];
 }
 
+// -- CustomerInvoice price lookup --
+// Status2 does not return price; CustomerInvoice does. We batch one call per unique
+// InsightOrderNumber and join by (orderNumber, normalized SalesOrderLine).
+interface InvoicePriceInfo {
+  unitPrice:     string;
+  extendedPrice: string;
+  invoiceDate:   string;
+  invoiceNumber: string;
+}
+
+// Normalize a line number for join: "000010" -> "10", "10" -> "10".
+function normalizeLineNum(raw: unknown): string {
+  if (raw === null || raw === undefined) return "";
+  const s = String(raw).trim();
+  if (!s) return "";
+  const n = parseInt(s, 10);
+  return Number.isNaN(n) ? s : String(n);
+}
+
+// Fetch CustomerInvoice for a single InsightOrderNumber and return a per-line price map.
+// Returns an empty map on any failure -- enrichment is best-effort, never blocks rows.
+async function fetchInvoiceForOrder(
+  invoiceUrl: string,
+  reqHeaders: Record<string, string>,
+  clientId:   string,
+  insightOrderNumber: string,
+): Promise<Map<string, InvoicePriceInfo>> {
+  const out = new Map<string, InvoicePriceInfo>();
+  // Per SOP example, InvoiceTypes / BOMFlag / TrackingData should all be supplied.
+  // The SOP marks them Optional, but Insight rejects requests that omit InvoiceTypes
+  // with ECCInvoiceResponse error 017 "Invoice Type  not supported".
+  const reqBody = {
+    "MT_WebInvoiceRequest": {
+      "InvoiceRequest": {
+        ...(clientId ? { ClientID: clientId } : {}),
+        SearchBy:     "ORDNUM",
+        InvoiceTypes: "1",   // 1 = invoices only (skip credit/debit memos)
+        TrackingData: "X",
+        BOMFlag:      "1",   // 1 = include all items with rolled-up pricing at high-level items
+        LanguageKey:  "EN",
+        InvoiceRequestID: { TransactionID: [insightOrderNumber] },
+      },
+    },
+  };
+  let res: Response;
+  try {
+    res = await fetch(invoiceUrl, {
+      method:  "POST",
+      headers: reqHeaders,
+      body:    JSON.stringify(reqBody),
+      signal:  AbortSignal.timeout(20_000),
+    });
+  } catch (e) {
+    console.error("[insight-proxy] invoice fetch failed for order", insightOrderNumber, e);
+    return out;
+  }
+  // Always read body as text first so we can log it on non-2xx, then parse.
+  const bodyText = await res.text().catch(() => "");
+  if (!res.ok) {
+    console.error(
+      "[insight-proxy] CustomerInvoice non-2xx for order", insightOrderNumber,
+      "HTTP", res.status, "body:", bodyText.slice(0, 500),
+    );
+    return out;
+  }
+  let data: Record<string, unknown> | null = null;
+  try { data = JSON.parse(bodyText) as Record<string, unknown>; } catch { /* fallthrough */ }
+  if (!data) {
+    console.error("[insight-proxy] CustomerInvoice non-JSON for order", insightOrderNumber, "body:", bodyText.slice(0, 500));
+    return out;
+  }
+
+  // Walk candidate containers and pick the first one that actually holds Invoices /
+  // ResponseMessage. Real Insight responses wrap under "InvoiceResponse" (despite the
+  // SOP labelling the structure "ECCInvoiceResponse"); validation errors also live under
+  // "InvoiceResponse.ResponseMessage". We probe several shapes to stay defensive.
+  const mtWrap = data["MT_WebInvoiceResponse"] as Record<string, unknown> | undefined;
+  const candidates: unknown[] = [
+    mtWrap?.["InvoiceResponse"],
+    mtWrap?.["ECCInvoiceResponse"],
+    mtWrap,
+    data["InvoiceResponse"],
+    data["ECCInvoiceResponse"],
+    data,
+  ];
+  let ecc: Record<string, unknown> = data;
+  for (const c of candidates) {
+    if (c && typeof c === "object") {
+      const obj = c as Record<string, unknown>;
+      if ("Invoices" in obj || "Invoice" in obj || "ResponseMessage" in obj) {
+        ecc = obj;
+        break;
+      }
+    }
+  }
+
+  // Insight sometimes returns the array key as singular "Invoice".
+  const invoicesRaw = ecc["Invoices"] ?? ecc["Invoice"];
+  const invoices: unknown[] = Array.isArray(invoicesRaw) ? invoicesRaw : invoicesRaw ? [invoicesRaw] : [];
+
+  // Detect Insight error responses returned with HTTP 200 (ResponseMessage[].MessageType="E").
+  // These slip past res.ok and would otherwise silently produce empty enrichment.
+  const respMsgsRaw = ecc["ResponseMessage"];
+  const respMsgs: unknown[] = Array.isArray(respMsgsRaw) ? respMsgsRaw : respMsgsRaw ? [respMsgsRaw] : [];
+  const errorMsgs = respMsgs.filter((m) => {
+    if (!m || typeof m !== "object") return false;
+    return String((m as Record<string, unknown>)["MessageType"] ?? "").toUpperCase() === "E";
+  });
+  if (errorMsgs.length > 0) {
+    console.error(
+      "[insight-proxy] CustomerInvoice ERROR for order", insightOrderNumber,
+      "msgs=", errorMsgs.map((m) => {
+        const o = m as Record<string, unknown>;
+        return `${o["MessageCode"] ?? ""}: ${o["MessageText"] ?? ""}`;
+      }).join(" | "),
+    );
+    return out;
+  }
+
+  for (const invRaw of invoices) {
+    if (!invRaw || typeof invRaw !== "object") continue;
+    const wrapper = invRaw as Record<string, unknown>;
+    // Insight wraps each Invoices[] element as { "Invoice": { ... } } -- unwrap if so.
+    const invObj = (wrapper["Invoice"] && typeof wrapper["Invoice"] === "object")
+      ? (wrapper["Invoice"] as Record<string, unknown>)
+      : wrapper;
+    const header = (invObj["InvoiceHeader"] ?? {}) as Record<string, unknown>;
+    const invoiceDate   = String(header["InvoiceDate"]   ?? "");
+    const invoiceNumber = String(header["InvoiceNumber"] ?? "");
+    const linesRaw      = invObj["InvoiceLines"];
+    const lines: unknown[] = Array.isArray(linesRaw) ? linesRaw : linesRaw ? [linesRaw] : [];
+    for (const ln of lines) {
+      if (!ln || typeof ln !== "object") continue;
+      const line = ln as Record<string, unknown>;
+      const salesLine = normalizeLineNum(line["SalesOrderLine"]);
+      if (!salesLine) continue;
+      let unitPrice     = String(line["UnitPrice"]     ?? "");
+      let extendedPrice = String(line["ExtendedPrice"] ?? "");
+      // Per SOP, prices may also live in InvoiceItemPrices[] as PriceFieldName/PriceFieldValue pairs.
+      const itemPricesRaw = line["InvoiceItemPrices"];
+      const itemPrices: unknown[] = Array.isArray(itemPricesRaw) ? itemPricesRaw : itemPricesRaw ? [itemPricesRaw] : [];
+      for (const p of itemPrices) {
+        if (!p || typeof p !== "object") continue;
+        const pp = p as Record<string, unknown>;
+        const name  = String(pp["PriceFieldName"]  ?? "").trim().toLowerCase();
+        const value = String(pp["PriceFieldValue"] ?? "");
+        if (!unitPrice     && (name === "unit price"     || name === "unitprice"))     unitPrice     = value;
+        if (!extendedPrice && (name === "extended price" || name === "extendedprice")) extendedPrice = value;
+      }
+      const key = `${insightOrderNumber}:${salesLine}`;
+      // First invoice wins -- a credit memo for the same line shouldn't overwrite the original invoice.
+      if (!out.has(key)) out.set(key, { unitPrice, extendedPrice, invoiceDate, invoiceNumber });
+    }
+  }
+  return out;
+}
+
 // -- Flatten orders -> rows
 // Handles three response formats from the Insight /NA/GetStatus endpoint:
 //   Format A: MT_Status2Response (new-style /MT/GetStatus2)
@@ -318,6 +475,7 @@ function flattenLegacyOrders(orders: StatusOrder[]): Record<string, string>[] {
         : line.serialNumbers ? [line.serialNumbers as string] : [];
       rows.push({
         ...orderBase,
+        insightOrderItem:       String((line as unknown as Record<string, unknown>)["InsightOrderItem"] ?? (line as unknown as Record<string, unknown>)["insightOrderItem"] ?? ""),
         lineNumber:             String(line.lineNumber             ?? ""),
         manufacturerPartNumber: line.manufacturerPartNumber        ?? "",
         insightPartNumber:      line.insightPartNumber             ?? "",
@@ -366,10 +524,11 @@ export async function POST(req: NextRequest) {
       ship_date_from?: string;
       ship_date_to?:   string;
       order_number?:   string;
+      expand_serials?: boolean;
       _test_body?:     unknown;
     };
 
-    const { connection_id, ship_date, ship_date_from, ship_date_to, order_number, _test_body } = body;
+    const { connection_id, ship_date, ship_date_from, ship_date_to, order_number, expand_serials, _test_body } = body;
     if (!connection_id) {
       return NextResponse.json({ error: "connection_id required" }, { status: 400 });
     }
@@ -518,27 +677,68 @@ export async function POST(req: NextRequest) {
         if (result.status === "fulfilled") allRows.push(...result.value);
       }
     }
+    // -- Always-on CustomerInvoice price enrichment --
+    // Status2 does not return UnitPrice / ExtendedPrice. Fetch CustomerInvoice per unique
+    // InsightOrderNumber, batched in parallel, and join by (orderNumber, normalized line).
+    // Rows whose orders are not yet invoiced still emit with blank price.
+    if (!isRaw) {
+      const invoiceUrl = `${base}${INVOICE_PATH}`;
+      const uniqueOrders = Array.from(new Set(
+        allRows.map((r) => r.insightOrderNumber).filter(Boolean)
+      ));
+      if (uniqueOrders.length > 0) {
+        const priceMap = new Map<string, InvoicePriceInfo>();
+        const INVOICE_BATCH = 50;
+        for (let b = 0; b < uniqueOrders.length; b += INVOICE_BATCH) {
+          const batch = uniqueOrders.slice(b, b + INVOICE_BATCH);
+          const results = await Promise.allSettled(
+            batch.map((ord) => fetchInvoiceForOrder(invoiceUrl, reqHeaders, clientId, ord))
+          );
+          for (const r of results) {
+            if (r.status === "fulfilled") {
+              for (const [k, v] of r.value) priceMap.set(k, v);
+            }
+          }
+        }
+        for (const row of allRows) {
+          const lineId  = row.insightOrderItem || row.lineNumber || "";
+          const lineKey = `${row.insightOrderNumber}:${normalizeLineNum(lineId)}`;
+          const price = priceMap.get(lineKey);
+          if (price) {
+            // Only overwrite Status2 values if invoice has a non-empty price.
+            if (price.unitPrice)     row.unitPrice     = price.unitPrice;
+            if (price.extendedPrice) row.extendedPrice = price.extendedPrice;
+            row.invoiceDate   = price.invoiceDate;
+            row.invoiceNumber = price.invoiceNumber;
+          } else {
+            row.invoiceDate   = row.invoiceDate   ?? "";
+            row.invoiceNumber = row.invoiceNumber ?? "";
+          }
+        }
+      }
+    }
+
+    // Serial fanout: when expand_serials is true, fan out rows with N serials into N rows
+    // and drop rows with zero serials (consumables, licenses, accessories).
+    if (expand_serials) {
+      const expanded: Record<string, string>[] = [];
+      for (const row of allRows) {
+        const serials = extractSerialNumbers(row.serialNumbers ?? "");
+        if (serials.length === 0) continue; // drop zero-serial lines
+        for (const sn of serials) {
+          expanded.push({ ...row, serialNumber: sn, serialNumbers: sn });
+        }
+      }
+      const rows = expanded;
+      const orderSet = new Set(rows.map((r) => r.insightOrderNumber || r.customerOrderNumber).filter(Boolean));
+      return NextResponse.json({ rows, order_count: orderSet.size, line_count: rows.length });
+    }
+
     const rows = allRows;
 
-    // _raw mode: return the unflattened API responses directly
+    // _raw mode: return the unflattened Status2 responses directly.
     if (isRaw) {
-      // Also probe the CustomerInvoice endpoint with the first date we queried
-      let invoiceRaw: unknown = null;
-      try {
-        const invoiceUrl = base + INVOICE_PATH;
-        const firstDate  = datesToQuery[0];
-        const invBody    = { "MT_WebInvoiceRequest": { "InvoiceRequest": { ...(clientId ? { ClientID: clientId } : {}), SearchBy: "DATE", LanguageKey: "EN" } } };
-        const invRes     = await fetch(invoiceUrl, {
-          method:  "POST",
-          headers: reqHeaders,
-          body:    JSON.stringify(invBody),
-        });
-        const invTxt = await invRes.text();
-        try { invoiceRaw = JSON.parse(invTxt); } catch { invoiceRaw = invTxt; }
-      } catch (e) {
-        invoiceRaw = { error: e instanceof Error ? e.message : String(e) };
-      }
-      return NextResponse.json({ raw_days: allRawDays, invoice_raw: invoiceRaw });
+      return NextResponse.json({ raw_days: allRawDays });
     }
 
     const orderSet = new Set(

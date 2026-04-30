@@ -153,6 +153,8 @@ interface FormState {
   debugMode: boolean;
   /** Insight multi-step config (one step per Ivanti record class) */
   insightSteps: InsightStep[];
+  /** When true, emit one row per serial number; drop lines with no serials. */
+  expandSerials: boolean;
   /** Import window for vendor API sources (Insight, Dell, CDW). ISO date strings YYYY-MM-DD. */
   importWindowStart: string;
   importWindowEnd:   string;
@@ -170,6 +172,7 @@ const EMPTY_FORM: FormState = {
   sourceDirectory: "",
   debugMode: false,
   insightSteps: [],
+  expandSerials: false,
   importWindowStart: "",
   importWindowEnd:   "",
 };
@@ -1968,6 +1971,7 @@ await taskLog("ROW", `Sending row ${i + 1}/${rows.length}${isMultiSn ? ` [SN: ${
               ...(task.import_window_start ? { ship_date_from: task.import_window_start } : {}),
               ...(task.import_window_end   ? { ship_date_to:   task.import_window_end   } : {}),
               ...(insightIsRawDump ? { _raw: true } : {}),
+              ...(task.expand_serials ? { expand_serials: true } : {}),
             }),
           });
 
@@ -3122,6 +3126,7 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
       sourceDirectory: task.source_file_path ?? "",
       debugMode: task.debug_mode ?? false,
       insightSteps: (task.insight_steps as InsightStep[] | null) ?? [],
+      expandSerials: task.expand_serials ?? false,
       importWindowStart: task.import_window_start ?? "",
       importWindowEnd:   task.import_window_end   ?? "",
     });
@@ -3156,6 +3161,7 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
           customer_id: editForm.customerId ?? null,
           debug_mode: editForm.debugMode ?? false,
           insight_steps: editForm.insightSteps.length > 0 ? editForm.insightSteps : null,
+          expand_serials: editForm.expandSerials || null,
           import_window_start: editForm.importWindowStart.trim() || null,
           import_window_end:   editForm.importWindowEnd.trim()   || null,
         })
@@ -5091,6 +5097,17 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                           );
                         })}
                       </div>
+
+                      {/* Expand serials toggle */}
+                      <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={editForm.expandSerials}
+                          onChange={(e) => setEditForm((p) => ({ ...p, expandSerials: e.target.checked }))}
+                          className="w-4 h-4 rounded border-gray-600 bg-gray-800 accent-indigo-500"
+                        />
+                        <span className="text-xs text-gray-300">Expand to one row per device (serial) — drops lines with no serial</span>
+                      </label>
                     </div>
                   );
                 })()}

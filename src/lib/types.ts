@@ -123,6 +123,8 @@ export interface ScheduledTask {
    *  pull to this range instead of the connection's default lookback. */
   import_window_start?: string | null;
   import_window_end?:   string | null;
+  /** When true, one row is emitted per serial number; lines with no serials are dropped. */
+  expand_serials?: boolean | null;
   /** When true, every successful create/update stores the Ivanti RecID in
    *  task_created_records, enabling the Undo button to delete by RecID directly. */
   debug_mode?: boolean;
