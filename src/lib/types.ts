@@ -76,7 +76,7 @@ export interface LicenseType {
 }
 
 export type TaskStatus = "waiting" | "active" | "completed" | "completed_with_errors" | "completed_with_warnings" | "cancelled";
-export type RecurrenceType = "one-time" | "daily" | "weekly" | "monthly";
+export type RecurrenceType = "one-time" | "hourly" | "daily" | "weekly" | "monthly";
 
 export interface Profile {
   id: string;
@@ -123,6 +123,9 @@ export interface ScheduledTask {
    *  pull to this range instead of the connection's default lookback. */
   import_window_start?: string | null;
   import_window_end?:   string | null;
+  /** Relative lookback in days for vendor API sources. When > 0, overrides the
+   *  absolute import_window_* at execution time: from = today - N, to = yesterday. */
+  lookback_days?: number | null;
   /** When true, one row is emitted per serial number; lines with no serials are dropped. */
   expand_serials?: boolean | null;
   /** When true, every successful create/update stores the Ivanti RecID in

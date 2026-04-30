@@ -598,12 +598,12 @@ export async function POST(req: NextRequest) {
       environment:   (raw.environment as InsightConfig["environment"]) || "prod-na",
     };
 
-    // Resolve date window: explicit range > explicit ship_date > per-day lookback > yesterday
+    // Resolve date window: explicit range > explicit ship_date > yesterday.
+    // Lookback now lives on the task (SchedulerClient computes ship_date_from/to from
+    // task.lookback_days before calling). Connection-level lookback was removed.
     // NOTE: /NA/GetStatus only accepts single ShipDate per call -- no date ranges.
     // We expand ranges into individual dates and fetch them all in parallel.
-    const MAX_AUTO_LOOKBACK_DAYS = 90; // cap for automatic lookback only
-    const BATCH_SIZE = 50;             // concurrent calls per batch
-    const lookbackDays = Math.min(raw.lookback_days ? parseInt(raw.lookback_days, 10) : 1, MAX_AUTO_LOOKBACK_DAYS);
+    const BATCH_SIZE = 50; // concurrent calls per batch
     const yesterday = (() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().split("T")[0]; })();
 
     const datesToQuery: (string | undefined)[] = [];
@@ -621,12 +621,6 @@ export async function POST(req: NextRequest) {
         cur.setDate(cur.getDate() + 1);
       }
       if (datesToQuery.length === 0) datesToQuery.push(yesterday);
-    } else if (lookbackDays > 1) {
-      for (let i = lookbackDays; i >= 1; i--) {
-        const d = new Date();
-        d.setDate(d.getDate() - i);
-        datesToQuery.push(d.toISOString().split("T")[0]);
-      }
     } else {
       datesToQuery.push(yesterday);
     }

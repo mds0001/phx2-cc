@@ -599,14 +599,6 @@ function InsightForm({ config, onChange }: { config: Record<string, string>; onC
           onChange={(v) => onChange("client_secret", v)}
         />
       </Field>
-
-      <Field label="Lookback Days" hint="How many days back to pull shipped orders on each poll (default: 1 = yesterday only)">
-        <TextInput
-          value={config.lookback_days ?? ""}
-          onChange={(v) => onChange("lookback_days", v)}
-          placeholder="e.g. 30"
-        />
-      </Field>
     </>
   );
 }

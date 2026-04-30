@@ -103,6 +103,7 @@ const STATUS_ICON: Record<string, React.ReactNode> = {
 
 const RECURRENCES: RecurrenceType[] = [
   "one-time",
+  "hourly",
   "daily",
   "weekly",
   "monthly",
@@ -158,6 +159,8 @@ interface FormState {
   /** Import window for vendor API sources (Insight, Dell, CDW). ISO date strings YYYY-MM-DD. */
   importWindowStart: string;
   importWindowEnd:   string;
+  /** Relative lookback in days. When > 0, overrides absolute window at runtime. */
+  lookbackDays:      number | null;
 }
 
 const EMPTY_FORM: FormState = {
@@ -175,6 +178,7 @@ const EMPTY_FORM: FormState = {
   expandSerials: false,
   importWindowStart: "",
   importWindowEnd:   "",
+  lookbackDays:      null,
 };
 
 // ─── Component ───────────────────────────────────────────────
@@ -201,6 +205,8 @@ export default function SchedulerClient({
 
   const [editTask, setEditTask] = useState<ScheduledTask | null>(null);
   const [editForm, setEditForm] = useState<FormState>(EMPTY_FORM);
+  // Import-window mode toggle. "current" = today-relative lookback; "custom" = absolute date range.
+  const [windowMode, setWindowMode] = useState<"current" | "custom">("current");
 
 
   // Copy-mapping mini-modal state
@@ -1963,13 +1969,27 @@ await taskLog("ROW", `Sending row ${i + 1}/${rows.length}${isMultiSn ? ` [SN: ${
 
           await taskLog("INFO", insightIsRawDump ? "Fetching RAW (unflattened) data from Insight..." : "Fetching data from Insight source...");
 
+          // Lookback days takes precedence over the absolute window: from = today - N, to = yesterday.
+          let resolvedShipDateFrom: string | undefined = task.import_window_start ?? undefined;
+          let resolvedShipDateTo:   string | undefined = task.import_window_end   ?? undefined;
+          if (task.lookback_days && task.lookback_days > 0) {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const yesterday = new Date(today);
+            yesterday.setDate(today.getDate() - 1);
+            const start = new Date(today);
+            start.setDate(today.getDate() - task.lookback_days);
+            resolvedShipDateFrom = start.toISOString().split("T")[0];
+            resolvedShipDateTo   = yesterday.toISOString().split("T")[0];
+          }
+
           const insightRes = await fetch("/api/insight-proxy", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               connection_id: resolvedSourceConnId,
-              ...(task.import_window_start ? { ship_date_from: task.import_window_start } : {}),
-              ...(task.import_window_end   ? { ship_date_to:   task.import_window_end   } : {}),
+              ...(resolvedShipDateFrom ? { ship_date_from: resolvedShipDateFrom } : {}),
+              ...(resolvedShipDateTo   ? { ship_date_to:   resolvedShipDateTo   } : {}),
               ...(insightIsRawDump ? { _raw: true } : {}),
               ...(task.expand_serials ? { expand_serials: true } : {}),
             }),
@@ -2474,7 +2494,8 @@ await taskLog("ROW", `Sending row ${i + 1}/${rows.length}${isMultiSn ? ` [SN: ${
         if (!wasCancelled && task.recurrence !== "one-time") {
           const prev = new Date(task.start_date_time);
           const next = new Date(prev);
-          if (task.recurrence === "daily")        next.setDate(prev.getDate() + 1);
+          if (task.recurrence === "hourly")       next.setHours(prev.getHours() + 1);
+          else if (task.recurrence === "daily")   next.setDate(prev.getDate() + 1);
           else if (task.recurrence === "weekly")  next.setDate(prev.getDate() + 7);
           else if (task.recurrence === "monthly") next.setMonth(prev.getMonth() + 1);
           await supabase
@@ -3112,6 +3133,7 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
   // ── Open edit modal ───────────────────────────────────────
   function openEdit(task: ScheduledTask) {
     setEditTask(task);
+    setWindowMode(task.import_window_start || task.import_window_end ? "custom" : "current");
     setEditForm({
       taskName: task.task_name,
       startDateTime: "",
@@ -3129,6 +3151,7 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
       expandSerials: task.expand_serials ?? false,
       importWindowStart: task.import_window_start ?? "",
       importWindowEnd:   task.import_window_end   ?? "",
+      lookbackDays:      task.lookback_days ?? null,
     });
   }
 
@@ -3136,6 +3159,14 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
   async function handleEditSave(e: React.FormEvent) {
     e.preventDefault();
     if (!editTask) return;
+    if (
+      editForm.importWindowStart &&
+      editForm.importWindowEnd &&
+      editForm.importWindowStart > editForm.importWindowEnd
+    ) {
+      alert("Import window: 'From' date must be on or before the 'To' date.");
+      return;
+    }
     setEditSubmitting(true);
 
     try {
@@ -3164,6 +3195,7 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
           expand_serials: editForm.expandSerials || null,
           import_window_start: editForm.importWindowStart.trim() || null,
           import_window_end:   editForm.importWindowEnd.trim()   || null,
+          lookback_days:       editForm.lookbackDays && editForm.lookbackDays > 0 ? editForm.lookbackDays : null,
         })
         .eq("id", editTask.id)
         .select("id");
@@ -4895,47 +4927,104 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                         Import Window
                         <span className="text-gray-600 normal-case font-normal ml-1">(optional — leave blank to use connection default)</span>
                       </label>
-                      <div className="flex items-center gap-3">
-                        <div className="flex-1">
-                          <label className="block text-[11px] text-gray-500 mb-1">From</label>
-                          <input
-                            type="date"
-                            value={editForm.importWindowStart}
-                            onChange={(e) => setEditForm((p) => ({ ...p, importWindowStart: e.target.value }))}
-                            className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent"
-                          />
-                        </div>
-                        <div className="flex-1">
-                          <label className="block text-[11px] text-gray-500 mb-1">To</label>
-                          <input
-                            type="date"
-                            value={editForm.importWindowEnd}
-                            onChange={(e) => setEditForm((p) => ({ ...p, importWindowEnd: e.target.value }))}
-                            className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent"
-                          />
-                        </div>
-                        {(editForm.importWindowStart || editForm.importWindowEnd) && (
+
+                      {windowMode === "current" ? (
+                        /* Current Day mode: pill (clearable) + Days in the past number input. */
+                        <div className="flex items-end gap-3 flex-wrap">
                           <button
                             type="button"
-                            onClick={() => setEditForm((p) => ({ ...p, importWindowStart: "", importWindowEnd: "" }))}
-                            className="mt-5 p-2 text-gray-500 hover:text-red-400 hover:bg-gray-800 rounded-lg transition-colors"
-                            title="Clear window"
+                            onClick={() => {
+                              setWindowMode("custom");
+                              setEditForm((p) => ({ ...p, lookbackDays: null }));
+                            }}
+                            className="inline-flex items-center gap-2 px-3 py-2 bg-amber-500/15 border border-amber-500/40 rounded-xl text-amber-300 hover:bg-amber-500/25 transition-colors"
+                            title="Switch to a custom date range"
                           >
-                            <X className="w-4 h-4" />
+                            <Check className="w-4 h-4" />
+                            Current Day
+                            <X className="w-3.5 h-3.5 opacity-70" />
                           </button>
-                        )}
-                      </div>
-                      {editForm.importWindowStart && editForm.importWindowEnd && (
-                        <p className="text-xs text-amber-400/70 mt-1.5 flex items-center gap-1">
-                          <Check className="w-3 h-3" />
-                          Fetching {editForm.importWindowStart} – {editForm.importWindowEnd}
-                        </p>
-                      )}
-                      {editForm.importWindowStart && !editForm.importWindowEnd && (
-                        <p className="text-xs text-amber-400/70 mt-1.5 flex items-center gap-1">
-                          <Check className="w-3 h-3" />
-                          Fetching from {editForm.importWindowStart} through yesterday
-                        </p>
+
+                          <div>
+                            <label className="block text-[11px] text-gray-500 mb-1">Days in the past</label>
+                            <input
+                              type="number"
+                              min={0}
+                              max={90}
+                              placeholder="0"
+                              value={editForm.lookbackDays ?? ""}
+                              onChange={(e) => {
+                                const v = e.target.value.trim();
+                                const n = v === "" ? null : Math.max(0, Math.min(90, parseInt(v, 10) || 0));
+                                setEditForm((p) => ({ ...p, lookbackDays: n }));
+                              }}
+                              className="w-28 bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent"
+                            />
+                          </div>
+
+                          <p className="text-xs text-amber-400/70 self-end pb-2.5">
+                            {editForm.lookbackDays && editForm.lookbackDays > 0
+                              ? `Window: today minus ${editForm.lookbackDays} through yesterday.`
+                              : "Window: yesterday only."}
+                          </p>
+                        </div>
+                      ) : (
+                        /* Custom range mode: re-enable button + From/To date pickers. */
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setWindowMode("current");
+                              setEditForm((p) => ({ ...p, importWindowStart: "", importWindowEnd: "" }));
+                            }}
+                            className="inline-flex items-center gap-2 px-3 py-2 mb-3 bg-gray-800 border border-gray-700 rounded-xl text-gray-300 hover:bg-gray-700 transition-colors"
+                            title="Switch back to today-relative lookback"
+                          >
+                            <CalendarRange className="w-4 h-4" />
+                            Use Current Day
+                          </button>
+
+                          <div className="flex items-center gap-3">
+                            <div className="flex-1">
+                              <label className="block text-[11px] text-gray-500 mb-1">From</label>
+                              <input
+                                type="date"
+                                value={editForm.importWindowStart}
+                                max={editForm.importWindowEnd || undefined}
+                                onChange={(e) => setEditForm((p) => ({ ...p, importWindowStart: e.target.value }))}
+                                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent"
+                              />
+                            </div>
+                            <div className="flex-1">
+                              <label className="block text-[11px] text-gray-500 mb-1">To</label>
+                              <input
+                                type="date"
+                                value={editForm.importWindowEnd}
+                                min={editForm.importWindowStart || undefined}
+                                onChange={(e) => setEditForm((p) => ({ ...p, importWindowEnd: e.target.value }))}
+                                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent"
+                              />
+                            </div>
+                          </div>
+                          {editForm.importWindowStart && editForm.importWindowEnd && editForm.importWindowStart > editForm.importWindowEnd && (
+                            <p className="text-xs text-red-400 mt-1.5 flex items-center gap-1">
+                              <X className="w-3 h-3" />
+                              &apos;From&apos; date must be on or before &apos;To&apos; date.
+                            </p>
+                          )}
+                          {editForm.importWindowStart && editForm.importWindowEnd && editForm.importWindowStart <= editForm.importWindowEnd && (
+                            <p className="text-xs text-amber-400/70 mt-1.5 flex items-center gap-1">
+                              <Check className="w-3 h-3" />
+                              Fetching {editForm.importWindowStart} – {editForm.importWindowEnd}
+                            </p>
+                          )}
+                          {editForm.importWindowStart && !editForm.importWindowEnd && (
+                            <p className="text-xs text-amber-400/70 mt-1.5 flex items-center gap-1">
+                              <Check className="w-3 h-3" />
+                              Fetching from {editForm.importWindowStart} through yesterday
+                            </p>
+                          )}
+                        </>
                       )}
                     </div>
                   );
