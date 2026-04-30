@@ -1,9 +1,9 @@
 // GET /api/insight-invoice-probe
-// Tries multiple CustomerInvoice request body formats and logs all results to the DB.
-// Open in browser once — results stored in task_logs under a probe task entry.
+// Tries multiple CustomerInvoice request body formats and returns all results.
+// Open in browser — no auth required (uses service role client).
 
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase-server";
+import { createAdminClient } from "@/lib/supabase-admin";
 
 const INVOICE_PATH = "/NA/CustomerInvoice";
 const OAUTH_PATH   = "/oauth/token";
@@ -11,7 +11,7 @@ const OAUTH_PATH   = "/oauth/token";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const supabase = await createClient();
+  const supabase = createAdminClient();
 
   // Load Insight Prod connection
   const { data: conn } = await supabase
@@ -23,11 +23,11 @@ export async function GET() {
 
   if (!conn) return NextResponse.json({ error: "Insight Prod connection not found" }, { status: 404 });
 
-  const raw        = conn.config as Record<string, string>;
-  const baseUrl    = raw.url?.replace(/\/$/, "") ?? "";
-  const clientKey  = raw.client_key ?? raw.client_id ?? "";
+  const raw          = conn.config as Record<string, string>;
+  const baseUrl      = raw.url?.replace(/\/$/, "") ?? "";
+  const clientKey    = raw.client_key ?? raw.client_id ?? "";
   const clientSecret = raw.client_secret ?? "";
-  const clientId   = raw.client_id_header ?? raw.client_id ?? "";
+  const clientId     = raw.client_id_header ?? raw.client_id ?? "";
 
   // Get OAuth token
   const tokenUrl = `${baseUrl}${OAUTH_PATH}?grant_type=client_credentials`;
@@ -47,7 +47,7 @@ export async function GET() {
     "ClientID":      clientId,
   };
 
-  const invoiceUrl = baseUrl + INVOICE_PATH;
+  const invoiceUrl    = baseUrl + INVOICE_PATH;
   const yesterday     = new Date(Date.now() - 86400000).toISOString().split("T")[0];
   const yesterdaySap  = yesterday.replace(/-/g, "");
 
@@ -70,17 +70,17 @@ export async function GET() {
     try {
       const res  = await fetch(invoiceUrl, { method: "POST", headers, body: JSON.stringify(body) });
       const text = await res.text();
-      results[label] = `HTTP ${res.status}: ${text.slice(0, 500)}`;
+      results[label] = `HTTP ${res.status}: ${text.slice(0, 600)}`;
     } catch (e) {
       results[label] = `ERROR: ${e instanceof Error ? e.message : String(e)}`;
     }
   }
 
-  // Store results in Supabase so Claude can read them
+  // Store results in Supabase so Claude can read them later
   await supabase.from("task_logs").insert({
-    task_id:    "f78d8cc0-9228-4269-884a-d77adc134af1", // Insight>>JSON task
+    task_id:    "f78d8cc0-9228-4269-884a-d77adc134af1",
     action:     "INFO",
-    details:    JSON.stringify(results, null, 2),
+    details:    `[INVOICE-PROBE] ${JSON.stringify(results, null, 2)}`,
     created_at: new Date().toISOString(),
   });
 
