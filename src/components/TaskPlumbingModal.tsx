@@ -26,13 +26,45 @@ import {
   ChevronUp,
   ChevronDown,
 } from "lucide-react";
-import type { ScheduledTask, EndpointConnection, MappingProfile } from "@/lib/types";
+import type { ScheduledTask, EndpointConnection, MappingProfile, MappingRow } from "@/lib/types";
 
 interface Props {
   task: ScheduledTask;
   connections: EndpointConnection[];
   mappingProfiles: MappingProfile[];
   onClose: () => void;
+}
+
+/** Role-based classification of a mapping rule. A rule can have multiple roles
+ *  (e.g. an isKey field whose transform is also ai_lookup → ["key", "ai"]). */
+type RuleRole = "key" | "link" | "ai" | "static" | "transform" | "passthrough";
+
+const ROLE_LABELS: Record<RuleRole, string> = {
+  key: "Keys",
+  link: "Links",
+  ai: "AI",
+  transform: "Transforms",
+  static: "Static",
+  passthrough: "Pass-through",
+};
+
+const ROLE_ORDER: RuleRole[] = ["key", "link", "ai", "transform", "static", "passthrough"];
+
+function getRuleRoles(rule: MappingRow): RuleRole[] {
+  const roles: RuleRole[] = [];
+  if (rule.isKey) roles.push("key");
+  if (rule.isLinkField) roles.push("link");
+  if (rule.transform === "ai_lookup" || rule.transform === "ai_guess") roles.push("ai");
+  else if (rule.transform === "static") roles.push("static");
+  else if (
+    rule.transform === "concat" ||
+    rule.transform === "expression" ||
+    rule.transform === "excel_date" ||
+    rule.transform === "sku_lookup" ||
+    rule.transform === "on_order_status"
+  ) roles.push("transform");
+  else if (rule.transform === "none") roles.push("passthrough");
+  return roles;
 }
 
 /** Resolve which mapping profiles a task references, in display order. */
@@ -202,13 +234,18 @@ function buildProfileGraph(
   profile: MappingProfile,
   src: EndpointConnection | undefined,
   tgt: EndpointConnection | undefined,
+  roleFilter: Set<RuleRole>,
 ): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
 
   const COL_X = { source: 0, rule: 300, target: 720 };
   const ROW_HEIGHT = 80;
-  const centerY = Math.max(0, (profile.mappings.length * ROW_HEIGHT) / 2 - 30);
+  const visibleMappings = profile.mappings.filter((rule) => {
+    const roles = getRuleRoles(rule);
+    return roles.some((r) => roleFilter.has(r));
+  });
+  const centerY = Math.max(0, (visibleMappings.length * ROW_HEIGHT) / 2 - 30);
 
   const sourceNodeId = "src-conn";
   const targetNodeId = "tgt-conn";
@@ -258,7 +295,7 @@ function buildProfileGraph(
     targetPosition: "left",
   } as Node);
 
-  profile.mappings.forEach((rule, idx) => {
+  visibleMappings.forEach((rule, idx) => {
     const srcField = profile.source_fields.find((f) => f.id === rule.sourceFieldId);
     const tgtField = profile.target_fields.find((f) => f.id === rule.targetFieldId);
     const srcLabel = rule.sourceFieldId === "__static__"
@@ -285,6 +322,7 @@ function buildProfileGraph(
             <div className="text-[10px] uppercase tracking-wider text-amber-400/80 mt-0.5">
               {rule.transform === "none" ? "passthrough" : rule.transform}
               {rule.isKey ? " · key" : ""}
+              {rule.isLinkField ? " · link" : ""}
             </div>
           </div>
         ),
@@ -450,12 +488,77 @@ function PlumbingToolbar({ nodes, search, setSearch, matches, matchIdx, setMatch
   );
 }
 
+/** Role-based filter chips. Only rendered while drilled in, since these filters
+ *  apply to per-rule nodes. Empty roles render as disabled chips so the layout
+ *  is stable when toggling between profiles. */
+function RoleFilterPanel({
+  profile,
+  roleFilter,
+  setRoleFilter,
+}: {
+  profile: MappingProfile;
+  roleFilter: Set<RuleRole>;
+  setRoleFilter: (s: Set<RuleRole>) => void;
+}) {
+  const counts = useMemo(() => {
+    const c: Record<RuleRole, number> = {
+      key: 0, link: 0, ai: 0, transform: 0, static: 0, passthrough: 0,
+    };
+    for (const rule of profile.mappings) {
+      for (const role of getRuleRoles(rule)) c[role]++;
+    }
+    return c;
+  }, [profile]);
+
+  function toggle(role: RuleRole) {
+    const next = new Set(roleFilter);
+    if (next.has(role)) next.delete(role);
+    else next.add(role);
+    setRoleFilter(next);
+  }
+
+  return (
+    <Panel
+      position="top-right"
+      className="!m-2 flex items-center gap-1 bg-gray-900/85 backdrop-blur border border-gray-800 rounded-xl p-1.5 shadow-lg flex-wrap max-w-[460px]"
+    >
+      <span className="text-[10px] uppercase tracking-wider text-gray-500 px-1.5">Show</span>
+      {ROLE_ORDER.map((role) => {
+        const count = counts[role];
+        const active = roleFilter.has(role);
+        const empty = count === 0;
+        return (
+          <button
+            key={role}
+            type="button"
+            onClick={() => { if (!empty) toggle(role); }}
+            disabled={empty}
+            className={`px-2 py-1 rounded-md text-[11px] font-medium transition-colors border ${
+              empty
+                ? "border-gray-800 text-gray-700 cursor-not-allowed"
+                : active
+                ? "border-amber-500/50 bg-amber-500/15 text-amber-300 hover:bg-amber-500/25"
+                : "border-gray-700 bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700"
+            }`}
+            title={`${ROLE_LABELS[role]} — ${count} rule${count !== 1 ? "s" : ""}`}
+          >
+            {ROLE_LABELS[role]} <span className="text-[10px] opacity-70">{count}</span>
+          </button>
+        );
+      })}
+    </Panel>
+  );
+}
+
 export function TaskPlumbingModal({ task, connections, mappingProfiles, onClose }: Props) {
   const router = useRouter();
   const [fullscreen, setFullscreen] = useState(false);
   const [search, setSearch] = useState("");
   const [matchIdx, setMatchIdx] = useState(0);
   const [drilledIdx, setDrilledIdx] = useState<number | null>(null);
+  const [roleFilter, setRoleFilter] = useState<Set<RuleRole>>(
+    () => new Set<RuleRole>(["key", "link", "ai", "transform", "static"]),
+  );
 
   const profiles = useMemo(
     () => resolveProfiles(task, mappingProfiles),
@@ -467,10 +570,10 @@ export function TaskPlumbingModal({ task, connections, mappingProfiles, onClose 
       const { profile } = profiles[drilledIdx];
       const src = resolveConnection(profile.source_connection_id, task.source_connection_id, connections);
       const tgt = resolveConnection(profile.target_connection_id, task.target_connection_id, connections);
-      return buildProfileGraph(profile, src, tgt);
+      return buildProfileGraph(profile, src, tgt, roleFilter);
     }
     return buildGraph(task, connections, mappingProfiles);
-  }, [task, connections, mappingProfiles, drilledIdx, profiles]);
+  }, [task, connections, mappingProfiles, drilledIdx, profiles, roleFilter]);
 
   // Reset search and match index when drill-in changes (different node universe).
   useEffect(() => {
@@ -601,9 +704,9 @@ export function TaskPlumbingModal({ task, connections, mappingProfiles, onClose 
               onNodeDoubleClick={(_evt, node) => {
                 const d = node.data as { profileId?: string; connectionId?: string };
                 if (d.profileId) {
-                  window.open(`/mappings/${d.profileId}`, "_blank", "noopener,noreferrer");
+                  router.push(`/mappings/${d.profileId}`);
                 } else if (d.connectionId) {
-                  window.open(`/connections/${d.connectionId}`, "_blank", "noopener,noreferrer");
+                  router.push(`/connections/${d.connectionId}`);
                 }
               }}
             >
@@ -617,6 +720,13 @@ export function TaskPlumbingModal({ task, connections, mappingProfiles, onClose 
                 drilledInLabel={drilledLabel}
                 onDrillOut={() => setDrilledIdx(null)}
               />
+              {drilledIdx !== null && profiles[drilledIdx] && (
+                <RoleFilterPanel
+                  profile={profiles[drilledIdx].profile}
+                  roleFilter={roleFilter}
+                  setRoleFilter={setRoleFilter}
+                />
+              )}
               <Background color="#1f2937" gap={24} />
             </ReactFlow>
           )}
@@ -626,8 +736,8 @@ export function TaskPlumbingModal({ task, connections, mappingProfiles, onClose 
         <div className="px-6 py-2.5 border-t border-gray-800 text-[11px] text-gray-500 flex items-center gap-2">
           <ArrowRight className="w-3 h-3" />
           {drilledIdx === null
-            ? "Drag to pan · scroll to zoom · click Source/Target to open the connection · click a Mapping node to drill in · double-click to open in a new tab"
-            : "Drag to pan · scroll to zoom · click Source/Target to open the connection · double-click to open in a new tab · use Back to return"}
+            ? "Drag to pan · scroll to zoom · click Source/Target to open the connection · click a Mapping node to drill in · double-click to open the editor"
+            : "Drag to pan · scroll to zoom · click Source/Target to open the connection · double-click to open the editor · use Back to return"}
         </div>
       </div>
     </div>
