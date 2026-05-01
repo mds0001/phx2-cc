@@ -19,6 +19,7 @@
     "@supabase/ssr": "^0.5.2",
     "@supabase/supabase-js": "^2.49.2",
     "@types/pdfkit": "^0.17.6",
+    "@xyflow/react": "^12.10.2",
     "jszip": "^3.10.1",
     "lucide-react": "^0.474.0",
     "next": "^15.2.4",

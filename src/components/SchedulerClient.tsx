@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, Dispatch, SetStateAction } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useState, useEffect, useMemo, useCallback, useRef, Dispatch, SetStateAction } from "react";
+import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase-browser";
 import * as XLSX from "xlsx";
 import {
@@ -28,7 +28,9 @@ import {
   Bug,
   GripVertical,
   CalendarRange,
+  Workflow,
 } from "lucide-react";
+import { TaskPlumbingModal } from "./TaskPlumbingModal";
 import type {
   Profile,
   ScheduledTask,
@@ -194,6 +196,7 @@ export default function SchedulerClient({
   activeCustomerId = null,
 }: Props) {
   const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const supabase = createClient();
   const canControlPoll = profile?.role === "administrator";
@@ -205,6 +208,27 @@ export default function SchedulerClient({
 
   const [editTask, setEditTask] = useState<ScheduledTask | null>(null);
   const [editForm, setEditForm] = useState<FormState>(EMPTY_FORM);
+  // Plumbing modal is URL-driven (?plumbing=<taskId>) so the browser Back button
+  // restores it after the user navigates into the connection editor.
+  const plumbingTaskId = searchParams.get("plumbing");
+  const plumbingTask = useMemo(
+    () => (plumbingTaskId ? tasks.find((t) => t.id === plumbingTaskId) ?? null : null),
+    [plumbingTaskId, tasks],
+  );
+  const openPlumbing = useCallback(
+    (taskId: string) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("plumbing", taskId);
+      router.replace(`${pathname}?${params.toString()}`);
+    },
+    [router, pathname, searchParams],
+  );
+  const closePlumbing = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("plumbing");
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname);
+  }, [router, pathname, searchParams]);
   // Import-window mode toggle. "current" = today-relative lookback; "custom" = absolute date range.
   const [windowMode, setWindowMode] = useState<"current" | "custom">("current");
 
@@ -3819,6 +3843,15 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
 
                       {/* Actions */}
                       <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                        <button
+                          onClick={() => openPlumbing(task.id)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg text-xs font-medium transition-all"
+                          title="View plumbing"
+                        >
+                          <Workflow className="w-3 h-3 text-amber-400" />
+                          Plumbing
+                        </button>
+
                         {task.is_system ? (
                           <>
                             {/* Use as Template — available to all non-read-only users */}
@@ -5228,6 +5261,15 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
             </form>
           </div>
         </div>
+      )}
+
+      {plumbingTask && (
+        <TaskPlumbingModal
+          task={plumbingTask}
+          connections={endpointConnections}
+          mappingProfiles={mappingProfiles}
+          onClose={closePlumbing}
+        />
       )}
 
       {/* ── Pipeline Slide-over Panel ── */}
