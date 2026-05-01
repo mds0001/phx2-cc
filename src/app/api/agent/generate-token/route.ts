@@ -20,11 +20,11 @@ export async function POST(req: NextRequest) {
 
     const { data: profile } = await supabaseUser
       .from("profiles")
-      .select("role")
+      .select("user_type")
       .eq("id", user.id)
       .single();
 
-    if (profile?.role !== "administrator") {
+    if (profile?.user_type !== "admin") {
       return NextResponse.json({ error: "Admin only" }, { status: 403 });
     }
 

@@ -201,3 +201,174 @@ html.high-contrast .bg-indigo-600\/20 { background-color: rgba(99,102,241,0.3) !
 html.high-contrast ::-webkit-scrollbar-track  { background: #000000; }
 html.high-contrast ::-webkit-scrollbar-thumb  { background: #404040; border-color: #000000; }
 html.high-contrast ::-webkit-scrollbar-corner { background: #000000; }
+
+/* === IVANTI === */
+html.ivanti {
+  color-scheme: light;
+  font-family: "Segoe UI", Tahoma, Arial, sans-serif !important;
+}
+html.ivanti body {
+  background: #ffffff;
+  color: #000000;
+  font-family: "Segoe UI", Tahoma, Arial, sans-serif !important;
+  font-size: 13px;
+  font-weight: 400;
+}
+html.ivanti * { font-family: inherit !important; }
+
+html.ivanti ::-webkit-scrollbar-track  { background: #f0f4f8; }
+html.ivanti ::-webkit-scrollbar-thumb  { background: #9ab0c8; border-color: #f0f4f8; }
+html.ivanti ::-webkit-scrollbar-corner { background: #f0f4f8; }
+
+/* --- Backgrounds ---
+   bg-gray-950 = content page wrapper  -> white
+   bg-gray-900 = cards / panels        -> white  (sidebar handled by specific selector below)
+   bg-gray-800 = inset / secondary     -> near-white #f5f7fa
+   bg-gray-700 = dividers              -> light gray #e0e6ee
+   bg-gray-600 = muted fills           -> #c8d4e0   */
+html.ivanti .bg-gray-950 { background-color: #ffffff !important; }
+html.ivanti .bg-gray-900 { background-color: #ffffff !important; }
+html.ivanti .bg-gray-800 { background-color: #f5f7fa !important; }
+html.ivanti .bg-gray-700 { background-color: #e0e6ee !important; }
+html.ivanti .bg-gray-600 { background-color: #c8d4e0 !important; }
+html.ivanti .bg-gray-500 { background-color: #a8b8c8 !important; }
+
+html.ivanti .bg-gray-950\/50  { background-color: rgba(255,255,255,0.5)  !important; }
+html.ivanti .bg-gray-900\/80  { background-color: rgba(255,255,255,0.92) !important; }
+html.ivanti .bg-gray-900\/60  { background-color: rgba(255,255,255,0.7)  !important; }
+html.ivanti .bg-gray-900\/50  { background-color: rgba(255,255,255,0.5)  !important; }
+html.ivanti .bg-gray-900\/40  { background-color: rgba(255,255,255,0.4)  !important; }
+html.ivanti .bg-gray-800\/80  { background-color: rgba(245,247,250,0.8)  !important; }
+html.ivanti .bg-gray-800\/60  { background-color: rgba(245,247,250,0.6)  !important; }
+html.ivanti .bg-gray-800\/50  { background-color: rgba(245,247,250,0.5)  !important; }
+html.ivanti .bg-gray-800\/40  { background-color: rgba(245,247,250,0.4)  !important; }
+html.ivanti .bg-gray-800\/30  { background-color: rgba(245,247,250,0.3)  !important; }
+html.ivanti .bg-gray-700\/50  { background-color: rgba(224,230,238,0.5)  !important; }
+html.ivanti .bg-gray-700\/30  { background-color: rgba(224,230,238,0.3)  !important; }
+html.ivanti .bg-gray-700\/20  { background-color: rgba(224,230,238,0.2)  !important; }
+html.ivanti .bg-gray-500\/15  { background-color: rgba(168,184,200,0.12) !important; }
+html.ivanti .bg-gray-500\/10  { background-color: rgba(168,184,200,0.08) !important; }
+html.ivanti .bg-gray-500\/5   { background-color: rgba(168,184,200,0.05) !important; }
+
+html.ivanti .backdrop-blur-xl,
+html.ivanti .backdrop-blur-lg,
+html.ivanti .backdrop-blur-md,
+html.ivanti .backdrop-blur-sm { backdrop-filter: none !important; }
+
+/* --- Sidebar nav: fixed left panel -> dark navy #1c2333
+   Footer bar:   fixed bottom bar   -> dark navy #1c2333
+   Target by fixed+left-0 (sidebar) and fixed+bottom-0 (footer) */
+html.ivanti .fixed.left-0 { background-color: #ffffff !important; }
+html.ivanti .fixed.bottom-0 { background-color: #000000 !important; }
+
+/* --- Text: black everywhere by default ---
+   Sidebar/footer children get white text via parent-specific selectors */
+html.ivanti .text-white    { color: #000000 !important; }
+html.ivanti .text-gray-100 { color: #000000 !important; }
+html.ivanti .text-gray-200 { color: #000000 !important; }
+html.ivanti .text-gray-300 { color: #111111 !important; }
+html.ivanti .text-gray-400 { color: #333333 !important; }
+html.ivanti .text-gray-500 { color: #555555 !important; }
+html.ivanti .text-gray-600 { color: #777777 !important; }
+html.ivanti .text-gray-700 { color: #999999 !important; }
+
+/* Footer bar: white text on black */
+html.ivanti .fixed.bottom-0 .text-white,
+html.ivanti .fixed.bottom-0 .text-gray-100,
+html.ivanti .fixed.bottom-0 .text-gray-200,
+html.ivanti .fixed.bottom-0 .text-gray-300,
+html.ivanti .fixed.bottom-0 .text-gray-400 { color: #ffffff !important; }
+html.ivanti .fixed.bottom-0 .text-gray-500 { color: #c0d0e0 !important; }
+html.ivanti .fixed.bottom-0 .text-gray-600 { color: #7a9ab5 !important; }
+
+/* Coloured buttons keep white text */
+html.ivanti .bg-indigo-600.text-white,
+html.ivanti .bg-indigo-500.text-white,
+html.ivanti .bg-emerald-600.text-white,
+html.ivanti .bg-emerald-500.text-white,
+html.ivanti .bg-red-600.text-white,
+html.ivanti .bg-red-500.text-white,
+html.ivanti .bg-violet-600.text-white,
+html.ivanti .bg-cyan-600.text-white { color: #ffffff !important; }
+
+/* --- Borders */
+html.ivanti .border-gray-800      { border-color: #e0e6ee !important; }
+html.ivanti .border-gray-700      { border-color: #c8d4e0 !important; }
+html.ivanti .border-gray-800\/60  { border-color: rgba(224,230,238,0.6) !important; }
+html.ivanti .divide-gray-800 > * + *     { border-color: #e0e6ee !important; }
+html.ivanti .divide-gray-800\/60 > * + * { border-color: rgba(224,230,238,0.6) !important; }
+
+/* Footer bar borders stay subtle */
+html.ivanti .fixed.bottom-0 .border-gray-800 { border-color: rgba(255,255,255,0.08) !important; }
+
+/* --- Hover */
+html.ivanti .hover\:bg-gray-900:hover { background-color: #f0f4f8 !important; }
+html.ivanti .hover\:bg-gray-800:hover { background-color: #edf2f7 !important; }
+html.ivanti .hover\:bg-gray-700:hover { background-color: #e0e6ee !important; }
+
+/* --- Inputs */
+html.ivanti input::placeholder,
+html.ivanti textarea::placeholder { color: #a8b8c8 !important; }
+html.ivanti input,
+html.ivanti select,
+html.ivanti textarea {
+  background-color: #ffffff !important;
+  color: #000000 !important;
+  border-color: #cccccc !important;
+}
+
+/* --- Accents: Ivanti blue #1a7bc4 */
+html.ivanti .text-indigo-400  { color: #1a7bc4 !important; }
+html.ivanti .text-indigo-300  { color: #1a7bc4 !important; }
+html.ivanti .text-indigo-500  { color: #1566a8 !important; }
+html.ivanti .bg-indigo-600    { background-color: #1a7bc4 !important; }
+html.ivanti .bg-indigo-500    { background-color: #2d8fd8 !important; }
+html.ivanti .bg-indigo-600\/20 { background-color: rgba(26,123,196,0.1)  !important; }
+html.ivanti .bg-indigo-500\/10 { background-color: rgba(26,123,196,0.07) !important; }
+html.ivanti .border-indigo-500\/40 { border-color: rgba(26,123,196,0.3) !important; }
+
+/* Active nav in sidebar */
+html.ivanti .fixed.left-0 .bg-indigo-600\/20 { background-color: rgba(26,123,196,0.12) !important; }
+html.ivanti .fixed.left-0 .text-indigo-400   { color: #1a7bc4 !important; }
+
+/* Page header bar: black background, white labels, white buttons */
+html.ivanti header.sticky {
+  background-color: #000000 !important;
+  backdrop-filter: none !important;
+  border-bottom-color: #333333 !important;
+}
+/* Header non-button text — white */
+html.ivanti header.sticky .text-white,
+html.ivanti header.sticky .text-gray-100,
+html.ivanti header.sticky .text-gray-200,
+html.ivanti header.sticky .text-gray-300,
+html.ivanti header.sticky .text-gray-400 { color: #ffffff !important; }
+html.ivanti header.sticky .text-gray-500 { color: #bbbbbb !important; }
+html.ivanti header.sticky .text-gray-600 { color: #888888 !important; }
+/* Count badge */
+html.ivanti header.sticky .bg-gray-800 { background-color: #333333 !important; }
+html.ivanti header.sticky .bg-gray-700 { background-color: #444444 !important; }
+html.ivanti header.sticky .border-gray-700 { border-color: #555555 !important; }
+html.ivanti header.sticky .border-gray-800 { border-color: #444444 !important; }
+/* All buttons — white pill */
+html.ivanti header.sticky button {
+  background-color: #ffffff !important;
+  border-color: #cccccc !important;
+}
+/* Button text: compound selector beats the general header .text-* rule */
+html.ivanti header.sticky button.text-gray-100,
+html.ivanti header.sticky button.text-gray-200,
+html.ivanti header.sticky button.text-gray-300,
+html.ivanti header.sticky button.text-gray-400,
+html.ivanti header.sticky button.text-gray-500,
+html.ivanti header.sticky button.text-gray-600 { color: #ffffff !important; }
+/* Primary CTA (New Connection) — Ivanti blue */
+html.ivanti header.sticky button.bg-cyan-500,
+html.ivanti header.sticky button.bg-cyan-400,
+html.ivanti header.sticky button.bg-indigo-600 {
+  background-color: #1a7bc4 !important;
+  color: #ffffff !important;
+}
+
+/* Table headers */
+html.ivanti table thead tr { background-color: #e8eef6 !important; }

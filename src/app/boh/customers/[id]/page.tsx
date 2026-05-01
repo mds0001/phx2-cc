@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
+import { getActiveRoleAssignment } from "@/lib/permissions";
 import CustomerEditorClient from "@/components/CustomerEditorClient";
 
 export default async function CustomerEditorPage({
@@ -13,12 +14,8 @@ export default async function CustomerEditorPage({
   if (!user) redirect("/login");
 
   // Only Administrators can access Back of House
-  const { data: me } = await supabase
-    .from("profiles")
-    .select("role")
-    .eq("id", user.id)
-    .single();
-  if (me?.role !== "administrator") redirect("/dashboard");
+  const assignment = await getActiveRoleAssignment(user.id);
+  if (assignment?.role !== "administrator") redirect("/dashboard");
 
   const isNew = id === "new";
   let customer = null;

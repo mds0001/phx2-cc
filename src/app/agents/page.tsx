@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
+import { getActiveRoleAssignment } from "@/lib/permissions";
 import AgentsClient from "@/components/AgentsClient";
 
 export default async function AgentsPage() {
@@ -7,13 +8,8 @@ export default async function AgentsPage() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("role, customer_id")
-    .eq("id", user.id)
-    .single();
-
-  if (profile?.role !== "administrator") redirect("/scheduler");
+  const assignment = await getActiveRoleAssignment(user.id);
+  if (assignment?.role !== "administrator") redirect("/scheduler");
 
   // Fetch agents with their customer name
   const { data: agents } = await supabase

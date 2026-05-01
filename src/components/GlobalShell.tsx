@@ -4,10 +4,11 @@ import { useState, useEffect } from "react";
 import { useTheme } from "next-themes";
 import { usePathname, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase-browser";
+import { useActiveRole } from "@/lib/useActiveRole";
 import {
   CalendarClock, GitMerge, Plug, Building2, Users,
   FileText, BarChart3, Activity, ShieldCheck, LogOut, Bot, Tag,
-  TrendingUp, UserPlus, Sun, Moon, Contrast,
+  TrendingUp, UserPlus, Sun, Moon, Contrast, ChevronDown,
 } from "lucide-react";
 
 // Types
@@ -83,11 +84,12 @@ export default function GlobalShell() {
   const { theme, setTheme } = useTheme();
   const [themeMounted, setThemeMounted] = useState(false);
 
-  const THEMES = ["dark", "light", "high-contrast"] as const;
+  const THEMES = ["dark", "light", "high-contrast", "ivanti"] as const;
   const THEME_META = {
     dark:            { label: "Dark",          icon: <Moon className="w-3.5 h-3.5" /> },
     light:           { label: "Office",        icon: <Sun className="w-3.5 h-3.5" /> },
     "high-contrast": { label: "High Contrast", icon: <Contrast className="w-3.5 h-3.5" /> },
+    ivanti:           { label: "Ivanti",        icon: <Building2 className="w-3.5 h-3.5" /> },
   } as const;
   function cycleTheme() {
     const idx = THEMES.indexOf((theme ?? "dark") as typeof THEMES[number]);
@@ -100,8 +102,13 @@ export default function GlobalShell() {
   const [skuTweCount, setSkuTweCount] = useState(0);
   const [nonTemplateTasks, setNonTemplateTasks] = useState(0);
   const [pipelineActive, setPipelineActive] = useState(0);
-  const [isAdmin,   setIsAdmin]   = useState(false);
-  const [isAuditor, setIsAuditor] = useState(false);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const { availableRoles, active: activeRole, switchRole } = useActiveRole();
+  const [showRoleMenu, setShowRoleMenu] = useState(false);
+
+  const isAdmin   = activeRole?.role === "administrator";
+  const isAuditor = activeRole?.role === "schedule_auditor";
+  const isBasic   = activeRole?.role === "basic";
 
   const hidden = HIDDEN_PATHS.some((p) => pathname?.startsWith(p));
 
@@ -139,11 +146,7 @@ export default function GlobalShell() {
         .then(({ count }) => { if (count != null) setPipelineActive(count ?? 0); });
       supabase.auth.getUser().then(({ data: { user } }) => {
         if (!user) return;
-        supabase.from("profiles").select("role").eq("id", user.id).single()
-          .then(({ data }) => {
-            if (data?.role === "administrator") setIsAdmin(true);
-            if (data?.role === "schedule_auditor") setIsAuditor(true);
-          });
+        setUserEmail(user.email ?? null);
       });
     }
 
@@ -199,14 +202,16 @@ export default function GlobalShell() {
           {/* AUTOMATION */}
           <div className="flex flex-col gap-0.5">
             <SectionHeader label="Automation" />
-            <NavItem
-              icon={<CalendarClock className="w-4 h-4" />}
-              label="Scheduler"
-              href="/scheduler"
-              active={pathname?.startsWith("/scheduler") === true}
-              badge={schedulerBadge}
-            />
-            {!isAuditor && (
+            {!isBasic && (
+              <NavItem
+                icon={<CalendarClock className="w-4 h-4" />}
+                label="Scheduler"
+                href="/scheduler"
+                active={pathname?.startsWith("/scheduler") === true}
+                badge={schedulerBadge}
+              />
+            )}
+            {!isAuditor && !isBasic && (
               <NavItem
                 icon={<GitMerge className="w-4 h-4" />}
                 label="Mappings"
@@ -214,7 +219,7 @@ export default function GlobalShell() {
                 active={pathname?.startsWith("/mappings") === true}
               />
             )}
-            {!isAuditor && (
+            {!isAuditor && !isBasic && (
               <NavItem
                 icon={<Plug className="w-4 h-4" />}
                 label="Endpoints"
@@ -307,6 +312,50 @@ export default function GlobalShell() {
             active={pathname === "/account"}
           />
         </div>
+
+        {/* Current user + role switcher */}
+        {(userEmail || activeRole) && (
+          <div className="shrink-0 border-t border-gray-800 px-3 py-2 text-[12px] leading-tight relative">
+            {userEmail && (
+              <div className="text-gray-400 truncate" title={userEmail}>{userEmail}</div>
+            )}
+            {activeRole && availableRoles.length <= 1 && (
+              <div className="text-gray-600 capitalize">{activeRole.role.replace(/_/g, " ")}</div>
+            )}
+            {activeRole && availableRoles.length > 1 && (
+              <button
+                type="button"
+                onClick={() => setShowRoleMenu((p) => !p)}
+                className="mt-0.5 w-full flex items-center justify-between gap-1 text-gray-500 hover:text-gray-300 transition-colors capitalize"
+                title="Switch role"
+              >
+                <span>{activeRole.role.replace(/_/g, " ")}</span>
+                <ChevronDown className="w-3 h-3 shrink-0" />
+              </button>
+            )}
+            {showRoleMenu && availableRoles.length > 1 && (
+              <div className="absolute bottom-full left-0 right-0 mb-1 bg-gray-900 border border-gray-700 rounded-md shadow-xl overflow-hidden">
+                {availableRoles.map((r) => (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => { switchRole(r.id); setShowRoleMenu(false); }}
+                    className={`w-full text-left px-3 py-1.5 text-[12px] capitalize transition-colors ${
+                      r.id === activeRole?.id
+                        ? "bg-indigo-600/20 text-indigo-300"
+                        : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+                    }`}
+                  >
+                    {r.role.replace(/_/g, " ")}
+                    {r.is_primary && (
+                      <span className="ml-1.5 text-[9px] opacity-60">PRIMARY</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Sign out */}
         <div className="shrink-0 border-t border-gray-800 px-2 py-2">

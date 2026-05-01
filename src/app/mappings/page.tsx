@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
 import MappingsListClient from "@/components/MappingsListClient";
-import { isReadOnly, isAuditor } from "@/lib/permissions";
+import { isReadOnly, isAuditor, getActiveRoleAssignment } from "@/lib/permissions";
 import { resolveCustomerFilter } from "@/lib/customer-context";
 
 export const dynamic = 'force-dynamic';
@@ -11,15 +11,14 @@ export default async function MappingsPage() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: profile } = await supabase.from("profiles").select("role, customer_id").eq("id", user.id).single();
-  const role = profile?.role;
+  const assignment = await getActiveRoleAssignment(user.id);
+  const role = assignment?.role;
   if (isAuditor(role)) redirect("/scheduler");
+  if (role === "basic") redirect("/account");
   const isAdmin = role === "administrator";
-  const activeCustomerId = await resolveCustomerFilter(role, profile?.customer_id);
+  const activeCustomerId = await resolveCustomerFilter(assignment);
 
-  const { data: customers } = role !== "basic"
-    ? await supabase.from("customers").select("id, name, company").order("name")
-    : { data: [] };
+  const { data: customers } = await supabase.from("customers").select("id, name, company").order("name");
 
   let query = supabase
     .from("mapping_profiles")

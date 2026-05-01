@@ -14,7 +14,7 @@ git diff --cached --stat
 Write-Host ""
 $msg = Read-Host "Commit message (leave blank for default)"
 if ([string]::IsNullOrWhiteSpace($msg)) {
-    $msg = "feat: add insight-invoice-probe diagnostic endpoint + invoice raw dump in _raw mode"
+    $msg = "feat: invoice probe uses Insight QA connection (dev) instead of prod"
 }
 
 git commit -m $msg

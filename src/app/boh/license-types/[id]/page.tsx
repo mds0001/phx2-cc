@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
+import { getActiveRoleAssignment } from "@/lib/permissions";
 import LicenseTypeEditorClient from "@/components/LicenseTypeEditorClient";
 import type { LicenseType } from "@/lib/types";
 
@@ -15,9 +16,8 @@ export default async function LicenseTypeEditorPage({
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: me } = await supabase
-    .from("profiles").select("role").eq("id", user.id).single();
-  if (me?.role !== "administrator") redirect("/dashboard");
+  const assignment = await getActiveRoleAssignment(user.id);
+  if (assignment?.role !== "administrator") redirect("/dashboard");
 
   const isNew = id === "new";
   let licenseType = null;

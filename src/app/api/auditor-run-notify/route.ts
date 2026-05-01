@@ -52,15 +52,23 @@ export async function POST(req: NextRequest) {
     const admin = createAdminClient();
 
     // Find auditors scoped to this customer
-    const { data: auditors } = await admin
-      .from("profiles")
-      .select("email, first_name")
+    const { data: auditorRoles } = await admin
+      .from("user_roles")
+      .select("user_id")
       .eq("role", "schedule_auditor")
       .eq("customer_id", customer_id);
 
-    const recipients = (auditors ?? [])
-      .map((a) => a.email)
-      .filter((e): e is string => !!e);
+    const auditorIds = (auditorRoles ?? []).map((r) => r.user_id);
+    let recipients: string[] = [];
+    if (auditorIds.length > 0) {
+      const { data: auditors } = await admin
+        .from("profiles")
+        .select("email, first_name")
+        .in("id", auditorIds);
+      recipients = (auditors ?? [])
+        .map((a) => a.email)
+        .filter((e): e is string => !!e);
+    }
 
     if (recipients.length === 0) return NextResponse.json({ skipped: "no auditors" });
 

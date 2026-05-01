@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
 import { createAdminClient } from "@/lib/supabase-admin";
 import { resolveCustomerFilter } from "@/lib/customer-context";
+import { getActiveRoleAssignment } from "@/lib/permissions";
 import SkuResearchClient from "@/components/SkuResearchClient";
 
 export const dynamic = "force-dynamic";
@@ -34,14 +35,9 @@ export default async function SkuResearchPage() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("role, customer_id")
-    .eq("id", user.id)
-    .single();
-
-  const role = profile?.role;
-  const activeCustomerId = await resolveCustomerFilter(role, profile?.customer_id);
+  const assignment = await getActiveRoleAssignment(user.id);
+  const role = assignment?.role;
+  const activeCustomerId = await resolveCustomerFilter(assignment);
 
   const { data: customers } = role !== "basic"
     ? await supabase.from("customers").select("id, name, company").order("name")

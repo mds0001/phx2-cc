@@ -131,8 +131,8 @@ async function main() {
   }
   console.log(`  ✓  Auth user created (id: ${created.user.id})`);
 
-  // ── Step 5: Create admin profile ─────────────────────────────────────────
-  // Delete any trigger-created profile first, then insert with correct role
+  // ── Step 5: Create admin profile + role assignment ───────────────────────
+  // Delete any trigger-created profile first, then insert with correct user_type
   await dev.from('profiles').delete().eq('id', created.user.id);
 
   const { error: profileErr } = await dev.from('profiles').insert({
@@ -140,14 +140,25 @@ async function main() {
     email: ADMIN_EMAIL,
     first_name: 'Dev',
     last_name: 'Admin',
-    role: 'administrator',
     user_type: 'admin',
   });
   if (profileErr) {
     console.error(`  ❌ Could not create profile: ${profileErr.message}`);
     process.exit(1);
   }
-  console.log(`  ✓  Profile created (administrator / admin)`);
+
+  // Insert primary administrator role assignment
+  const { error: roleErr } = await dev.from('user_roles').insert({
+    user_id: created.user.id,
+    role: 'administrator',
+    customer_id: null,
+    is_primary: true,
+  });
+  if (roleErr) {
+    console.error(`  ❌ Could not create role assignment: ${roleErr.message}`);
+    process.exit(1);
+  }
+  console.log(`  ✓  Profile + administrator role created`);
 
   // ── Step 6: Seed dev customers ───────────────────────────────────────────
   console.log('\n🏢  Creating dev customers...');

@@ -7,8 +7,8 @@ export async function POST(req: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const { data: me } = await supabase.from("profiles").select("role").eq("id", user.id).single();
-  if (me?.role !== "administrator") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const { data: me } = await supabase.from("profiles").select("user_type").eq("id", user.id).single();
+  if (me?.user_type !== "admin") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const { opportunityId } = await req.json();
   if (!opportunityId) return NextResponse.json({ error: "opportunityId required" }, { status: 400 });

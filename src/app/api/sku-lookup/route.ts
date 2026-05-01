@@ -29,10 +29,18 @@ async function notifyAdmins(sku: string, seenCount: number) {
   try {
     const admin = createAdminClient();
 
+    const { data: adminRoles } = await admin
+      .from("user_roles")
+      .select("user_id")
+      .eq("role", "administrator");
+
+    const adminIds = (adminRoles ?? []).map((r) => r.user_id);
+    if (adminIds.length === 0) return;
+
     const { data: adminProfiles } = await admin
       .from("profiles")
       .select("email")
-      .eq("role", "administrator");
+      .in("id", adminIds);
 
     const adminEmails = (adminProfiles ?? []).map((p) => p.email).filter((e): e is string => !!e);
     if (adminEmails.length === 0) return;

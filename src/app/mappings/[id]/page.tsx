@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
 import MappingEditorClient from "@/components/MappingEditorClient";
-import { isReadOnly } from "@/lib/permissions";
+import { isReadOnly, getActiveRoleAssignment } from "@/lib/permissions";
 
 export const dynamic = 'force-dynamic';
 
@@ -22,11 +22,13 @@ export default async function MappingEditorPage({
 
   if (!user) redirect("/login");
 
-  const { data: userProfile } = await supabase.from("profiles").select("role, customer_id").eq("id", user.id).single();
-  const readOnly = isReadOnly(userProfile?.role);
-  const isAdmin = userProfile?.role === "administrator";
+  const assignment = await getActiveRoleAssignment(user.id);
+  const role = assignment?.role;
+  if (role === "basic") redirect("/account");
+  const readOnly = isReadOnly(role);
+  const isAdmin = role === "administrator";
 
-  // Basic users cannot create new mapping profiles
+  // Auditors cannot create new mapping profiles
   if (readOnly && id === "new") redirect("/mappings");
 
   const [profileResult, customersResult] = await Promise.all([
@@ -55,7 +57,7 @@ export default async function MappingEditorPage({
       isReadOnly={readOnly}
       isAdmin={isAdmin}
       customers={customersResult.data ?? []}
-      scopedCustomerId={userProfile?.role === "schedule_administrator" ? (userProfile?.customer_id ?? null) : null}
+      scopedCustomerId={role === "schedule_administrator" ? (assignment?.customer_id ?? null) : null}
     />
   );
 }

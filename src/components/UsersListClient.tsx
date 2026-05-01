@@ -7,7 +7,7 @@ import {
   Plus, Search, Trash2, Edit2, Shield, CalendarClock,
   User, Eye, ArrowLeft, Users, Activity, Key, UserCog,
 } from "lucide-react";
-import type { Profile, UserRole } from "@/lib/types";
+import type { Profile, UserRole, UserRoleAssignment } from "@/lib/types";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 
@@ -20,8 +20,12 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
 
 interface CustomerOption { id: string; name: string; company: string | null; }
 
+export interface UserWithRoles extends Profile {
+  roles: UserRoleAssignment[];
+}
+
 interface Props {
-  users: Profile[];
+  users: UserWithRoles[];
   currentUserId: string;
   customers?: CustomerOption[];
 }
@@ -53,6 +57,11 @@ const ROLE_META: Record<UserRole, { label: string; color: string; bg: string; bo
   },
 };
 
+function primaryRole(u: UserWithRoles): UserRole {
+  const p = u.roles.find((r) => r.is_primary) ?? u.roles[0];
+  return (p?.role ?? "basic") as UserRole;
+}
+
 export default function UsersListClient({ users, currentUserId, customers = [] }: Props) {
   const router = useRouter();
   const [search, setSearch] = useState("");
@@ -60,21 +69,18 @@ export default function UsersListClient({ users, currentUserId, customers = [] }
 
   const filtered = users.filter((u) => {
     const q = search.toLowerCase();
-    const role = (u.role ?? "basic") as UserRole;
-    return (
-      !q ||
-      u.first_name?.toLowerCase().includes(q) ||
-      u.last_name?.toLowerCase().includes(q) ||
-      u.email?.toLowerCase().includes(q) ||
-      ROLE_META[role].label.toLowerCase().includes(q)
-    );
+    if (!q) return true;
+    if (u.first_name?.toLowerCase().includes(q)) return true;
+    if (u.last_name?.toLowerCase().includes(q)) return true;
+    if (u.email?.toLowerCase().includes(q)) return true;
+    return u.roles.some((r) => ROLE_META[r.role].label.toLowerCase().includes(q));
   });
 
   async function handleDelete(id: string, name: string) {
-    if (!confirm(`Remove ${name} from the system? This cannot be undone.`)) return;
+    if (!confirm("Remove " + name + " from the system? This cannot be undone.")) return;
     setDeleting(id);
     try {
-      const res = await fetch(`/api/users/${id}`, { method: "DELETE" });
+      const res = await fetch("/api/users/" + id, { method: "DELETE" });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Delete failed");
       router.refresh();
@@ -85,13 +91,18 @@ export default function UsersListClient({ users, currentUserId, customers = [] }
     }
   }
 
-  const admins = filtered.filter((u) => u.role === "administrator");
-  const schedAdmins = filtered.filter((u) => u.role === "schedule_administrator");
-  const auditors = filtered.filter((u) => u.role === "schedule_auditor");
-  const basicUsers = filtered.filter((u) => !u.role || u.role === "basic");
+  // Group by primary role for layout (a multi-role user appears once, under their primary)
+  const admins = filtered.filter((u) => primaryRole(u) === "administrator");
+  const schedAdmins = filtered.filter((u) => primaryRole(u) === "schedule_administrator");
+  const auditors = filtered.filter((u) => primaryRole(u) === "schedule_auditor");
+  const basicUsers = filtered.filter((u) => u.roles.length === 0 || primaryRole(u) === "basic");
 
-  function UserCard({ user }: { user: Profile }) {
-    const meta = ROLE_META[(user.role ?? "basic") as UserRole];
+  // Stat counts: count users that *have* the role anywhere in their assignments
+  const adminCount     = users.filter((u) => u.roles.some((r) => r.role === "administrator")).length;
+  const schedAdmCount  = users.filter((u) => u.roles.some((r) => r.role === "schedule_administrator")).length;
+  const basicCount     = users.filter((u) => u.roles.length === 0 || u.roles.some((r) => r.role === "basic")).length;
+
+  function UserCard({ user }: { user: UserWithRoles }) {
     const fullName = [user.first_name, user.last_name].filter(Boolean).join(" ") || "no name";
     const initials =
       [user.first_name?.[0], user.last_name?.[0]].filter(Boolean).join("").toUpperCase() || "?";
@@ -126,25 +137,36 @@ export default function UsersListClient({ users, currentUserId, customers = [] }
           </div>
           <p className="text-sm text-gray-400 truncate mt-0.5">{user.email ?? "no email"}</p>
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold ${meta.bg} ${meta.border} border ${meta.color}`}>
-              <Shield className="w-3 h-3" />
-              {meta.label}
-            </span>
-            {(user.role === "schedule_administrator" || user.role === "schedule_auditor") && (
-              user.customer_id
-                ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
-                    {customers.find((cu) => cu.id === user.customer_id)?.name ?? "Unknown customer"}
-                  </span>
-                : <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs bg-yellow-500/10 border border-yellow-500/20 text-yellow-400">
-                    No customer assigned
-                  </span>
+            {user.roles.length === 0 && (
+              <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold ${ROLE_META.basic.bg} ${ROLE_META.basic.border} border ${ROLE_META.basic.color}`}>
+                <Shield className="w-3 h-3" />
+                No Role
+              </span>
             )}
+            {user.roles.map((r) => {
+              const meta = ROLE_META[r.role];
+              const cust = (r.role === "schedule_administrator" || r.role === "schedule_auditor")
+                ? (r.customer_id ? customers.find((c) => c.id === r.customer_id)?.name ?? "Unknown" : "No customer")
+                : null;
+              return (
+                <span
+                  key={r.id}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold ${meta.bg} ${meta.border} border ${meta.color} ${r.is_primary ? "ring-1 ring-indigo-400/40" : ""}`}
+                  title={r.is_primary ? "Primary role" : undefined}
+                >
+                  <Shield className="w-3 h-3" />
+                  {meta.label}
+                  {cust && <span className="opacity-80">— {cust}</span>}
+                  {r.is_primary && <span className="text-[9px] opacity-80">PRIMARY</span>}
+                </span>
+              );
+            })}
           </div>
         </div>
 
         <div className="flex items-center gap-1 shrink-0">
           <button
-            onClick={() => router.push(`/boh/users/${user.id}`)}
+            onClick={() => router.push("/boh/users/" + user.id)}
             className="w-8 h-8 rounded-xl bg-gray-800 hover:bg-indigo-500/20 border border-gray-700 hover:border-indigo-500/40 flex items-center justify-center text-gray-400 hover:text-indigo-400 transition-all"
             title="Edit user"
           >
@@ -240,9 +262,9 @@ export default function UsersListClient({ users, currentUserId, customers = [] }
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {[
             { label: "Total Users", value: users.length, icon: User, color: "text-indigo-400", bg: "bg-indigo-500/10", border: "border-indigo-500/20" },
-            { label: "Administrators", value: users.filter(u => u.role === "administrator").length, icon: Shield, color: "text-indigo-400", bg: "bg-indigo-500/10", border: "border-indigo-500/20" },
-            { label: "Schedule Admins", value: users.filter(u => u.role === "schedule_administrator").length, icon: CalendarClock, color: "text-cyan-400", bg: "bg-cyan-500/10", border: "border-cyan-500/20" },
-            { label: "Basic", value: users.filter(u => !u.role || u.role === "basic").length, icon: Eye, color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/20" },
+            { label: "Administrators", value: adminCount, icon: Shield, color: "text-indigo-400", bg: "bg-indigo-500/10", border: "border-indigo-500/20" },
+            { label: "Schedule Admins", value: schedAdmCount, icon: CalendarClock, color: "text-cyan-400", bg: "bg-cyan-500/10", border: "border-cyan-500/20" },
+            { label: "Basic", value: basicCount, icon: Eye, color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/20" },
           ].map((s) => {
             const Icon = s.icon;
             return (

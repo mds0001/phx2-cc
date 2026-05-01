@@ -276,13 +276,13 @@ export async function POST(req: NextRequest) {
     // Resolve admin email for CC if requested
     let adminEmail: string | null = null;
     if (opp.send_to_admin) {
-      const { data: adminProfiles } = await admin
-        .from("profiles")
-        .select("id")
+      const { data: adminRoles } = await admin
+        .from("user_roles")
+        .select("user_id")
         .eq("role", "administrator")
         .limit(1);
-      if (adminProfiles && adminProfiles.length > 0) {
-        const adminUser = await admin.auth.admin.getUserById(adminProfiles[0].id);
+      if (adminRoles && adminRoles.length > 0) {
+        const adminUser = await admin.auth.admin.getUserById(adminRoles[0].user_id);
         adminEmail = adminUser.data.user?.email ?? null;
       }
     }

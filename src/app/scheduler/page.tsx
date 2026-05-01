@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
 import SchedulerClient from "@/components/SchedulerClient";
-import { isReadOnly, isAuditor } from "@/lib/permissions";
+import { isReadOnly, isAuditor, getActiveRoleAssignment } from "@/lib/permissions";
 import { resolveCustomerFilter } from "@/lib/customer-context";
 
 export const dynamic = 'force-dynamic';
@@ -17,15 +17,16 @@ export default async function SchedulerPage() {
   if (!user) redirect("/login");
 
   const { data: profile } = await supabase.from("profiles").select("*").eq("id", user.id).single();
+  const assignment = await getActiveRoleAssignment(user.id);
+  const role = assignment?.role;
 
-  // Fetch customers for the switcher (non-basic users only)
-  const role = (profile as { role?: string } | null)?.role;
+  // Basic users have no scheduler access; send them to their account page.
+  if (role === "basic") redirect("/account");
+
   const isAdmin    = role === "administrator";
   const auditor    = isAuditor(role);
-  const activeCustomerId = await resolveCustomerFilter(role, (profile as { customer_id?: string | null } | null)?.customer_id);
-  const { data: customers } = role !== "basic"
-    ? await supabase.from("customers").select("id, name, company").order("name")
-    : { data: [] };
+  const activeCustomerId = await resolveCustomerFilter(assignment);
+  const { data: customers } = await supabase.from("customers").select("id, name, company").order("name");
 
   // Fetch tasks scoped to active customer (or all if none selected).
   // System tasks are always included regardless of customer filter.

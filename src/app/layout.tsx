@@ -19,7 +19,7 @@ export default function RootLayout({
         <ThemeProvider
           attribute="class"
           defaultTheme="dark"
-          themes={["dark", "light", "high-contrast"]}
+          themes={["dark", "light", "high-contrast", "ivanti"]}
           enableSystem={false}
           disableTransitionOnChange={false}
         >

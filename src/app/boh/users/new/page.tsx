@@ -11,11 +11,11 @@ export default async function NewUserPage() {
   if (!user) redirect("/login");
 
   const [{ data: me }, { data: customers }] = await Promise.all([
-    supabase.from("profiles").select("role").eq("id", user.id).single(),
+    supabase.from("profiles").select("user_type").eq("id", user.id).single(),
     supabase.from("customers").select("id, name, company").order("name"),
   ]);
 
-  if (me?.role !== "administrator") redirect("/dashboard");
+  if (me?.user_type !== "admin") redirect("/dashboard");
 
   return (
     <UserEditorClient

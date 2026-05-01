@@ -46,11 +46,19 @@ export async function POST(req: NextRequest) {
 
     const admin = createAdminClient();
 
-    // Fetch all administrator emails
-    const { data: adminProfiles } = await admin
-      .from("profiles")
-      .select("email, first_name, last_name")
+    // Fetch all administrator emails (via user_roles → profiles)
+    const { data: adminRoles } = await admin
+      .from("user_roles")
+      .select("user_id")
       .eq("role", "administrator");
+
+    const adminIds = (adminRoles ?? []).map((r) => r.user_id);
+    const { data: adminProfiles } = adminIds.length > 0
+      ? await admin
+          .from("profiles")
+          .select("email, first_name, last_name")
+          .in("id", adminIds)
+      : { data: [] };
 
     const adminEmails = (adminProfiles ?? [])
       .map((p) => p.email)

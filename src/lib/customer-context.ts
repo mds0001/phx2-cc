@@ -1,5 +1,5 @@
 import { cookies } from "next/headers";
-import type { UserRole } from "./types";
+import type { UserRole, UserRoleAssignment } from "./types";
 
 const COOKIE_NAME = "active_customer_id";
 
@@ -26,18 +26,19 @@ export async function setActiveCustomerId(customerId: string | null): Promise<vo
 }
 
 /**
- * Resolve the effective customer filter for a page, given role and profile.
+ * Resolve the effective customer filter for a page, given the user's active role assignment.
  *
  * - administrator  → uses the cookie-based switcher (may be null = "all")
- * - schedule_administrator → always uses profile.customer_id (no cookie, no "all")
+ * - schedule_administrator / schedule_auditor → uses the assignment's customer_id
  * - basic          → null (no filtering — they can't create/edit anyway)
  */
 export async function resolveCustomerFilter(
-  role: UserRole | string | null | undefined,
-  profileCustomerId: string | null | undefined,
+  assignment: UserRoleAssignment | null,
 ): Promise<string | null> {
+  if (!assignment) return null;
+  const role: UserRole = assignment.role;
   if (role === "schedule_administrator" || role === "schedule_auditor") {
-    return profileCustomerId ?? null;
+    return assignment.customer_id ?? null;
   }
   if (role === "administrator") {
     return getActiveCustomerId();

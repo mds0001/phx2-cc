@@ -18,9 +18,11 @@ import {
   KeyRound,
   Eye,
   EyeOff,
+  Plus,
+  X,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
-import type { Profile, UserRole } from "@/lib/types";
+import type { Profile, UserRole, UserRoleAssignment } from "@/lib/types";
 
 interface CustomerOption { id: string; name: string; company: string | null; }
 
@@ -29,6 +31,7 @@ interface Props {
   isNew: boolean;
   currentUserId: string;
   customers?: CustomerOption[];
+  userRoles?: UserRoleAssignment[];
 }
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
@@ -40,38 +43,55 @@ function resolveAvatarUrl(raw: string | null | undefined): string | null {
   return `${SUPABASE_URL}/storage/v1/object/public/avatars/${clean}`;
 }
 
-const ROLES: { value: UserRole; label: string; desc: string }[] = [
+const ROLE_META: { value: UserRole; label: string; desc: string; needsCustomer: boolean }[] = [
   {
     value: "administrator",
     label: "Administrator",
     desc: "Full access to all features including Back of House, User Management, and all scheduler functions.",
+    needsCustomer: false,
   },
   {
     value: "schedule_administrator",
     label: "Schedule Administrator",
-    desc: "Access to Scheduler, Field Mappings, and Endpoint Connections. No access to Back of House.",
+    desc: "Access to Scheduler, Field Mappings, and Endpoint Connections for one customer. No Back of House.",
+    needsCustomer: true,
   },
   {
     value: "basic",
     label: "Basic",
-    desc: "Read-only access to Scheduler, Field Mappings, and Endpoint Connections. Cannot create, edit, or delete anything.",
+    desc: "Read-only access to Scheduler, Field Mappings, and Endpoint Connections.",
+    needsCustomer: false,
   },
   {
     value: "schedule_auditor",
     label: "Schedule Auditor",
-    desc: "Read-only access to Scheduler and run history only. No access to Mappings, Endpoints, or BOH. Receives email notifications when tasks complete.",
+    desc: "Read-only Scheduler view + email notifications when tasks complete. Scoped to one customer.",
+    needsCustomer: true,
   },
 ];
 
-export default function UserEditorClient({ user, isNew, currentUserId, customers = [] }: Props) {
+interface RoleDraft {
+  role: UserRole;
+  customer_id: string | null;
+  is_primary: boolean;
+}
+
+function metaFor(r: UserRole) {
+  return ROLE_META.find((m) => m.value === r)!;
+}
+
+export default function UserEditorClient({ user, isNew, currentUserId, customers = [], userRoles = [] }: Props) {
   const router = useRouter();
   const supabase = createClient();
 
   const [email, setEmail] = useState(user?.email ?? "");
   const [firstName, setFirstName] = useState(user?.first_name ?? "");
   const [lastName, setLastName] = useState(user?.last_name ?? "");
-  const [role, setRole] = useState<UserRole>(user?.role ?? "schedule_administrator");
-  const [scopedCustomerId, setScopedCustomerId] = useState<string | null>(user?.customer_id ?? null);
+
+  const initialRoles: RoleDraft[] = userRoles.length > 0
+    ? userRoles.map((r) => ({ role: r.role, customer_id: r.customer_id, is_primary: r.is_primary }))
+    : [{ role: "schedule_administrator", customer_id: null, is_primary: true }];
+  const [roles, setRoles] = useState<RoleDraft[]>(initialRoles);
 
   const [newPassword, setNewPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -80,7 +100,6 @@ export default function UserEditorClient({ user, isNew, currentUserId, customers
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Avatar state (edit mode only)
   const [avatarUrl, setAvatarUrl] = useState<string | null>(
     resolveAvatarUrl(user?.avatar_url)
   );
@@ -91,6 +110,42 @@ export default function UserEditorClient({ user, isNew, currentUserId, customers
   const isMe = !isNew && user?.id === currentUserId;
   const fullName = [user?.first_name, user?.last_name].filter(Boolean).join(" ") || (isNew ? "New User" : "User");
   const initials = [user?.first_name?.[0], user?.last_name?.[0]].filter(Boolean).join("").toUpperCase() || "?";
+
+  function addRole() {
+    setRoles((p) => [...p, { role: "schedule_administrator", customer_id: null, is_primary: p.length === 0 }]);
+  }
+  function removeRole(idx: number) {
+    setRoles((p) => {
+      const next = p.filter((_, i) => i !== idx);
+      if (next.length > 0 && !next.some((r) => r.is_primary)) next[0].is_primary = true;
+      return next;
+    });
+  }
+  function updateRole(idx: number, patch: Partial<RoleDraft>) {
+    setRoles((p) => p.map((r, i) => i === idx ? { ...r, ...patch } : r));
+  }
+  function setPrimary(idx: number) {
+    setRoles((p) => p.map((r, i) => ({ ...r, is_primary: i === idx })));
+  }
+
+  function rolesValidationError(): string | null {
+    if (roles.length === 0) return "Add at least one role.";
+    for (const r of roles) {
+      if (metaFor(r.role).needsCustomer && !r.customer_id) {
+        return metaFor(r.role).label + " requires a customer assignment.";
+      }
+    }
+    if (roles.filter((r) => r.is_primary).length !== 1) {
+      return "Exactly one role must be marked primary.";
+    }
+    const seen = new Set<string>();
+    for (const r of roles) {
+      const key = r.role + "|" + (r.customer_id ?? "");
+      if (seen.has(key)) return "Duplicate role assignment — same role and customer.";
+      seen.add(key);
+    }
+    return null;
+  }
 
   async function handleAvatarUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -116,10 +171,9 @@ export default function UserEditorClient({ user, isNew, currentUserId, customers
 
   async function handleAvatarDelete() {
     if (!user || !avatarUrl) return;
-    if (!confirm("Remove this user\'s avatar photo?")) return;
+    if (!confirm("Remove this user's avatar photo?")) return;
     setAvatarDeleting(true);
     try {
-      // List and remove files under the user\'s avatar folder
       const { data: files } = await supabase.storage.from("avatars").list(user.id);
       if (files && files.length > 0) {
         const paths = files.map((f) => `${user.id}/${f.name}`);
@@ -136,8 +190,15 @@ export default function UserEditorClient({ user, isNew, currentUserId, customers
 
   async function handleSave() {
     setError(null);
+    const vErr = rolesValidationError();
+    if (vErr) { setError(vErr); return; }
     setSaving(true);
     try {
+      const rolesPayload = roles.map((r) => ({
+        role: r.role,
+        customer_id: metaFor(r.role).needsCustomer ? r.customer_id : null,
+        is_primary: r.is_primary,
+      }));
       let res: Response;
       if (isNew) {
         if (!email.trim()) throw new Error("Email is required.");
@@ -148,8 +209,7 @@ export default function UserEditorClient({ user, isNew, currentUserId, customers
             email: email.trim(),
             first_name: firstName.trim() || undefined,
             last_name: lastName.trim() || undefined,
-            role,
-            customer_id: role === "schedule_administrator" ? (scopedCustomerId ?? null) : null,
+            roles: rolesPayload,
             ...(newPassword.trim() ? { password: newPassword.trim() } : {}),
           }),
         });
@@ -160,8 +220,7 @@ export default function UserEditorClient({ user, isNew, currentUserId, customers
           body: JSON.stringify({
             first_name: firstName.trim() || null,
             last_name: lastName.trim() || null,
-            role,
-            customer_id: role === "schedule_administrator" ? (scopedCustomerId ?? null) : null,
+            roles: rolesPayload,
             ...(newPassword.trim() ? { password: newPassword.trim() } : {}),
           }),
         });
@@ -176,6 +235,15 @@ export default function UserEditorClient({ user, isNew, currentUserId, customers
       setSaving(false);
     }
   }
+
+  function highestAccess(roleSet: UserRole[]): { scheduler: string; mappings: string; connections: string; boh: string; users: string } {
+    const isAdmin = roleSet.includes("administrator");
+    const isSched = roleSet.includes("schedule_administrator");
+    if (isAdmin) return { scheduler: "write", mappings: "write", connections: "write", boh: "write", users: "write" };
+    if (isSched) return { scheduler: "write", mappings: "write", connections: "write", boh: "none", users: "none" };
+    return { scheduler: "read", mappings: "read", connections: "read", boh: "none", users: "none" };
+  }
+  const access = highestAccess(roles.map((r) => r.role));
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
@@ -228,7 +296,6 @@ export default function UserEditorClient({ user, isNew, currentUserId, customers
           </div>
         )}
 
-        {/* Avatar — edit mode only */}
         {!isNew && (
           <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
             <div className="flex items-center gap-2 mb-4">
@@ -292,7 +359,6 @@ export default function UserEditorClient({ user, isNew, currentUserId, customers
           </div>
         )}
 
-        {/* Personal Info */}
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-5">
           <div className="flex items-center gap-2 mb-1">
             <User className="w-4 h-4 text-indigo-400" />
@@ -344,133 +410,154 @@ export default function UserEditorClient({ user, isNew, currentUserId, customers
           </div>
         </div>
 
-        {/* Password */}
-        {(
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-4">
-            <div className="flex items-center gap-2">
-              <KeyRound className="w-4 h-4 text-indigo-400" />
-              <h3 className="text-sm font-semibold text-white">Set Password</h3>
-              <span className="ml-auto text-xs text-gray-600">
-                {isNew ? "Leave blank to send an invite email instead" : "Leave blank to keep current password"}
-              </span>
-            </div>
-            <div className="relative">
-              <input
-                type={showPassword ? "text" : "password"}
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="New password (min 6 characters)"
-                autoComplete="new-password"
-                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 pr-11 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-gray-600"
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword((p) => !p)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors"
-              >
-                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Role */}
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-4">
           <div className="flex items-center gap-2">
-            <Shield className="w-4 h-4 text-indigo-400" />
-            <h3 className="text-sm font-semibold text-white">Role &amp; Permissions</h3>
-            {isMe && (
-              <span className="ml-auto text-xs text-yellow-400 bg-yellow-500/10 border border-yellow-500/20 px-2 py-0.5 rounded-full">
-                Editing your own role
-              </span>
-            )}
+            <KeyRound className="w-4 h-4 text-indigo-400" />
+            <h3 className="text-sm font-semibold text-white">Set Password</h3>
+            <span className="ml-auto text-xs text-gray-600">
+              {isNew ? "Leave blank to send an invite email instead" : "Leave blank to keep current password"}
+            </span>
           </div>
-          <div className="space-y-3">
-            {ROLES.map((r) => (
-              <button
-                key={r.value}
-                type="button"
-                onClick={() => setRole(r.value)}
-                className={`w-full text-left rounded-2xl border p-4 transition-all ${
-                  role === r.value
-                    ? "border-indigo-500/60 bg-indigo-500/10 ring-1 ring-indigo-500/30"
-                    : "border-gray-700 bg-gray-800/40 hover:border-gray-600"
-                }`}
-              >
-                <div className="flex items-start gap-3">
-                  <div className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
-                    role === r.value ? "border-indigo-400" : "border-gray-600"
-                  }`}>
-                    {role === r.value && <div className="w-2 h-2 rounded-full bg-indigo-400" />}
-                  </div>
-                  <div>
-                    <p className="text-sm font-semibold text-white">{r.label}</p>
-                    <p className="text-xs text-gray-400 mt-1 leading-relaxed">{r.desc}</p>
-                  </div>
-                </div>
-              </button>
-            ))}
+          <div className="relative">
+            <input
+              type={showPassword ? "text" : "password"}
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder="New password (min 6 characters)"
+              autoComplete="new-password"
+              className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 pr-11 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-gray-600"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((p) => !p)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors"
+            >
+              {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
           </div>
         </div>
 
-        {/* Permission matrix */}
-        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
-          <h3 className="text-sm font-semibold text-white mb-4">Access Summary</h3>
-          {/* Customer scope for schedule_administrator */}
-          {(role === "schedule_administrator" || role === "schedule_auditor") && (
-            <div className="flex flex-col gap-2">
-              <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                Assigned Customer
-              </label>
-              <select
-                value={scopedCustomerId ?? ""}
-                onChange={(e) => setScopedCustomerId(e.target.value || null)}
-                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              >
-                <option value="">— Unassigned (no access) —</option>
-                {customers.map((cu) => (
-                  <option key={cu.id} value={cu.id}>
-                    {cu.name}{cu.company ? ` — ${cu.company}` : ""}
-                  </option>
-                ))}
-              </select>
-              <p className="text-xs text-gray-500">
-                Schedule Administrators can only see objects belonging to their assigned customer.
-              </p>
-            </div>
-          )}
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-4">
+          <div className="flex items-center gap-2">
+            <Shield className="w-4 h-4 text-indigo-400" />
+            <h3 className="text-sm font-semibold text-white">Roles &amp; Permissions</h3>
+            {isMe && (
+              <span className="ml-auto text-xs text-yellow-400 bg-yellow-500/10 border border-yellow-500/20 px-2 py-0.5 rounded-full">
+                Editing your own roles
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-gray-500">
+            Assign one or more roles. Mark one as Primary — that becomes their default on login. They can switch between roles in the left pane.
+          </p>
 
-          <div className="space-y-2">
-            {[
-              { feature: "Scheduler",           admin: "write", sched: "write", basic: "read"  },
-              { feature: "Field Mappings",       admin: "write", sched: "write", basic: "read"  },
-              { feature: "Endpoint Connections", admin: "write", sched: "write", basic: "read"  },
-              { feature: "Back of House",        admin: "write", sched: "none",  basic: "none"  },
-              { feature: "User Management",      admin: "write", sched: "none",  basic: "none"  },
-            ].map((row) => {
-              const access = role === "administrator" ? row.admin : role === "schedule_administrator" ? row.sched : row.basic;
+          <div className="space-y-3">
+            {roles.map((r, idx) => {
+              const meta = metaFor(r.role);
               return (
-                <div
-                  key={row.feature}
-                  className={`flex items-center justify-between px-4 py-2.5 rounded-xl transition-colors ${
-                    access === "write" ? "bg-emerald-500/5 border border-emerald-500/10"
-                    : access === "read" ? "bg-blue-500/5 border border-blue-500/10"
-                    : "bg-gray-800/30 border border-gray-700/30"
-                  }`}
-                >
-                  <span className={`text-sm ${access !== "none" ? "text-white" : "text-gray-500"}`}>{row.feature}</span>
-                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
-                    access === "write"
-                      ? "text-emerald-400 bg-emerald-500/10 border border-emerald-500/20"
-                      : access === "read"
-                      ? "text-blue-400 bg-blue-500/10 border border-blue-500/20"
-                      : "text-gray-600 bg-gray-700/30 border border-gray-700/30"
-                  }`}>
-                    {access === "write" ? "Read + Write" : access === "read" ? "Read Only" : "No Access"}
-                  </span>
+                <div key={idx} className="border border-gray-700 bg-gray-800/40 rounded-2xl p-4 space-y-3">
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setPrimary(idx)}
+                      title={r.is_primary ? "Primary role" : "Set as primary"}
+                      className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
+                        r.is_primary ? "border-indigo-400" : "border-gray-600"
+                      }`}
+                    >
+                      {r.is_primary && <div className="w-2 h-2 rounded-full bg-indigo-400" />}
+                    </button>
+                    <select
+                      value={r.role}
+                      onChange={(e) => updateRole(idx, { role: e.target.value as UserRole, customer_id: null })}
+                      className="flex-1 bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      {ROLE_META.map((m) => (
+                        <option key={m.value} value={m.value}>{m.label}</option>
+                      ))}
+                    </select>
+                    {r.is_primary && (
+                      <span className="text-[10px] uppercase tracking-wider font-semibold text-indigo-400 bg-indigo-500/10 border border-indigo-500/20 px-2 py-0.5 rounded-full">
+                        Primary
+                      </span>
+                    )}
+                    {roles.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => removeRole(idx)}
+                        className="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-colors"
+                        title="Remove this role"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-400 pl-7 leading-relaxed">{meta.desc}</p>
+                  {meta.needsCustomer && (
+                    <div className="pl-7">
+                      <label className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Assigned Customer</label>
+                      <select
+                        value={r.customer_id ?? ""}
+                        onChange={(e) => updateRole(idx, { customer_id: e.target.value || null })}
+                        className="mt-1 w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      >
+                        <option value="">— Select a customer —</option>
+                        {customers.map((cu) => (
+                          <option key={cu.id} value={cu.id}>
+                            {cu.name}{cu.company ? ` — ${cu.company}` : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                 </div>
               );
             })}
+          </div>
+
+          <button
+            type="button"
+            onClick={addRole}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 border border-dashed border-gray-700 hover:border-indigo-500/40 rounded-2xl text-sm text-gray-400 hover:text-indigo-300 transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            Add another role
+          </button>
+        </div>
+
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
+          <h3 className="text-sm font-semibold text-white mb-4">Combined Access</h3>
+          <p className="text-xs text-gray-500 mb-4">
+            With multiple roles, the user has the highest level of access granted by any one of them.
+          </p>
+          <div className="space-y-2">
+            {[
+              { feature: "Scheduler",            level: access.scheduler   },
+              { feature: "Field Mappings",       level: access.mappings    },
+              { feature: "Endpoint Connections", level: access.connections },
+              { feature: "Back of House",        level: access.boh         },
+              { feature: "User Management",      level: access.users       },
+            ].map((row) => (
+              <div
+                key={row.feature}
+                className={`flex items-center justify-between px-4 py-2.5 rounded-xl transition-colors ${
+                  row.level === "write" ? "bg-emerald-500/5 border border-emerald-500/10"
+                  : row.level === "read" ? "bg-blue-500/5 border border-blue-500/10"
+                  : "bg-gray-800/30 border border-gray-700/30"
+                }`}
+              >
+                <span className={`text-sm ${row.level !== "none" ? "text-white" : "text-gray-500"}`}>{row.feature}</span>
+                <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+                  row.level === "write"
+                    ? "text-emerald-400 bg-emerald-500/10 border border-emerald-500/20"
+                    : row.level === "read"
+                    ? "text-blue-400 bg-blue-500/10 border border-blue-500/20"
+                    : "text-gray-600 bg-gray-700/30 border border-gray-700/30"
+                }`}>
+                  {row.level === "write" ? "Read + Write" : row.level === "read" ? "Read Only" : "No Access"}
+                </span>
+              </div>
+            ))}
           </div>
         </div>
 

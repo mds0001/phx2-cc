@@ -199,7 +199,7 @@ export default function SchedulerClient({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const supabase = createClient();
-  const canControlPoll = profile?.role === "administrator";
+  const canControlPoll = isAdmin;
 
   const [tasks, setTasks] = useState<ScheduledTask[]>(initialTasks);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
@@ -469,7 +469,7 @@ export default function SchedulerClient({
         source_file_path: task.source_file_path ?? null,
         write_mode: task.write_mode ?? "upsert",
         is_system: false,
-        customer_id: null,
+        customer_id: activeCustomerId ?? null,
         created_by: userId,
       })
       .select("*")
@@ -3271,32 +3271,6 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
           </div>
 
           <div className="flex items-center gap-3">
-            {customers.length > 0 && (
-              <CustomerSwitcher customers={customers} activeCustomerId={activeCustomerId} />
-            )}
-            {!isReadOnly && (
-              <button
-                onClick={() => setShowSystem((s) => !s)}
-                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border transition-all ${
-                  showSystem
-                    ? "bg-cyan-500/15 border-cyan-500/40 text-cyan-400"
-                    : "bg-gray-800 border-gray-700 text-gray-400 hover:text-gray-300"
-                }`}
-              >
-                <Lock className="w-3.5 h-3.5" />
-                Show Templates
-              </button>
-            )}
-            {!isReadOnly && (
-              <button
-                onClick={() => { setForm(EMPTY_FORM); setFormError(null); setShowCreateForm(true); }}
-                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-all shadow-lg shadow-indigo-600/20"
-              >
-                <Plus className="w-4 h-4" />
-                New Task
-              </button>
-            )}
-
           {/* Polling control — visible to administrator and schedule_administrator roles */}
           {canControlPoll && (
           <div className="flex items-center gap-2 bg-gray-800 border border-gray-700 rounded-2xl px-4 py-2">
@@ -3350,6 +3324,32 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
             </div>
           </div>
           )}
+            {customers.length > 0 && (
+              <CustomerSwitcher customers={customers} activeCustomerId={activeCustomerId} />
+            )}
+            {!isReadOnly && (
+              <button
+                onClick={() => setShowSystem((s) => !s)}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border transition-all ${
+                  showSystem
+                    ? "bg-cyan-500/15 border-cyan-500/40 text-cyan-400"
+                    : "bg-gray-800 border-gray-700 text-gray-400 hover:text-gray-300"
+                }`}
+              >
+                <Lock className="w-3.5 h-3.5" />
+                Show Templates
+              </button>
+            )}
+            {!isReadOnly && (
+              <button
+                onClick={() => { setForm(EMPTY_FORM); setFormError(null); setShowCreateForm(true); }}
+                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-all shadow-lg shadow-indigo-600/20"
+              >
+                <Plus className="w-4 h-4" />
+                New Task
+              </button>
+            )}
+
           </div>
         </div>
       </header>

@@ -97,6 +97,9 @@ const TABLES = [
   // Depends on rule_types + mapping_profiles + endpoint_connections + customers
   { table: 'scheduled_tasks',      nullFields: ['created_by'] },
 
+  // Depends on auth.users + customers — copy role assignments after profiles
+  { table: 'user_roles',           nullFields: [] },
+
   // Operational — uncomment to copy run history
   // { table: 'task_logs',         nullFields: ['created_by'] },
   // { table: 'logs',              nullFields: [] },

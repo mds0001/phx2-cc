@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase-server";
 import ConnectionEditorClient from "@/components/ConnectionEditorClient";
-import { isReadOnly } from "@/lib/permissions";
+import { isReadOnly, getActiveRoleAssignment } from "@/lib/permissions";
 import type { ConnectionType } from "@/lib/types";
 
 export const dynamic = 'force-dynamic';
@@ -33,11 +33,13 @@ export default async function ConnectionEditorPage({
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: userProfile } = await supabase.from("profiles").select("role, customer_id").eq("id", user.id).single();
-  const readOnly = isReadOnly(userProfile?.role);
-  const isAdmin = userProfile?.role === "administrator";
+  const assignment = await getActiveRoleAssignment(user.id);
+  const role = assignment?.role;
+  if (role === "basic") redirect("/account");
+  const readOnly = isReadOnly(role);
+  const isAdmin = role === "administrator";
 
-  // Basic users cannot create new connections
+  // Auditors cannot create new connections
   if (readOnly && id === "new") redirect("/connections");
 
   const isNew = id === "new";
@@ -92,7 +94,7 @@ export default async function ConnectionEditorPage({
       isAdmin={isAdmin}
       customers={customersResult.data ?? []}
       agents={(agentsResult.data ?? []).map((a: { id: string; name: string; status: string; customer_id: string }) => ({ id: a.id, name: a.name, status: a.status, customer_id: a.customer_id }))}
-      scopedCustomerId={userProfile?.role === "schedule_administrator" ? (userProfile?.customer_id ?? null) : null}
+      scopedCustomerId={role === "schedule_administrator" ? (assignment?.customer_id ?? null) : null}
       returnTo={returnTo ?? null}
     />
   );

@@ -4,7 +4,25 @@
       "WebSearch",
       "WebFetch(domain:support.claude.com)",
       "Bash(python3:*)",
-      "Bash(python -B one_shot.py MikeCata01.jpg)"
+      "Bash(python -B one_shot.py MikeCata01.jpg)",
+      "Bash(node *)",
+      "Bash(python -c ' *)",
+      "Bash(python *)",
+      "Bash(npx tsc *)",
+      "Bash(git add *)",
+      "Bash(git rm *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "mcp__claude_ai_Supabase__execute_sql",
+      "mcp__claude_ai_Supabase__apply_migration",
+      "Bash(npm install *)",
+      "Bash(npx next *)",
+      "mcp__claude_ai_Supabase__list_tables",
+      "Bash(grep -v \"user_type\\\\|email\\\\|first_name\\\\|last_name\\\\|avatar\\\\|select\\(\\\\\"\\\\\\\\*\\\\\"\\)\\\\|select\\\\\\(.\\\\\\\\*.\\\\\\)\\\\|update.*avatar\\\\|mfa_enabled\")",
+      "Bash(grep -rn 'select\\(\"role\\\\|select\\(.role\\\\|select\\(\"\\\\\\\\*\"\\\\|select\\(.\\\\\\\\*.\\\\|select.*customer_id' src/app --include=\"*.tsx\" --include=\"*.ts\")",
+      "Bash(npm run *)",
+      "Bash(pkill -f \"next lint\")",
+      "Bash(grep -E \"profiles|profile\\\\?\\\\\\\\.|profile\\\\\\\\.\\\\b\")"
     ]
   }
 }

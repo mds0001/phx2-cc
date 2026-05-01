@@ -84,10 +84,18 @@ export interface Profile {
   last_name: string | null;
   email: string | null;
   user_type: UserType;
-  role: UserRole;
   avatar_url: string | null;
-  /** For schedule_administrator: scopes the user to one customer. Null = unscoped. */
+  created_at: string;
+}
+
+/** A single role assignment for a user. Users can hold multiple. */
+export interface UserRoleAssignment {
+  id: string;
+  user_id: string;
+  role: UserRole;
+  /** For schedule_administrator / schedule_auditor: scopes the assignment to one customer. Null otherwise. */
   customer_id: string | null;
+  is_primary: boolean;
   created_at: string;
 }
 
