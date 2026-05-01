@@ -458,8 +458,8 @@ export default function SchedulerClient({
       .from("scheduled_tasks")
       .insert({
         task_name: newName.trim(),
-        start_date_time: new Date().toISOString(),
-        end_date_time: null,
+        start_date_time: task.start_date_time,
+        end_date_time: task.end_date_time ?? null,
         recurrence: task.recurrence,
         status: "waiting",
         mapping_profile_id: task.mapping_profile_id,

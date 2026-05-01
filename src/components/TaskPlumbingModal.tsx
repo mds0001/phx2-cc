@@ -18,8 +18,6 @@ import {
   ArrowRight,
   ArrowLeft,
   Workflow,
-  Maximize2,
-  Minimize2,
   StretchHorizontal,
   Square,
   Search as SearchIcon,
@@ -552,12 +550,11 @@ function RoleFilterPanel({
 
 export function TaskPlumbingModal({ task, connections, mappingProfiles, onClose }: Props) {
   const router = useRouter();
-  const [fullscreen, setFullscreen] = useState(false);
   const [search, setSearch] = useState("");
   const [matchIdx, setMatchIdx] = useState(0);
   const [drilledIdx, setDrilledIdx] = useState<number | null>(null);
   const [roleFilter, setRoleFilter] = useState<Set<RuleRole>>(
-    () => new Set<RuleRole>(["key", "link", "ai", "transform", "static"]),
+    () => new Set<RuleRole>(["key", "link", "ai", "transform", "static", "passthrough"]),
   );
 
   const profiles = useMemo(
@@ -575,10 +572,13 @@ export function TaskPlumbingModal({ task, connections, mappingProfiles, onClose 
     return buildGraph(task, connections, mappingProfiles);
   }, [task, connections, mappingProfiles, drilledIdx, profiles, roleFilter]);
 
-  // Reset search and match index when drill-in changes (different node universe).
+  // Reset search, match index, and role filter when drill-in changes (different
+  // node universe). Role filter resets to all-on so every chip is active when
+  // opening a mapping profile.
   useEffect(() => {
     setSearch("");
     setMatchIdx(0);
+    setRoleFilter(new Set<RuleRole>(["key", "link", "ai", "transform", "static", "passthrough"]));
   }, [drilledIdx]);
 
   const drilledLabel = drilledIdx !== null && profiles[drilledIdx]
@@ -618,13 +618,11 @@ export function TaskPlumbingModal({ task, connections, mappingProfiles, onClose 
 
   return (
     <div
-      className={`fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center ${fullscreen ? "p-0" : "p-6"}`}
+      className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-0"
       onClick={onClose}
     >
       <div
-        className={`bg-gray-900 border border-gray-800 shadow-2xl w-full flex flex-col overflow-hidden ${
-          fullscreen ? "max-w-none h-screen rounded-none border-0" : "max-w-6xl h-[80vh] rounded-2xl"
-        }`}
+        className="bg-gray-900 border-0 shadow-2xl w-full max-w-none h-screen rounded-none flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -646,25 +644,14 @@ export function TaskPlumbingModal({ task, connections, mappingProfiles, onClose 
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => setFullscreen((v) => !v)}
-              className="p-2 text-gray-500 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
-              aria-label={fullscreen ? "Exit full screen" : "Full screen"}
-              title={fullscreen ? "Exit full screen" : "Full screen"}
-            >
-              {fullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="p-2 text-gray-500 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
-              aria-label="Close"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-2 text-gray-500 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
+            aria-label="Close"
+          >
+            <X className="w-5 h-5" />
+          </button>
         </div>
 
         {/* Graph */}

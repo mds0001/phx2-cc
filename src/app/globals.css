@@ -372,3 +372,26 @@ html.ivanti header.sticky button.bg-indigo-600 {
 
 /* Table headers */
 html.ivanti table thead tr { background-color: #e8eef6 !important; }
+
+/* === Plumbing modal (React Flow) — light skins ===
+   Nodes use inline `style` props (React Flow's `style` API), so the generic
+   theme overrides above don't reach them. Force white nodes + black text
+   under .light and .ivanti only. Colored borders are preserved so Source /
+   Mapping / Target / Rule remain visually distinct. */
+html.light .react-flow__node,
+html.ivanti .react-flow__node {
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+}
+html.light .react-flow__node .text-white,
+html.light .react-flow__node .text-gray-100,
+html.light .react-flow__node .text-gray-200,
+html.light .react-flow__node .text-gray-300,
+html.ivanti .react-flow__node .text-white,
+html.ivanti .react-flow__node .text-gray-100,
+html.ivanti .react-flow__node .text-gray-200,
+html.ivanti .react-flow__node .text-gray-300 { color: #000000 !important; }
+html.light .react-flow__node .text-gray-400,
+html.ivanti .react-flow__node .text-gray-400 { color: #333333 !important; }
+html.light .react-flow__node .text-gray-500,
+html.ivanti .react-flow__node .text-gray-500 { color: #555555 !important; }
