@@ -1,18 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { mercuryFetch } from "@/lib/mercury";
 
-const MERCURY_API = "https://api.mercury.com/api/v1";
 const MERCURY_CHECKING_ID = "5cb83dc0-4316-11f1-923f-5b93cd90cdab";
 
-function authHeaders() {
-  return {
-    Authorization: `Bearer ${process.env.MERCURY_API_KEY}`,
-    "Content-Type": "application/json",
-  };
-}
-
 async function getOrCreateUsaaRecipient(): Promise<{ id: string } | { error: string }> {
-  // 1. Check if USAA recipient already exists
-  const listRes = await fetch(`${MERCURY_API}/recipients`, { headers: authHeaders() });
+  const listRes = await mercuryFetch("/recipients");
   if (listRes.ok) {
     const { recipients } = await listRes.json();
     const existing = (recipients ?? []).find(
@@ -23,12 +15,10 @@ async function getOrCreateUsaaRecipient(): Promise<{ id: string } | { error: str
     if (existing) return { id: existing.id };
   }
 
-  // 2. Create it
-  const createRes = await fetch(`${MERCURY_API}/recipients`, {
+  const createRes = await mercuryFetch("/recipients", {
     method: "POST",
-    headers: authHeaders(),
     body: JSON.stringify({
-      name: "Michael Stout — USAA Checking",
+      name: "Michael Stout \xe2\x80\x94 USAA Checking",
       emails: ["mdstout@outlook.com"],
       accountType: "personalChecking",
       routingNumber: process.env.MERCURY_USAA_ROUTING,
@@ -42,30 +32,21 @@ async function getOrCreateUsaaRecipient(): Promise<{ id: string } | { error: str
   return { id: created.id };
 }
 
-// POST /api/mercury-pay
-// Body: { billId, amount, note, smokeTest? }
 export async function POST(req: NextRequest) {
-  if (!process.env.MERCURY_API_KEY) {
-    return NextResponse.json({ error: "MERCURY_API_KEY not set" }, { status: 500 });
-  }
-
   const { billId, amount, note, smokeTest } = await req.json();
   const transferAmount = smokeTest ? 0.01 : amount;
 
-  // Get or create the USAA recipient
   const recipient = await getOrCreateUsaaRecipient();
   if ("error" in recipient) {
     return NextResponse.json({ error: "Failed to create recipient", details: recipient.error }, { status: 500 });
   }
 
-  // Initiate the transfer
   const idempotencyKey = `cw-pay-${billId}-${smokeTest ? "smoke" : "real"}-${Date.now()}`;
 
-  const transferRes = await fetch(
-    `${MERCURY_API}/account/${MERCURY_CHECKING_ID}/transactions`,
+  const transferRes = await mercuryFetch(
+    `/account/${MERCURY_CHECKING_ID}/transactions`,
     {
       method: "POST",
-      headers: authHeaders(),
       body: JSON.stringify({
         recipientId: recipient.id,
         amount: transferAmount,
