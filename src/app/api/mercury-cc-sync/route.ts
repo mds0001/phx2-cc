@@ -5,11 +5,11 @@ import { mercuryFetch } from "@/lib/mercury";
 const MERCURY_CC_ID = "f61b1d82-44df-11f1-a091-cf2256cd9db3";
 
 export async function GET() {
-  const res = await mercuryFetch(`/account/${MERCURY_CC_ID}/transactions?limit=500&order=desc`);
+  const res = await mercuryFetch(`/accounts/${MERCURY_CC_ID}/transactions?limit=500&order=desc`);
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    return NextResponse.json({ error: "Mercury fetch failed", details: err }, { status: res.status });
+    const text = await res.text();
+    return NextResponse.json({ error: "Mercury fetch failed", status: res.status, body: text }, { status: res.status });
   }
 
   const { transactions = [] } = await res.json();

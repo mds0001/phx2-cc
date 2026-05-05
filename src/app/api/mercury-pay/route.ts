@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
   const idempotencyKey = `cw-pay-${billId}-${smokeTest ? "smoke" : "real"}-${Date.now()}`;
 
   const transferRes = await mercuryFetch(
-    `/account/${MERCURY_CHECKING_ID}/transactions`,
+    `/accounts/${MERCURY_CHECKING_ID}/transactions`,
     {
       method: "POST",
       body: JSON.stringify({
