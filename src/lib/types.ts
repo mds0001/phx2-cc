@@ -580,7 +580,7 @@ export const SCHEDULE_C_CATEGORIES = [
 ] as const;
 export type ScheduleCCategory = typeof SCHEDULE_C_CATEGORIES[number];
 
-export const PAYMENT_METHODS = ['mercury', 'personal_card', 'usaa', 'check', 'other'] as const;
+export const PAYMENT_METHODS = ['mercury', 'mercury_cc', 'personal_card', 'usaa', 'check', 'other'] as const;
 export type PaymentMethod = typeof PAYMENT_METHODS[number];
 
 export interface Vendor {

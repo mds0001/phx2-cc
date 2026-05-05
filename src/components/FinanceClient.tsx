@@ -4,7 +4,7 @@ import { useState, useMemo } from "react";
 import {
   DollarSign, Plus, X, ChevronDown, CheckCircle2,
   Clock, AlertCircle, Building2, Receipt, Tag, Calendar,
-  CreditCard, FileText, Pencil, Trash2, Send, Loader2, User, ArrowDownCircle, ArrowUpCircle
+  CreditCard, FileText, Pencil, Trash2, Send, Loader2, User, ArrowDownCircle, ArrowUpCircle, RefreshCw, Download
 } from "lucide-react";
 import { createClient as createBrowserSupabaseClient } from "@/lib/supabase-browser";
 import {
@@ -13,6 +13,21 @@ import {
 } from "@/lib/types";
 
 const supabase = createBrowserSupabaseClient();
+
+interface CcTxn {
+  id: string;
+  date: string;
+  description: string;
+  counterpartyName: string | null;
+  amount: number;
+  isCharge: boolean;
+  status: string;
+  kind: string;
+  // local review state
+  vendorId: string;
+  scheduleC: string;
+  skip: boolean;
+}
 
 const CATEGORY_COLORS: Record<string, string> = {
   "17 - Legal/Professional": "text-violet-400 bg-violet-500/10 border-violet-500/20",
@@ -91,6 +106,11 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
   const [filterYear, setFilterYear] = useState<string>(new Date().getFullYear().toString());
   const [paying, setPaying] = useState<string | null>(null);
   const [payResult, setPayResult] = useState<{ msg: string; ok: boolean } | null>(null);
+  const [reimburseAmount, setReimburseAmount] = useState<string>("");
+  const [showCcSync, setShowCcSync] = useState(false);
+  const [ccTxns, setCcTxns] = useState<CcTxn[]>([]);
+  const [ccSyncing, setCcSyncing] = useState(false);
+  const [ccImporting, setCcImporting] = useState<string | null>(null);
 
   // Derived stats
   const stats = useMemo(() => {
@@ -238,6 +258,84 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
     }
   }
 
+  async function reimburseViaMercury(amount: number) {
+    setPaying("owner-reimburse");
+    setPayResult(null);
+    try {
+      const res = await fetch("/api/mercury-pay", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ billId: "owner-reimburse-" + Date.now(), amount, note: "Owner reimbursement via Mercury ACH", smokeTest: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setPayResult({ msg: "Error: " + (data.error ?? "unknown") + (data.details ? " — " + JSON.stringify(data.details) : ""), ok: false });
+      } else {
+        setPayResult({ msg: "Reimbursement sent! $" + data.amount + " · Mercury txn: " + data.mercuryTransactionId, ok: true });
+        const today = new Date().toISOString().slice(0, 10);
+        const { data: entry } = await supabase
+          .from("cw_owner_ledger")
+          .insert({ date: today, description: "Reimbursement via Mercury ACH", type: "reimbursed", amount, payment_method: "mercury", notes: "Mercury txn: " + data.mercuryTransactionId })
+          .select()
+          .single();
+        if (entry) setOwnerLedger(prev => [entry, ...prev]);
+        setReimburseAmount("");
+      }
+    } catch (e) {
+      setPayResult({ msg: "Network error: " + String(e), ok: false });
+    } finally {
+      setPaying(null);
+    }
+  }
+
+  async function syncMercuryCC() {
+    setCcSyncing(true);
+    try {
+      const res = await fetch("/api/mercury-cc-sync");
+      const data = await res.json();
+      if (!res.ok) { alert("Sync failed: " + (data.error ?? "unknown")); return; }
+      // Auto-match vendor by counterpartyName
+      const mapped: CcTxn[] = (data.transactions ?? []).map((t: Omit<CcTxn, "vendorId"|"scheduleC"|"skip">) => {
+        const name = (t.counterpartyName ?? t.description ?? "").toLowerCase();
+        const matched = vendors.find(v => name.includes(v.name.toLowerCase()));
+        return { ...t, vendorId: matched?.id ?? "", scheduleC: matched?.category ?? "18 - Office/Software", skip: !t.isCharge };
+      });
+      setCcTxns(mapped);
+      setShowCcSync(true);
+    } finally {
+      setCcSyncing(false);
+    }
+  }
+
+  async function importCcTxn(txn: CcTxn) {
+    if (!txn.vendorId) { alert("Please select a vendor first."); return; }
+    setCcImporting(txn.id);
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const { data, error } = await supabase
+        .from("cw_bills")
+        .insert({
+          vendor_id: txn.vendorId,
+          description: txn.description,
+          amount: txn.amount,
+          bill_date: txn.date,
+          paid_date: txn.date,
+          status: "paid",
+          payment_method: "mercury_cc",
+          mercury_transaction_id: txn.id,
+          schedule_c_line: txn.scheduleC,
+          tax_year: parseInt(txn.date.slice(0, 4)),
+        })
+        .select("*, vendor:cw_vendors(*)")
+        .single();
+      if (error) { alert("Import failed: " + error.message); return; }
+      if (data) setBills(prev => [data, ...prev]);
+      setCcTxns(prev => prev.filter(t => t.id !== txn.id));
+    } finally {
+      setCcImporting(null);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gray-950">
       {/* Header */}
@@ -261,12 +359,22 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
               {years.map(y => <option key={y} value={y}>{y}</option>)}
             </select>
             {tab === "bills" && (
-              <button
-                onClick={openNewBill}
-                className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold rounded-xl transition-all"
-              >
-                <Plus className="w-4 h-4" /> New Bill
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={syncMercuryCC}
+                  disabled={ccSyncing}
+                  className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-sm font-semibold rounded-xl transition-all"
+                >
+                  {ccSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                  Sync CC
+                </button>
+                <button
+                  onClick={openNewBill}
+                  className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold rounded-xl transition-all"
+                >
+                  <Plus className="w-4 h-4" /> New Bill
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -389,8 +497,7 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
                                 >
                                   <CheckCircle2 className="w-3.5 h-3.5" />
                                 </button>
-                                {bill.payment_method === "mercury" && (
-                                  <button
+                                <button
                                     onClick={() => payViaMercury(bill, false)}
                                     disabled={paying === bill.id}
                                     className="p-1 rounded text-blue-400 hover:bg-blue-500/10 transition-all disabled:opacity-50"
@@ -400,7 +507,6 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
                                       ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
                                       : <Send className="w-3.5 h-3.5" />}
                                   </button>
-                                )}
                               </>
                             )}
                             <button
@@ -491,6 +597,30 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
                   {fmt(ownerStats.balance)}
                 </div>
                 <div className="text-xs text-gray-600 mt-1">Company owes owner</div>
+                {ownerStats.balance > 0 && (
+                  <div className="mt-3 flex items-center gap-2">
+                    <span className="text-gray-500 text-xs">$</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      max={ownerStats.balance}
+                      value={reimburseAmount !== "" ? reimburseAmount : ownerStats.balance.toFixed(2)}
+                      onChange={e => setReimburseAmount(e.target.value)}
+                      className="w-24 bg-gray-800 border border-gray-700 text-white text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    <button
+                      onClick={() => reimburseViaMercury(parseFloat(reimburseAmount !== "" ? reimburseAmount : ownerStats.balance.toFixed(2)))}
+                      disabled={paying === "owner-reimburse"}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-all"
+                    >
+                      {paying === "owner-reimburse"
+                        ? <Loader2 className="w-3 h-3 animate-spin" />
+                        : <Send className="w-3 h-3" />}
+                      Reimburse
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -717,6 +847,90 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Mercury CC Sync panel */}
+      {showCcSync && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-16 px-4" style={{background:"rgba(0,0,0,0.7)"}}>
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-3xl max-h-[80vh] flex flex-col shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+              <div>
+                <div className="text-white font-semibold flex items-center gap-2"><CreditCard className="w-4 h-4 text-blue-400" /> Mercury CC — Unimported Charges</div>
+                <div className="text-xs text-gray-500 mt-0.5">{ccTxns.filter(t => !t.skip).length} charge{ccTxns.filter(t => !t.skip).length !== 1 ? "s" : ""} ready to import</div>
+              </div>
+              <button onClick={() => setShowCcSync(false)} className="p-1 rounded text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="overflow-y-auto flex-1">
+              {ccTxns.length === 0 ? (
+                <div className="px-6 py-12 text-center text-gray-500 text-sm">No unimported transactions found.</div>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-800 text-xs text-gray-500">
+                      <th className="text-left px-5 py-3">Date</th>
+                      <th className="text-left px-4 py-3">Description</th>
+                      <th className="text-right px-4 py-3">Amount</th>
+                      <th className="text-left px-4 py-3">Vendor</th>
+                      <th className="text-left px-4 py-3">Schedule C</th>
+                      <th className="text-center px-4 py-3">Skip</th>
+                      <th className="px-4 py-3"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ccTxns.map(txn => (
+                      <tr key={txn.id} className={"border-b border-gray-800/60 " + (txn.skip ? "opacity-40" : "")}>
+                        <td className="px-5 py-3 text-gray-400 whitespace-nowrap text-xs">{txn.date}</td>
+                        <td className="px-4 py-3 text-white max-w-xs">
+                          <div className="truncate">{txn.description}</div>
+                          {txn.counterpartyName && txn.counterpartyName !== txn.description && <div className="text-xs text-gray-500 truncate">{txn.counterpartyName}</div>}
+                        </td>
+                        <td className={"px-4 py-3 text-right font-semibold whitespace-nowrap " + (txn.isCharge ? "text-amber-400" : "text-emerald-400")}>
+                          {txn.isCharge ? "-" : "+"}{fmt(txn.amount)}
+                        </td>
+                        <td className="px-4 py-3">
+                          <select
+                            value={txn.vendorId}
+                            onChange={e => setCcTxns(prev => prev.map(t => t.id === txn.id ? { ...t, vendorId: e.target.value } : t))}
+                            className="bg-gray-800 border border-gray-700 text-white text-xs rounded-lg px-2 py-1 w-full focus:outline-none"
+                            disabled={txn.skip}
+                          >
+                            <option value="">-- select --</option>
+                            {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                          </select>
+                        </td>
+                        <td className="px-4 py-3">
+                          <select
+                            value={txn.scheduleC}
+                            onChange={e => setCcTxns(prev => prev.map(t => t.id === txn.id ? { ...t, scheduleC: e.target.value } : t))}
+                            className="bg-gray-800 border border-gray-700 text-white text-xs rounded-lg px-2 py-1 w-full focus:outline-none"
+                            disabled={txn.skip}
+                          >
+                            {SCHEDULE_C_CATEGORIES.map((c: ScheduleCCategory) => <option key={c.value} value={c.value}>{c.label}</option>)}
+                          </select>
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <input type="checkbox" checked={txn.skip} onChange={e => setCcTxns(prev => prev.map(t => t.id === txn.id ? { ...t, skip: e.target.checked } : t))} className="w-4 h-4 accent-blue-500" />
+                        </td>
+                        <td className="px-4 py-3">
+                          {!txn.skip && (
+                            <button
+                              onClick={() => importCcTxn(txn)}
+                              disabled={ccImporting === txn.id || !txn.vendorId}
+                              className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition-all whitespace-nowrap"
+                            >
+                              {ccImporting === txn.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+                              Import
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
           </div>
         </div>
       )}
