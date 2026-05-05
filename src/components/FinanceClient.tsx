@@ -4,7 +4,7 @@ import { useState, useMemo } from "react";
 import {
   DollarSign, Plus, X, ChevronDown, CheckCircle2,
   Clock, AlertCircle, Building2, Receipt, Tag, Calendar,
-  CreditCard, FileText, Pencil, Trash2
+  CreditCard, FileText, Pencil, Trash2, Send, Loader2, User, ArrowDownCircle, ArrowUpCircle
 } from "lucide-react";
 import { createClient as createBrowserSupabaseClient } from "@/lib/supabase-browser";
 import {
@@ -36,6 +36,17 @@ const fmtDate = (d: string) => new Date(d + "T00:00:00").toLocaleDateString("en-
 interface Props {
   vendors: Vendor[];
   bills: Bill[];
+  ownerLedger: OwnerLedgerEntry[];
+}
+
+interface OwnerLedgerEntry {
+  id: string;
+  date: string;
+  description: string;
+  type: "fronted" | "reimbursed" | "draw";
+  amount: number;
+  payment_method?: string;
+  notes?: string;
 }
 
 interface BillForm {
@@ -66,10 +77,11 @@ const EMPTY_BILL: BillForm = {
   tax_year: new Date().getFullYear().toString(),
 };
 
-export default function FinanceClient({ vendors: initialVendors, bills: initialBills }: Props) {
+export default function FinanceClient({ vendors: initialVendors, bills: initialBills, ownerLedger: initialOwnerLedger }: Props) {
   const [vendors, setVendors] = useState<Vendor[]>(initialVendors);
   const [bills, setBills] = useState<Bill[]>(initialBills);
-  const [tab, setTab] = useState<"bills" | "vendors">("bills");
+  const [ownerLedger, setOwnerLedger] = useState<OwnerLedgerEntry[]>(initialOwnerLedger);
+  const [tab, setTab] = useState<"bills" | "vendors" | "owner">("bills");
   const [showBillForm, setShowBillForm] = useState(false);
   const [editingBill, setEditingBill] = useState<Bill | null>(null);
   const [billForm, setBillForm] = useState<BillForm>(EMPTY_BILL);
@@ -77,6 +89,8 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
   const [error, setError] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<"all" | "unpaid" | "paid">("all");
   const [filterYear, setFilterYear] = useState<string>(new Date().getFullYear().toString());
+  const [paying, setPaying] = useState<string | null>(null);
+  const [payResult, setPayResult] = useState<{ msg: string; ok: boolean } | null>(null);
 
   // Derived stats
   const stats = useMemo(() => {
@@ -90,6 +104,12 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
     }, {} as Record<string, number>);
     return { totalPaid, totalUnpaid, byCategory, count: currentYear.length };
   }, [bills, filterYear]);
+
+  const ownerStats = useMemo(() => {
+    const totalFronted = ownerLedger.filter(e => e.type === "fronted").reduce((s, e) => s + e.amount, 0);
+    const totalReimbursed = ownerLedger.filter(e => e.type === "reimbursed" || e.type === "draw").reduce((s, e) => s + e.amount, 0);
+    return { totalFronted, totalReimbursed, balance: totalFronted - totalReimbursed };
+  }, [ownerLedger]);
 
   const filteredBills = useMemo(() => {
     return bills.filter(b => {
@@ -186,6 +206,38 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
     if (data) setBills(prev => prev.map(b => b.id === bill.id ? data : b));
   }
 
+  async function payViaMercury(bill: Bill, smokeTest = true) {
+    setPaying(bill.id);
+    setPayResult(null);
+    try {
+      const res = await fetch("/api/mercury-pay", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ billId: bill.id, amount: bill.amount, note: bill.description, smokeTest }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setPayResult({ msg: "Error: " + (data.error ?? "unknown") + (data.details ? " — " + JSON.stringify(data.details) : ""), ok: false });
+      } else {
+        setPayResult({ msg: (smokeTest ? "Smoke test" : "Payment") + " sent! $" + data.amount + " · Mercury txn: " + data.mercuryTransactionId, ok: true });
+        if (!smokeTest) {
+          const today = new Date().toISOString().slice(0, 10);
+          const { data: updated } = await supabase
+            .from("cw_bills")
+            .update({ status: "paid", paid_date: today, mercury_transaction_id: data.mercuryTransactionId })
+            .eq("id", bill.id)
+            .select("*, vendor:cw_vendors(*)")
+            .single();
+          if (updated) setBills(prev => prev.map(b => b.id === bill.id ? updated : b));
+        }
+      }
+    } catch (e) {
+      setPayResult({ msg: "Network error: " + String(e), ok: false });
+    } finally {
+      setPaying(null);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gray-950">
       {/* Header */}
@@ -220,6 +272,12 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
         </div>
       </header>
 
+      {payResult && (
+        <div className={"px-6 py-3 text-sm font-medium flex items-center justify-between " + (payResult.ok ? "bg-emerald-500/10 text-emerald-400 border-b border-emerald-500/20" : "bg-red-500/10 text-red-400 border-b border-red-500/20")}>
+          <span>{payResult.msg}</span>
+          <button onClick={() => setPayResult(null)} className="ml-4 opacity-60 hover:opacity-100"><X className="w-4 h-4" /></button>
+        </div>
+      )}
       <main className="max-w-6xl mx-auto px-6 py-8 space-y-6">
 
         {/* Stats row */}
@@ -253,7 +311,7 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
 
         {/* Tabs */}
         <div className="flex gap-1 bg-gray-900/50 rounded-xl p-1 w-fit border border-gray-800">
-          {(["bills", "vendors"] as const).map(t => (
+          {(["bills", "vendors", "owner"] as const).map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -323,13 +381,27 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                             {bill.status === "unpaid" && (
-                              <button
-                                onClick={() => markPaid(bill)}
-                                className="p-1 rounded text-emerald-500 hover:bg-emerald-500/10 transition-all"
-                                title="Mark paid"
-                              >
-                                <CheckCircle2 className="w-3.5 h-3.5" />
-                              </button>
+                              <>
+                                <button
+                                  onClick={() => markPaid(bill)}
+                                  className="p-1 rounded text-emerald-500 hover:bg-emerald-500/10 transition-all"
+                                  title="Mark paid"
+                                >
+                                  <CheckCircle2 className="w-3.5 h-3.5" />
+                                </button>
+                                {bill.payment_method === "mercury" && (
+                                  <button
+                                    onClick={() => payViaMercury(bill, false)}
+                                    disabled={paying === bill.id}
+                                    className="p-1 rounded text-blue-400 hover:bg-blue-500/10 transition-all disabled:opacity-50"
+                                    title={"Pay " + fmt(bill.amount) + " via Mercury ACH"}
+                                  >
+                                    {paying === bill.id
+                                      ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                      : <Send className="w-3.5 h-3.5" />}
+                                  </button>
+                                )}
+                              </>
                             )}
                             <button
                               onClick={() => openEditBill(bill)}
@@ -397,6 +469,87 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
           </div>
         )}
       </main>
+
+        {/* Owner tab */}
+        {tab === "owner" && (
+          <div className="space-y-4">
+            {/* Balance cards */}
+            <div className="grid grid-cols-3 gap-4">
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
+                <div className="text-xs text-gray-500 mb-1">Total Fronted by Owner</div>
+                <div className="text-2xl font-bold text-white">{fmt(ownerStats.totalFronted)}</div>
+                <div className="text-xs text-gray-600 mt-1">Paid personally for company</div>
+              </div>
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
+                <div className="text-xs text-gray-500 mb-1">Total Reimbursed</div>
+                <div className="text-2xl font-bold text-emerald-400">{fmt(ownerStats.totalReimbursed)}</div>
+                <div className="text-xs text-gray-600 mt-1">Paid back to owner</div>
+              </div>
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
+                <div className="text-xs text-gray-500 mb-1">Outstanding Balance</div>
+                <div className={`text-2xl font-bold ${ownerStats.balance > 0 ? "text-amber-400" : "text-gray-400"}`}>
+                  {fmt(ownerStats.balance)}
+                </div>
+                <div className="text-xs text-gray-600 mt-1">Company owes owner</div>
+              </div>
+            </div>
+
+            {/* Ledger table */}
+            <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-800 text-xs text-gray-500">
+                    <th className="text-left px-5 py-3">Date</th>
+                    <th className="text-left px-4 py-3">Description</th>
+                    <th className="text-left px-4 py-3">Type</th>
+                    <th className="text-left px-4 py-3">Method</th>
+                    <th className="text-right px-4 py-3">Amount</th>
+                    <th className="text-right px-5 py-3">Running Balance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...ownerLedger].sort((a, b) => a.date.localeCompare(b.date)).reduce<{ entries: (OwnerLedgerEntry & { balance: number })[]; running: number }>(
+                    (acc, e) => {
+                      const delta = e.type === "fronted" ? e.amount : -e.amount;
+                      const running = acc.running + delta;
+                      acc.entries.push({ ...e, balance: running });
+                      acc.running = running;
+                      return acc;
+                    },
+                    { entries: [], running: 0 }
+                  ).entries.reverse().map(entry => (
+                    <tr key={entry.id} className="border-b border-gray-800/60 hover:bg-gray-800/30 transition-colors">
+                      <td className="px-5 py-3 text-gray-400 whitespace-nowrap">{fmtDate(entry.date)}</td>
+                      <td className="px-4 py-3 text-white">
+                        <div>{entry.description}</div>
+                        {entry.notes && <div className="text-xs text-gray-500 mt-0.5">{entry.notes}</div>}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium border capitalize ${
+                          entry.type === "fronted"
+                            ? "text-amber-400 bg-amber-500/10 border-amber-500/20"
+                            : "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                        }`}>
+                          {entry.type === "fronted"
+                            ? <ArrowDownCircle className="w-2.5 h-2.5" />
+                            : <ArrowUpCircle className="w-2.5 h-2.5" />}
+                          {entry.type}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-gray-500 text-xs capitalize">{entry.payment_method ?? "—"}</td>
+                      <td className={`px-4 py-3 text-right font-semibold ${entry.type === "fronted" ? "text-amber-400" : "text-emerald-400"}`}>
+                        {entry.type === "fronted" ? "+" : "-"}{fmt(entry.amount)}
+                      </td>
+                      <td className={`px-5 py-3 text-right font-bold ${entry.balance > 0 ? "text-white" : "text-gray-500"}`}>
+                        {fmt(entry.balance)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
       {/* Bill form modal */}
       {showBillForm && (
