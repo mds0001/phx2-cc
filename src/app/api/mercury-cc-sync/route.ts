@@ -5,7 +5,9 @@ import { mercuryFetch } from "@/lib/mercury";
 const MERCURY_CC_ID = "f61b1d82-44df-11f1-a091-cf2256cd9db3";
 
 export async function GET() {
-  const res = await mercuryFetch(`/accounts/${MERCURY_CC_ID}/transactions?limit=500&order=desc`);
+  // CC is a Mercury credit account. The /account/{id}/transactions endpoint returns 404
+  // for credit accounts. Use the global /transactions endpoint with accountId as a filter.
+  const res = await mercuryFetch(`/transactions?accountId=${MERCURY_CC_ID}&limit=500&order=desc`);
 
   if (!res.ok) {
     const text = await res.text();

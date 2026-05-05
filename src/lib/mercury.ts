@@ -4,10 +4,11 @@ const PROXY_URL = process.env.MERCURY_PROXY_URL; // e.g. https://mercury-proxy.f
 const PROXY_SECRET = process.env.MERCURY_PROXY_SECRET;
 
 async function sign(path: string): Promise<Record<string, string>> {
+  const pathOnly = path.split("?")[0]; // strip query string - proxy verifies pathname only
   const ts = Date.now().toString();
   const sig = crypto
     .createHmac("sha256", PROXY_SECRET!)
-    .update(`${ts}:${path}`)
+    .update(`${ts}:${pathOnly}`)
     .digest("hex");
   return { "x-proxy-ts": ts, "x-proxy-sig": sig };
 }
