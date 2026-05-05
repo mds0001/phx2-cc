@@ -8,7 +8,7 @@ import { useActiveRole } from "@/lib/useActiveRole";
 import {
   CalendarClock, GitMerge, Plug, Building2, Users,
   FileText, BarChart3, Activity, ShieldCheck, LogOut, Bot, Tag,
-  TrendingUp, UserPlus, Sun, Moon, Contrast, ChevronDown,
+  TrendingUp, UserPlus, Sun, Moon, Contrast, ChevronDown, DollarSign,
 } from "lucide-react";
 
 // Types
@@ -278,6 +278,12 @@ export default function GlobalShell() {
               href="/boh/sku-research"
               active={pathname?.startsWith("/boh/sku-research") === true}
               badge={skuTweCount > 0 ? skuTweCount : undefined}
+            />
+            <NavItem
+              icon={<DollarSign className="w-4 h-4" />}
+              label="Finance"
+              href="/boh/finance"
+              active={pathname?.startsWith("/boh/finance") === true}
             />
           </div>
           )}

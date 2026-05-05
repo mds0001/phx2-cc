@@ -22,7 +22,10 @@
       "Bash(grep -rn 'select\\(\"role\\\\|select\\(.role\\\\|select\\(\"\\\\\\\\*\"\\\\|select\\(.\\\\\\\\*.\\\\|select.*customer_id' src/app --include=\"*.tsx\" --include=\"*.ts\")",
       "Bash(npm run *)",
       "Bash(pkill -f \"next lint\")",
-      "Bash(grep -E \"profiles|profile\\\\?\\\\\\\\.|profile\\\\\\\\.\\\\b\")"
+      "Bash(grep -E \"profiles|profile\\\\?\\\\\\\\.|profile\\\\\\\\.\\\\b\")",
+      "Bash(git *)",
+      "Bash(pwsh -NoProfile -File ./push.ps1)",
+      "PowerShell(./push.ps1)"
     ]
   }
 }

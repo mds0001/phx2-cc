@@ -566,3 +566,48 @@ export interface Opportunity {
   created_at: string;
   updated_at: string;
 }
+
+// ── Finance: AP ────────────────────────────────────────────────────────
+
+export const SCHEDULE_C_CATEGORIES = [
+  '17 - Legal/Professional',
+  '18 - Office/Software',
+  '20 - Rent/Lease',
+  '22 - Supplies',
+  '25 - Utilities',
+  '26 - Wages',
+  '27a - Other Expenses',
+] as const;
+export type ScheduleCCategory = typeof SCHEDULE_C_CATEGORIES[number];
+
+export const PAYMENT_METHODS = ['mercury', 'personal_card', 'usaa', 'check', 'other'] as const;
+export type PaymentMethod = typeof PAYMENT_METHODS[number];
+
+export interface Vendor {
+  id: string;
+  name: string;
+  category: ScheduleCCategory;
+  website: string | null;
+  notes: string | null;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface Bill {
+  id: string;
+  vendor_id: string;
+  description: string;
+  amount: number;
+  bill_date: string;
+  due_date: string | null;
+  paid_date: string | null;
+  status: 'unpaid' | 'paid' | 'void';
+  payment_method: PaymentMethod | null;
+  mercury_transaction_id: string | null;
+  schedule_c_line: string | null;
+  receipt_url: string | null;
+  tax_year: number;
+  notes: string | null;
+  created_at: string;
+  vendor?: Vendor;
+}
