@@ -298,8 +298,6 @@ export default function SchedulerClient({
   const expandedLogsRef = useRef<Record<string, boolean>>({});
   const fullscreenTaskIdRef = useRef<string | null>(null);
 
-  const [runningTasks, setRunningTasks] = useState<Set<string>>(new Set());
-  const [cancellingTasks, setCancellingTasks] = useState<Set<string>>(new Set());
   const [resetingTasks, setResetingTasks] = useState<Set<string>>(new Set());
   // Phase 1: server-side runner state. Latest live (non-terminal) task_runs row per task.
   const [serverRuns, setServerRuns] = useState<Record<string, TaskRun>>({});
@@ -371,18 +369,6 @@ export default function SchedulerClient({
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const executingRef = useRef<Set<string>>(new Set());
-  // cancelledRef: task IDs for which the user has requested cancellation.
-  // executeTask checks this at each record boundary and aborts early.
-  const cancelledRef = useRef<Set<string>>(new Set());
-  // taskAbortControllers: one AbortController per running task.
-  // Aborting it immediately interrupts any in-flight fetch (AI pre-fetch, proxy calls, etc.)
-  const taskAbortControllers = useRef<Map<string, AbortController>>(new Map());
-  // recentlyFinishedRef: maps task ID → { status, finishedAt }.
-  // When executeTask writes a terminal status locally, it records it here so that
-  // fetchTasks() — called by both the finally block AND the polling loop — cannot
-  // overwrite the badge with stale "active" data from the DB before replication catches up.
-  // Entries are cleared once the DB confirms the terminal status, or after 90 seconds.
-  const recentlyFinishedRef = useRef<Map<string, { status: import("@/lib/types").TaskStatus; finishedAt: number }>>(new Map());
   const dragSlotIdxRef = useRef<number | null>(null);
   const dragEditSlotIdxRef = useRef<number | null>(null);
 
@@ -392,23 +378,7 @@ export default function SchedulerClient({
     if (activeCustomerId) q = q.or(`customer_id.eq.${activeCustomerId},is_system.eq.true`);
     const { data } = await q;
     if (data) {
-      const now = Date.now();
-      setTasks(data.map((dbTask) => {
-        const override = recentlyFinishedRef.current.get(dbTask.id);
-        if (!override) return dbTask;
-        // Stale override — remove it
-        if (now - override.finishedAt > 90_000) {
-          recentlyFinishedRef.current.delete(dbTask.id);
-          return dbTask;
-        }
-        // DB confirmed the terminal status — remove override and use DB value
-        if (dbTask.status !== "active") {
-          recentlyFinishedRef.current.delete(dbTask.id);
-          return dbTask;
-        }
-        // DB still says "active" but we know it finished — preserve our local status
-        return { ...dbTask, status: override.status };
-      }));
+      setTasks(data);
     }
 
     // Fetch log counts for all tasks
@@ -1809,7 +1779,8 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                 const badge =
                   STATUS_BADGE[task.status] ?? STATUS_BADGE.waiting;
                 const icon = STATUS_ICON[task.status];
-                const isRunning = runningTasks.has(task.id);
+                const _sr = serverRuns[task.id];
+                const isRunning = !!(_sr && (_sr.status === "pending" || _sr.status === "running" || _sr.status === "cancelling"));
                 const logsOpen = expandedLogs[task.id] ?? false;
                 const logs = taskLogs[task.id] ?? [];
 
@@ -2301,7 +2272,7 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
           >
             <div className="flex items-center justify-between mb-2">
               <span className="text-[10px] font-bold text-violet-400 uppercase tracking-wider">
-                {runningTasks.has(summaryPopoverId) ? "Task Running" : "Last Run Summary"}
+                {(() => { const sr = serverRuns[summaryPopoverId]; return sr && (sr.status === "pending" || sr.status === "running" || sr.status === "cancelling") ? "Task Running" : "Last Run Summary"; })()}
               </span>
               <button
                 onClick={() => { setSummaryPopoverId(null); setSummaryPopoverPos(null); }}
@@ -2310,7 +2281,7 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                 <X className="w-3 h-3" />
               </button>
             </div>
-            {runningTasks.has(summaryPopoverId) ? (
+            {(() => { const sr = serverRuns[summaryPopoverId]; return !!(sr && (sr.status === "pending" || sr.status === "running" || sr.status === "cancelling")); })() ? (
               <div className="flex items-center gap-2 text-xs text-gray-400 py-1">
                 <Loader2 className="w-3 h-3 animate-spin text-indigo-400" />
                 Running — summary will appear when complete.
