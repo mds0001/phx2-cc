@@ -195,6 +195,55 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
     const skuLookupMappings = (mp.mappings ?? []).filter((m) => m.transform === "sku_lookup");
     const skuLookupCache = new Map<string, string>();
 
+    // AI lookup pre-fetch setup (Phase 3c-2).
+    // Builds unique source-value combos across all rows in this slot, then calls
+    // /api/ai-lookup once per combo. Result cached by combo key within the chunk.
+    // /api/ai-lookup itself caches in the ai_lookup_cache DB table, so cross-tick
+    // misses still hit cheap.
+    const aiLookupMappings = (mp.mappings ?? []).filter((m) => m.transform === "ai_lookup");
+    const aiLookupCache = new Map<string, Record<string, string>>();
+    if (aiLookupMappings.length > 0) {
+      const allAiSourceFieldIds = [...new Set(aiLookupMappings.flatMap((m) => m.aiSourceFields ?? []))];
+      const outputKeys = [...new Set(aiLookupMappings.map((m) => m.aiOutputKey).filter((k): k is string => !!k))];
+      const customPrompt = aiLookupMappings.find((m) => m.aiPrompt)?.aiPrompt;
+
+      const uniqueCombos = new Map<string, Record<string, string>>();
+      for (const r of rows) {
+        const sourceValues: Record<string, string> = {};
+        for (const fieldId of allAiSourceFieldIds) {
+          const field = mp.source_fields.find((f) => f.id === fieldId);
+          if (field) sourceValues[field.name] = String((r as Record<string, unknown>)[field.name] ?? "");
+        }
+        const key = JSON.stringify(sourceValues);
+        if (!uniqueCombos.has(key)) uniqueCombos.set(key, sourceValues);
+      }
+
+      await admin.from("task_logs").insert({
+        task_id: run.task_id,
+        action: "INFO",
+        details: `[S${slotIdx + 1}] AI Lookup: ${uniqueCombos.size} unique combo(s) — keys: [${outputKeys.join(", ")}]`,
+      });
+
+      for (const [comboKey, sourceValues] of uniqueCombos) {
+        try {
+          const res = await fetch(`${ctx.origin}/api/ai-lookup`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sourceValues, outputKeys, customPrompt }),
+          });
+          if (res.ok) {
+            const result = (await res.json()) as Record<string, unknown>;
+            // Strip token-meta keys before caching so they don't leak into mapping payloads.
+            const { inputTokens: _it, outputTokens: _ot, ...lookupResult } = result;
+            void _it; void _ot;
+            aiLookupCache.set(comboKey, lookupResult as Record<string, string>);
+          }
+        } catch {
+          // Non-fatal: applyMappingProfile returns "" for missing keys, runner continues.
+        }
+      }
+    }
+
     while (rowIdx < rows.length) {
       // Time budget: persist & exit
       if (Date.now() - startMs > TICK_BUDGET_MS) {
@@ -304,7 +353,19 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
             details: `[S${slotIdx + 1}] Row ${rowIdx + 1}: ${skipReason} — skipped`,
           });
         } else {
-          const mapped = applyMappingProfile(row, mp, undefined, undefined, skuLookupResults);
+          // Resolve this row's ai_lookup combo key and pull cached results.
+          let aiResults: Record<string, string> | undefined;
+          if (aiLookupMappings.length > 0) {
+            const allAiSourceFieldIds = [...new Set(aiLookupMappings.flatMap((m) => m.aiSourceFields ?? []))];
+            const sourceValues: Record<string, string> = {};
+            for (const fieldId of allAiSourceFieldIds) {
+              const field = mp.source_fields.find((f) => f.id === fieldId);
+              if (field) sourceValues[field.name] = String(row[field.name] ?? "");
+            }
+            aiResults = aiLookupCache.get(JSON.stringify(sourceValues));
+          }
+
+          const mapped = applyMappingProfile(row, mp, aiResults, undefined, skuLookupResults);
           await postRowToIvanti({
             admin,
             run,
