@@ -163,6 +163,32 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
       .map((m) => mp.target_fields.find((f) => f.id === m.targetFieldId)?.name)
       .filter((n): n is string => !!n);
 
+    // Phase 3c-3: link field metadata for ivanti-proxy. Mappings flagged
+    // isLinkField AND sku_lookup-with-manufacturer are both treated as link
+    // fields (matches legacy executeTask).
+    const linkMappingsList = (mp.mappings ?? []).filter(
+      (m) => m.isLinkField || (m.transform === "sku_lookup" && m.skuResultField === "manufacturer")
+    );
+    const targetFieldName = (id: string) => mp.target_fields.find((f) => f.id === id)?.name;
+    const linkFieldNames = linkMappingsList
+      .map((m) => targetFieldName(m.targetFieldId))
+      .filter((n): n is string => !!n);
+    const linkFieldBoNames: Record<string, string> = {};
+    const linkFieldLookupFields: Record<string, string> = {};
+    for (const m of linkMappingsList) {
+      const fn = targetFieldName(m.targetFieldId);
+      if (fn && m.linkFieldBoName) linkFieldBoNames[fn] = m.linkFieldBoName;
+      if (fn && m.linkFieldLookupField) linkFieldLookupFields[fn] = m.linkFieldLookupField;
+    }
+    const autoCreateLinkFields = (mp.mappings ?? [])
+      .filter((m) => m.linkFieldAutoCreate)
+      .map((m) => targetFieldName(m.targetFieldId))
+      .filter((n): n is string => !!n);
+    const preserveOnOrderFields = (mp.mappings ?? [])
+      .filter((m) => m.transform === "on_order_status")
+      .map((m) => targetFieldName(m.targetFieldId))
+      .filter((n): n is string => !!n);
+
     // SKU lookup pre-fetch setup (Phase 3c-1).
     // Keyed cache scoped to this chunk — re-fetched on next tick if needed.
     // Cache values: the resolved taxonomy field, OR sentinels "__IGNORED__" / "__NOT_FOUND__".
@@ -288,6 +314,11 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
             targetConn,
             businessObject: mp.target_business_object ?? undefined,
             upsertKeys,
+            linkFieldNames,
+            linkFieldBoNames,
+            linkFieldLookupFields,
+            autoCreateLinkFields,
+            preserveOnOrderFields,
             counters,
             ctx,
           });
@@ -716,10 +747,19 @@ async function postRowToIvanti(args: {
   targetConn: EndpointConnection;
   businessObject: string | undefined;
   upsertKeys: string[];
+  linkFieldNames: string[];
+  linkFieldBoNames: Record<string, string>;
+  linkFieldLookupFields: Record<string, string>;
+  autoCreateLinkFields: string[];
+  preserveOnOrderFields: string[];
   counters: Record<string, number>;
   ctx: RunCtx;
 }) {
-  const { admin, run, slotIdx, rowIdx, mapped, targetConn, businessObject, upsertKeys, counters, ctx } = args;
+  const {
+    admin, run, slotIdx, rowIdx, mapped, targetConn, businessObject,
+    upsertKeys, linkFieldNames, linkFieldBoNames, linkFieldLookupFields,
+    autoCreateLinkFields, preserveOnOrderFields, counters, ctx,
+  } = args;
   const cfg = targetConn.config as unknown as Record<string, string>;
   const slotPrefix = `[S${slotIdx + 1}]`;
   try {
@@ -733,6 +773,11 @@ async function postRowToIvanti(args: {
         businessObject,
         tenantId: cfg.tenant_id,
         ...(upsertKeys.length > 0 && { upsertKeys }),
+        ...(linkFieldNames.length > 0 && { linkFieldNames }),
+        ...(Object.keys(linkFieldBoNames).length > 0 && { linkFieldBoNames }),
+        ...(Object.keys(linkFieldLookupFields).length > 0 && { linkFieldLookupFields }),
+        ...(autoCreateLinkFields.length > 0 && { autoCreateLinkFields }),
+        ...(preserveOnOrderFields.length > 0 && { preserveOnOrderFields }),
       }),
     });
     const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
