@@ -49,6 +49,7 @@ export interface ClaimedRun {
   mapping_snapshots: Record<string, MappingProfile> | null;
   source_connection_snap: { primary: EndpointConnection | null; all: Record<string, EndpointConnection> } | null;
   target_connection_snap: { primary: EndpointConnection | null; all: Record<string, EndpointConnection> } | null;
+  started_at: string | null;
 }
 
 interface SkuException {
@@ -429,6 +430,20 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
       `Done — ${counters.created ?? 0} created, ${counters.updated ?? 0} updated, ` +
       `${counters.skipped ?? 0} skipped, ${counters.filtered ?? 0} filtered, ${counters.errored ?? 0} errored` +
       (exceptions.length > 0 ? `, ${exceptions.length} SKU exception(s) queued` : ""),
+  });
+
+  // SUMMARY log: parser-friendly "Key: Value | Key: Value" form that the
+  // SchedulerClient "Last Run Summary" popover and inline stat card both read.
+  const startedMs = run.started_at ? new Date(run.started_at).getTime() : Date.now();
+  const durationSec = Math.max(0, Math.round((Date.now() - startedMs) / 1000));
+  await admin.from("task_logs").insert({
+    task_id: run.task_id,
+    action: "SUMMARY",
+    details:
+      `Duration: ${durationSec}s | Rows Processed: ${counters.processed ?? 0} | ` +
+      `Created: ${counters.created ?? 0} | Updated: ${counters.updated ?? 0} | ` +
+      `Skipped: ${counters.skipped ?? 0} | Errors: ${counters.errored ?? 0}` +
+      (exceptions.length > 0 ? ` | SKU Exceptions: ${exceptions.length}` : ""),
   });
 
   // Record SKU exceptions for the Research/Exceptions UI + email admins.
