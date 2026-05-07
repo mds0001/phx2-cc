@@ -2698,15 +2698,14 @@ await taskLog("ROW", `Sending row ${i + 1}/${rows.length}${isMultiSn ? ` [SN: ${
     console.log(`[Poller] Poll interval set to ${pollInterval}s`);
     pollTimerRef.current = setInterval(async () => {
       await fetchTasks();
-      await runDueTasks();
-      // Phase 1+2: keep server-run state fresh on the polling tempo so the
-      // UI stays accurate even if the realtime channel drops events.
+      // Phase 5a: legacy runDueTasks() removed -- server-side cron handles
+      // recurring task auto-creation now. Polling keeps task + run state fresh.
       await refreshServerRuns();
     }, pollInterval * 1000);
     return () => {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
     };
-  }, [pollInterval, fetchTasks, runDueTasks, refreshServerRuns]);
+  }, [pollInterval, fetchTasks, refreshServerRuns]);
 
   // Restore poll interval from localStorage after mount (avoids SSR hydration mismatch)
   useEffect(() => {
@@ -4052,48 +4051,24 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                                 Edit
                               </button>
 
-                              <button
-                                onClick={() => executeTask(task)}
-                                disabled={isRunning || resetingTasks.has(task.id)}
-                                className="flex items-center gap-1.5 px-2 py-1 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-500 hover:text-gray-300 rounded-md text-[10px] font-medium transition-all disabled:opacity-50"
-                                title="Legacy client-side run (will be removed once server-side runner reaches feature parity). Use this only if the new Run button errors on a feature it doesn't yet support."
-                              >
-                                {isRunning ? (
-                                  <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                                ) : (
-                                  <Play className="w-2.5 h-2.5" />
-                                )}
-                                {isRunning ? "Running…" : "Run (legacy)"}
-                              </button>
-
-                              {/* Phase 1: server-side runner button (preview, admin only). */}
                               {isAdmin && (() => {
                                 const sr = serverRuns[task.id];
                                 const liveStatus =
                                   sr && (sr.status === "pending" || sr.status === "running" || sr.status === "cancelling")
                                     ? sr.status
                                     : null;
-                                if (liveStatus) {
-                                  return (
-                                    <button
-                                      onClick={() => cancelServerRun(task.id)}
-                                      disabled={liveStatus === "cancelling"}
-                                      className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/25 text-amber-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
-                                      title={`Server run: ${liveStatus}`}
-                                    >
-                                      <Server className="w-3 h-3" />
-                                      {liveStatus} — cancel
-                                    </button>
-                                  );
-                                }
                                 return (
                                   <button
                                     onClick={() => startServerRun(task)}
-                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-500/15 hover:bg-violet-500/25 border border-violet-500/40 text-violet-300 rounded-lg text-xs font-semibold transition-all"
-                                    title="Run server-side. Survives logout, browser close, and crashes."
+                                    disabled={!!liveStatus}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-500/15 hover:bg-violet-500/25 border border-violet-500/40 text-violet-300 rounded-lg text-xs font-semibold transition-all disabled:opacity-50"
+                                    title={liveStatus ? `Server run: ${liveStatus}` : "Run server-side. Survives logout, browser close, and crashes."}
                                   >
-                                    <Play className="w-3 h-3" />
-                                    Run
+                                    {liveStatus ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                                    {liveStatus === "pending" ? "Pending…"
+                                      : liveStatus === "running" ? "Running…"
+                                      : liveStatus === "cancelling" ? "Cancelling…"
+                                      : "Run"}
                                   </button>
                                 );
                               })()}
@@ -4136,11 +4111,17 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                               )}
 
                               {(() => {
-                                const isCancelling = cancellingTasks.has(task.id);
+                                const sr = serverRuns[task.id];
+                                const liveStatus =
+                                  sr && (sr.status === "pending" || sr.status === "running" || sr.status === "cancelling")
+                                    ? sr.status
+                                    : null;
+                                const isCancelling = liveStatus === "cancelling";
+                                const canCancel = liveStatus === "pending" || liveStatus === "running";
                                 return (
                                   <button
-                                    onClick={() => cancelTask(task.id)}
-                                    disabled={task.status === "cancelled" || !isRunning || isCancelling}
+                                    onClick={() => cancelServerRun(task.id)}
+                                    disabled={!canCancel && !isCancelling}
                                     className={`flex items-center gap-1.5 px-3 py-1.5 border rounded-lg text-xs font-medium transition-all disabled:opacity-40 ${
                                       isCancelling
                                         ? "bg-orange-500/20 border-orange-500/40 text-orange-300 cursor-not-allowed"
@@ -4148,9 +4129,8 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                                     }`}
                                     title={
                                       isCancelling ? "Cancelling — finishing current row…"
-                                      : task.status === "cancelled" ? "Already cancelled"
-                                      : !isRunning ? "Task is not running"
-                                      : "Cancel task"
+                                      : !canCancel ? "No active run to cancel"
+                                      : "Cancel running task"
                                     }
                                   >
                                     {isCancelling
