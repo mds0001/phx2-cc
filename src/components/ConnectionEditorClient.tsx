@@ -686,7 +686,7 @@ function IvantiForm({
         <PasswordInput
           value={config.api_key ?? ""}
           onChange={(v) => onChange("api_key", v)}
-          placeholder="e.g. 251E668B0B42478EB3DA9D6E8446CA0B"
+          placeholder="rest_api_key value from Ivanti admin"
         />
       </Field>
 
@@ -1012,7 +1012,7 @@ export default function ConnectionEditorClient({
     setConfig(
       t === "odbc"   ? { port: "1433" } :
       t === "smtp"   ? { port: "587" } :
-      t === "ivanti" ? { business_object: "CI__Computers", api_key: "251E668B0B42478EB3DA9D6E8446CA0B" } :
+      t === "ivanti" ? { business_object: "CI__Computers" } :
       t === "dell"   ? { base_url: "https://apigtwb2c.us.dell.com", scope: "oob" } :
       t === "cdw"    ? { base_url: "https://portal.apiconnect.cdw.com" } :
       t === "azure"  ? { scope: "https://graph.microsoft.com/.default", base_url: "https://graph.microsoft.com/v1.0" } :

@@ -78,6 +78,18 @@ interface UnifiedSlot {
   target_connection_id?: string | null;
 }
 
+/**
+ * Headers to spread into every runner self-fetch so calls back to our own
+ * /api/* routes pass through Vercel Deployment Protection. The env var is
+ * auto-set by Vercel when "Protection Bypass for Automation" is configured;
+ * it's undefined in dev, in which case we send no bypass header (and dev
+ * has no protection layer to begin with).
+ */
+function vercelBypassHeaders(): Record<string, string> {
+  const secret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+  return secret ? { "x-vercel-protection-bypass": secret } : {};
+}
+
 export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunCtx): Promise<ChunkResult> {
   const startMs = Date.now();
   const nowIso = () => new Date().toISOString();
@@ -229,7 +241,7 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
         try {
           const res = await fetch(`${ctx.origin}/api/ai-lookup`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...vercelBypassHeaders() },
             body: JSON.stringify({ sourceValues, outputKeys, customPrompt }),
           });
           if (res.ok) {
@@ -300,7 +312,7 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
             try {
               const res = await fetch(`${ctx.origin}/api/sku-lookup`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: { "Content-Type": "application/json", ...vercelBypassHeaders() },
                 body: JSON.stringify({
                   sku: skuRaw,
                   result_field: sm.skuResultField ?? "type",
@@ -461,6 +473,7 @@ async function recordSkuExceptions(run: ClaimedRun, exceptions: SkuException[], 
   const headers = {
     "Content-Type": "application/json",
     "Authorization": `Bearer ${ctx.cronSecret}`,
+    ...vercelBypassHeaders(),
   };
   const task = run.task_snapshot;
   if (exceptions.length === 0) {
@@ -798,6 +811,7 @@ async function fetchInsightRows(
     headers: {
       "Content-Type": "application/json",
       "Authorization": `Bearer ${ctx.cronSecret}`,
+      ...vercelBypassHeaders(),
     },
     body: JSON.stringify({
       connection_id: sourceConnId,
@@ -841,7 +855,7 @@ async function postRowToIvanti(args: {
   try {
     const res = await fetch(`${ctx.origin}/api/ivanti-proxy`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...vercelBypassHeaders() },
       body: JSON.stringify({
         ivantiUrl: cfg.url,
         data: mapped,

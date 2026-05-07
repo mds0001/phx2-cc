@@ -16,7 +16,6 @@ import { NextRequest, NextResponse } from "next/server";
 // Response: { values: string[] }  — sorted, deduplicated, non-empty
 //           { values: [], notFound: true, businessObject }  — BO not accessible anywhere
 //
-const FALLBACK_API_KEY = "251E668B0B42478EB3DA9D6E8446CA0B";
 const PAGE_SIZE = 100;
 const MAX_PAGES = 20;
 
@@ -192,7 +191,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "ivantiUrl and fieldName are required" }, { status: 400 });
     }
 
-    const apiKey         = body.apiKey         ?? FALLBACK_API_KEY;
+    const apiKey         = body.apiKey;
+    if (!apiKey) {
+      return NextResponse.json({ error: "apiKey is required" }, { status: 400 });
+    }
     const businessObject = body.businessObject ?? "CI__Computers";
     const base           = ivantiUrl.replace(/\/$/, "");
 
