@@ -850,7 +850,7 @@ export async function POST(request: NextRequest) {
       "NetworkDevice":    "CI__NetworkDevices",
       "Server":           "CI__Servers",
       "Printer":          "CI__Printers",
-      "Infrastructure":   "CI__ivnt_Infrastructure",
+      "Infrastructure":   "CI__ivnt_Infrastructures",
       "GeneralAsset":     "CI__ivnt_GeneralAssets",
     };
     const payloadCIType = (data as Record<string, unknown>)?.CIType as string | undefined;
