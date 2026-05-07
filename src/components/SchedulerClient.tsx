@@ -41,10 +41,11 @@ import type {
   AttachmentRule,
   InsightStep,
   InsightRecordType,
+  TaskRun,
 } from "@/lib/types";
 import { applyMappingProfile, MappingSlot } from "@/lib/types";
 import { evaluateFilter } from "@/lib/filterExpression";
-import { GitMerge, Plug, BookOpen, Building2, Lock, Shield, ShieldOff, ExternalLink, ChevronRight } from "lucide-react";
+import { GitMerge, Plug, BookOpen, Building2, Lock, Shield, ShieldOff, ExternalLink, ChevronRight, Server } from "lucide-react";
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -300,6 +301,10 @@ export default function SchedulerClient({
   const [runningTasks, setRunningTasks] = useState<Set<string>>(new Set());
   const [cancellingTasks, setCancellingTasks] = useState<Set<string>>(new Set());
   const [resetingTasks, setResetingTasks] = useState<Set<string>>(new Set());
+  // Phase 1: server-side runner state. Latest live (non-terminal) task_runs row per task.
+  const [serverRuns, setServerRuns] = useState<Record<string, TaskRun>>({});
+  // Phase 2: feedback string from the last manual /api/scheduler/tick call.
+  const [lastTickResult, setLastTickResult] = useState<string | null>(null);
   // Debug mode expand/collapse per task, and tracked RecID counts from DB
   const [expandedDebug, setExpandedDebug] = useState<Set<string>>(new Set());
   const [trackedCounts, setTrackedCounts] = useState<Map<string, number>>(new Map());
@@ -493,6 +498,89 @@ export default function SchedulerClient({
     }
     throw new Error("fetchWithRetry: unreachable");
   }
+
+  // Phase 1: refetch the latest live (non-terminal) run for one or all tasks.
+  // Used as an optimistic-update fallback so the UI reflects state immediately
+  // without waiting on the realtime channel (which can drop events / be disabled).
+  const refreshServerRuns = useCallback(async (taskId?: string) => {
+    let q = supabase.from("task_runs").select("*").in("status", ["pending", "running", "cancelling"]);
+    if (taskId) q = q.eq("task_id", taskId);
+    const { data } = await q;
+    if (!data) return;
+    setServerRuns((prev) => {
+      const next = { ...prev };
+      if (taskId) {
+        // Per-task refresh: clear and repopulate just this task.
+        delete next[taskId];
+      } else {
+        // Full refresh: rebuild from scratch so terminal rows fall out.
+        for (const k of Object.keys(next)) delete next[k];
+      }
+      for (const row of data as TaskRun[]) {
+        const existing = next[row.task_id];
+        if (!existing || row.created_at > existing.created_at) next[row.task_id] = row;
+      }
+      return next;
+    });
+  }, [supabase]);
+
+  // Phase 1: trigger a server-side run via /api/scheduler/start.
+  const startServerRun = useCallback(async (task: ScheduledTask) => {
+    try {
+      const res = await fetch("/api/scheduler/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_id: task.id }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        alert(`Server run failed: ${body.error ?? res.statusText}`);
+        return;
+      }
+      await refreshServerRuns(task.id);
+    } catch (err) {
+      alert(`Server run error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [refreshServerRuns]);
+
+  // Phase 1: cancel a live server-side run for this task.
+  const cancelServerRun = useCallback(async (taskId: string) => {
+    try {
+      const res = await fetch("/api/scheduler/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_id: taskId }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        alert(`Cancel failed: ${body.error ?? res.statusText}`);
+      }
+      await refreshServerRuns(taskId);
+    } catch (err) {
+      alert(`Cancel error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [refreshServerRuns]);
+
+  // Phase 2: manually fire a tick for dev testing (Vercel cron only fires in deployed envs).
+  const triggerManualTick = useCallback(async () => {
+    setLastTickResult("Ticking...");
+    try {
+      const res = await fetch("/api/scheduler/tick", { method: "GET" });
+      const body = (await res.json().catch(() => ({}))) as { status?: string; run_id?: string; processed?: number; total?: number; error?: string };
+      if (!res.ok) {
+        setLastTickResult(`Error: ${body.error ?? res.statusText}`);
+        return;
+      }
+      const idPart = body.run_id ? ` (${body.run_id.slice(0, 8)})` : "";
+      const progress = (typeof body.processed === "number" && typeof body.total === "number") ? ` ${body.processed}/${body.total}` : "";
+      setLastTickResult(`${body.status ?? "ok"}${idPart}${progress}`);
+      // Phase 2: refresh the live-runs map after a tick so terminal transitions
+      // (cancelling -> cancelled, etc.) are reflected without relying on realtime.
+      await refreshServerRuns();
+    } catch (err) {
+      setLastTickResult(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [refreshServerRuns]);
 
   // ── Execute a single task ─────────────────────────────────
   const executeTask = useCallback(
@@ -2611,11 +2699,14 @@ await taskLog("ROW", `Sending row ${i + 1}/${rows.length}${isMultiSn ? ` [SN: ${
     pollTimerRef.current = setInterval(async () => {
       await fetchTasks();
       await runDueTasks();
+      // Phase 1+2: keep server-run state fresh on the polling tempo so the
+      // UI stays accurate even if the realtime channel drops events.
+      await refreshServerRuns();
     }, pollInterval * 1000);
     return () => {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
     };
-  }, [pollInterval, fetchTasks, runDueTasks]);
+  }, [pollInterval, fetchTasks, runDueTasks, refreshServerRuns]);
 
   // Restore poll interval from localStorage after mount (avoids SSR hydration mismatch)
   useEffect(() => {
@@ -2703,6 +2794,52 @@ await taskLog("ROW", `Sending row ${i + 1}/${rows.length}${isMultiSn ? ` [SN: ${
     return () => { supabase.removeChannel(channel); };
   }, [supabase]);
 
+  // Phase 1: subscribe to task_runs so the UI shows live server-side run state.
+  // Fetches initial non-terminal runs, then listens for realtime INSERT/UPDATE events.
+  // Runs that reach a terminal state are removed from the live map so the Run button reverts.
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const { data } = await supabase
+        .from("task_runs")
+        .select("*")
+        .in("status", ["pending", "running", "cancelling"]);
+      if (!active || !data) return;
+      const map: Record<string, TaskRun> = {};
+      for (const row of data as TaskRun[]) {
+        const existing = map[row.task_id];
+        if (!existing || row.created_at > existing.created_at) map[row.task_id] = row;
+      }
+      setServerRuns(map);
+    })();
+
+    const channel = supabase
+      .channel("scheduler-task-runs")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "task_runs" },
+        (payload) => {
+          const row = (payload.new ?? payload.old) as TaskRun | undefined;
+          if (!row) return;
+          const isLive = row.status === "pending" || row.status === "running" || row.status === "cancelling";
+          setServerRuns((prev) => {
+            const next = { ...prev };
+            if (isLive) {
+              const existing = next[row.task_id];
+              if (!existing || row.id === existing.id || row.created_at >= existing.created_at) {
+                next[row.task_id] = row;
+              }
+            } else if (next[row.task_id]?.id === row.id) {
+              delete next[row.task_id];
+            }
+            return next;
+          });
+        }
+      )
+      .subscribe();
+    return () => { active = false; supabase.removeChannel(channel); };
+  }, [supabase]);
+
   // ── Return from "Create new mapping" flow ─────────────────
     // -- Handle ?rerun=<run_exception_id> URL param --
   useEffect(() => {
@@ -2720,16 +2857,30 @@ await taskLog("ROW", `Sending row ${i + 1}/${rows.length}${isMultiSn ? ` [SN: ${
         const task = tasks.find((t) => t.id === run.task_id);
         if (!task) { console.warn("[rerun] task not found:", run.task_id); return; }
 
-        const rowFilter = new Set<number>(
-          (run.exceptions as { row: number }[]).map((e) => e.row)
-        );
+        const rowFilter: number[] = (run.exceptions as { row: number }[]).map((e) => e.row);
 
         // Clean the URL before running
         const url = new URL(window.location.href);
         url.searchParams.delete("rerun");
         window.history.replaceState({}, "", url.toString());
 
-        executeTask(task, rowFilter);
+        // Route through the server-side runner (Phase 3c-1c) so the rerun
+        // survives logout / browser close like a normal Server Run.
+        try {
+          const startRes = await fetch("/api/scheduler/start", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ task_id: task.id, row_filter: rowFilter }),
+          });
+          if (!startRes.ok) {
+            const body = await startRes.json().catch(() => ({})) as { error?: string };
+            alert(`Rerun failed: ${body.error ?? startRes.statusText}`);
+            return;
+          }
+          await refreshServerRuns(task.id);
+        } catch (err) {
+          alert(`Rerun error: ${err instanceof Error ? err.message : String(err)}`);
+        }
       } catch (e) {
         console.warn("[rerun] failed:", e);
       }
@@ -3340,6 +3491,19 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                 Show Templates
               </button>
             )}
+            {isAdmin && (
+              <button
+                onClick={triggerManualTick}
+                className="flex items-center gap-2 bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/40 text-violet-300 text-xs font-semibold px-3 py-2 rounded-xl transition-all"
+                title="Phase 2 dev tool — manually fire /api/scheduler/tick once"
+              >
+                <Server className="w-3.5 h-3.5" />
+                Tick
+                {lastTickResult && (
+                  <span className="text-[10px] font-mono text-violet-400/80 ml-1">{lastTickResult}</span>
+                )}
+              </button>
+            )}
             {!isReadOnly && (
               <button
                 onClick={() => { setForm(EMPTY_FORM); setFormError(null); setShowCreateForm(true); }}
@@ -3891,15 +4055,48 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                               <button
                                 onClick={() => executeTask(task)}
                                 disabled={isRunning || resetingTasks.has(task.id)}
-                                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 text-emerald-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
+                                className="flex items-center gap-1.5 px-2 py-1 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-500 hover:text-gray-300 rounded-md text-[10px] font-medium transition-all disabled:opacity-50"
+                                title="Legacy client-side run (will be removed once server-side runner reaches feature parity). Use this only if the new Run button errors on a feature it doesn't yet support."
                               >
                                 {isRunning ? (
-                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                  <Loader2 className="w-2.5 h-2.5 animate-spin" />
                                 ) : (
-                                  <Play className="w-3 h-3" />
+                                  <Play className="w-2.5 h-2.5" />
                                 )}
-                                {isRunning ? "Running…" : "Run Now"}
+                                {isRunning ? "Running…" : "Run (legacy)"}
                               </button>
+
+                              {/* Phase 1: server-side runner button (preview, admin only). */}
+                              {isAdmin && (() => {
+                                const sr = serverRuns[task.id];
+                                const liveStatus =
+                                  sr && (sr.status === "pending" || sr.status === "running" || sr.status === "cancelling")
+                                    ? sr.status
+                                    : null;
+                                if (liveStatus) {
+                                  return (
+                                    <button
+                                      onClick={() => cancelServerRun(task.id)}
+                                      disabled={liveStatus === "cancelling"}
+                                      className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/25 text-amber-400 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
+                                      title={`Server run: ${liveStatus}`}
+                                    >
+                                      <Server className="w-3 h-3" />
+                                      {liveStatus} — cancel
+                                    </button>
+                                  );
+                                }
+                                return (
+                                  <button
+                                    onClick={() => startServerRun(task)}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-500/15 hover:bg-violet-500/25 border border-violet-500/40 text-violet-300 rounded-lg text-xs font-semibold transition-all"
+                                    title="Run server-side. Survives logout, browser close, and crashes."
+                                  >
+                                    <Play className="w-3 h-3" />
+                                    Run
+                                  </button>
+                                );
+                              })()}
 
                               {task.debug_mode && isAdmin && (
                                 <>

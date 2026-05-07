@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import {
   DollarSign, Plus, X, ChevronDown, CheckCircle2,
   Clock, AlertCircle, Building2, Receipt, Tag, Calendar,
-  CreditCard, FileText, Pencil, Trash2, Send, Loader2, User, ArrowDownCircle, ArrowUpCircle, RefreshCw, Download
+  CreditCard, FileText, Pencil, Trash2, Send, Loader2, User, ArrowDownCircle, ArrowUpCircle, Download, Upload
 } from "lucide-react";
 import { createClient as createBrowserSupabaseClient } from "@/lib/supabase-browser";
+import { parseCsv } from "@/lib/csv";
 import {
   Vendor, Bill, SCHEDULE_C_CATEGORIES, PAYMENT_METHODS,
   ScheduleCCategory, PaymentMethod
@@ -111,6 +112,7 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
   const [ccTxns, setCcTxns] = useState<CcTxn[]>([]);
   const [ccSyncing, setCcSyncing] = useState(false);
   const [ccImporting, setCcImporting] = useState<string | null>(null);
+  const csvInputRef = useRef<HTMLInputElement>(null);
 
   // Derived stats
   const stats = useMemo(() => {
@@ -288,20 +290,89 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
     }
   }
 
-  async function syncMercuryCC() {
+  async function importCcFromCsv(file: File) {
     setCcSyncing(true);
     try {
-      const res = await fetch("/api/mercury-cc-sync");
-      const data = await res.json();
-      if (!res.ok) { alert("Sync failed: " + (data.error ?? "unknown")); return; }
-      // Auto-match vendor by counterpartyName
-      const mapped: CcTxn[] = (data.transactions ?? []).map((t: Omit<CcTxn, "vendorId"|"scheduleC"|"skip">) => {
+      const text = await file.text();
+      const rows = parseCsv(text).filter(r => r.length > 1 || (r.length === 1 && r[0].trim()));
+      if (rows.length < 2) { alert("CSV is empty or missing data rows."); return; }
+
+      const headers = rows[0].map(h => h.trim().toLowerCase());
+      const findCol = (...names: string[]) => {
+        for (const n of names) {
+          const i = headers.indexOf(n.toLowerCase());
+          if (i >= 0) return i;
+        }
+        return -1;
+      };
+
+      const colId      = findCol("mercury transaction id", "transaction id", "reference", "id");
+      const colDate    = findCol("date (utc)", "date", "posted date", "created date");
+      const colAmount  = findCol("amount");
+      const colDesc    = findCol("description", "bank description");
+      const colNote    = findCol("note", "memo", "external memo");
+      const colCounter = findCol("counterparty name", "counterparty");
+      const colStatus  = findCol("status");
+
+      if (colId < 0 || colDate < 0 || colAmount < 0) {
+        alert("CSV missing required columns. Need transaction ID, date, and amount.\n\nHeaders found: " + headers.join(", "));
+        return;
+      }
+
+      const parsed: Omit<CcTxn, "vendorId" | "scheduleC" | "skip">[] = rows.slice(1)
+        .filter(r => r[colId]?.trim())
+        .map(r => {
+          const amount = parseFloat((r[colAmount] ?? "0").replace(/[$,]/g, ""));
+          const status = (colStatus >= 0 ? r[colStatus] : "sent").toLowerCase().trim();
+          const note = colNote >= 0 ? r[colNote]?.trim() : "";
+          const desc = colDesc >= 0 ? r[colDesc]?.trim() : "";
+          const counter = colCounter >= 0 ? r[colCounter]?.trim() : "";
+          const description = note || counter || desc || "CC Charge";
+          return {
+            id: r[colId].trim(),
+            date: (r[colDate] ?? "").trim().slice(0, 10),
+            description,
+            counterpartyName: counter || null,
+            amount: Math.abs(amount),
+            isCharge: amount < 0,
+            status: status || "sent",
+            kind: "",
+          };
+        })
+        .filter(t => t.status !== "cancelled" && t.status !== "failed" && !isNaN(t.amount) && t.amount > 0);
+
+      // Dedup against existing imports
+      const { data: existing } = await supabase
+        .from("cw_bills")
+        .select("mercury_transaction_id")
+        .not("mercury_transaction_id", "is", null);
+      const importedIds = new Set(
+        (existing ?? []).map((r: { mercury_transaction_id: string }) => r.mercury_transaction_id)
+      );
+
+      const unimported = parsed.filter(t => !importedIds.has(t.id));
+
+      if (unimported.length === 0) {
+        alert(`No new transactions to import. (${parsed.length} row${parsed.length === 1 ? "" : "s"} in CSV, all already imported.)`);
+        return;
+      }
+
+      // Auto-match vendor by counterparty name / description
+      const mapped: CcTxn[] = unimported.map(t => {
         const name = (t.counterpartyName ?? t.description ?? "").toLowerCase();
         const matched = vendors.find(v => name.includes(v.name.toLowerCase()));
-        return { ...t, vendorId: matched?.id ?? "", scheduleC: matched?.category ?? "18 - Office/Software", skip: !t.isCharge };
+        return {
+          ...t,
+          vendorId: matched?.id ?? "",
+          scheduleC: matched?.category ?? "18 - Office/Software",
+          skip: !t.isCharge,
+        };
       });
+
       setCcTxns(mapped);
       setShowCcSync(true);
+    } catch (e) {
+      alert("Failed to parse CSV: " + (e instanceof Error ? e.message : String(e)));
     } finally {
       setCcSyncing(false);
     }
@@ -360,13 +431,25 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
             </select>
             {tab === "bills" && (
               <div className="flex items-center gap-2">
+                <input
+                  ref={csvInputRef}
+                  type="file"
+                  accept=".csv,text/csv"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (file) await importCcFromCsv(file);
+                    if (csvInputRef.current) csvInputRef.current.value = "";
+                  }}
+                />
                 <button
-                  onClick={syncMercuryCC}
+                  onClick={() => csvInputRef.current?.click()}
                   disabled={ccSyncing}
+                  title="Import Mercury CC transactions from a CSV exported from the Mercury dashboard"
                   className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-sm font-semibold rounded-xl transition-all"
                 >
-                  {ccSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                  Sync CC
+                  {ccSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                  Import CC CSV
                 </button>
                 <button
                   onClick={openNewBill}

@@ -17,9 +17,13 @@ import { createClient } from "@/lib/supabase-server";
  */
 export async function POST(req: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const cronSecret = process.env.CRON_SECRET;
+    const isRunner = !!cronSecret && req.headers.get("authorization") === `Bearer ${cronSecret}`;
+    if (!isRunner) {
+      const supabase = await createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
     const body = await req.json() as {
       task_id:       string;
@@ -91,9 +95,13 @@ export async function POST(req: NextRequest) {
  */
 export async function GET(req: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const cronSecret = process.env.CRON_SECRET;
+    const isRunner = !!cronSecret && req.headers.get("authorization") === `Bearer ${cronSecret}`;
+    if (!isRunner) {
+      const supabase = await createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
     const status = req.nextUrl.searchParams.get("status");
     const admin  = createAdminClient();
@@ -124,9 +132,13 @@ export async function GET(req: NextRequest) {
  */
 export async function PATCH(req: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const cronSecret = process.env.CRON_SECRET;
+    const isRunner = !!cronSecret && req.headers.get("authorization") === `Bearer ${cronSecret}`;
+    if (!isRunner) {
+      const supabase = await createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
     const { task_id } = await req.json() as { task_id?: string };
     if (!task_id) return NextResponse.json({ error: "task_id required" }, { status: 400 });

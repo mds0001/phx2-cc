@@ -152,6 +152,44 @@ export interface TaskLog {
   created_at: string;
 }
 
+// Server-side run lifecycle (Phase 1)
+// Per-execution state for the chunked-tick runner. One scheduled_tasks row
+// can have many task_runs over its lifetime (one per execution).
+export type TaskRunStatus =
+  | "pending"
+  | "running"
+  | "cancelling"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export interface TaskRun {
+  id: string;
+  task_id: string;
+  status: TaskRunStatus;
+  /** Full scheduled_tasks row, frozen at run-start. */
+  task_snapshot: ScheduledTask;
+  /** Map of mapping_profile_id -> MappingProfile, frozen at run-start. */
+  mapping_snapshots: Record<string, MappingProfile> | null;
+  source_connection_snap: { primary: EndpointConnection | null; all: Record<string, EndpointConnection> } | null;
+  target_connection_snap: { primary: EndpointConnection | null; all: Record<string, EndpointConnection> } | null;
+  current_slot_idx: number;
+  current_row_idx: number;
+  total_rows: number | null;
+  counters: Record<string, number>;
+  source_buffer_path: string | null;
+  next_tick_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  last_heartbeat_at: string | null;
+  error_message: string | null;
+  row_filter: number[] | null;
+  triggered_by: string | null;
+  customer_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // ── Mapping profiles ──────────────────────────────────────────
 
 export interface FieldDef {

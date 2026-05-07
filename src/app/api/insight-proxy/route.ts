@@ -514,9 +514,18 @@ function flattenLegacyOrders(orders: StatusOrder[]): Record<string, string>[] {
 //
 export async function POST(req: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    // Server-side runner bypass: the chunked-tick task runner calls this route
+    // internally and has no user session. CRON_SECRET (already used for cron
+    // auth) doubles as the runner's internal bearer.
+    const cronSecret = process.env.CRON_SECRET;
+    const authHeader = req.headers.get("authorization");
+    const isRunnerCall = !!cronSecret && authHeader === `Bearer ${cronSecret}`;
+
+    if (!isRunnerCall) {
+      const supabase = await createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
     const body = (await req.json()) as {
       connection_id:   string;
