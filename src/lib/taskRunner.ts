@@ -275,6 +275,11 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
         await finishCancelled(admin, run);
         return { result: "cancelled", run_id: run.id };
       }
+      // Another tick (or the cancel handler) already finalised this run.
+      // Bail without overwriting the row cursor or finalisation timestamp.
+      if (live && live.status !== "running") {
+        return { result: "cancelled", run_id: run.id };
+      }
 
       // row_filter (rerun): bypass rows not in the explicit allow-list. We
       // don't increment any counter — these rows are simply not part of this run.
@@ -920,7 +925,7 @@ async function persistProgress(
       current_row_idx: rowIdx,
       counters,
       sku_exceptions: exceptions,
-      last_heartbeat_at: null,                   // tick finished cleanly — release in-progress lock
+      last_heartbeat_at: new Date().toISOString(), // bump heartbeat so parallel ticks see this run as actively claimed
       next_tick_at: new Date().toISOString(),    // immediately eligible
     })
     .eq("id", runId);
