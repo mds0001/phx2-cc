@@ -1261,13 +1261,16 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
           <div className="flex items-center gap-3">
           {/* Polling control — visible to administrator and schedule_administrator roles */}
           {canControlPoll && (
-          <div className="flex items-center gap-2 bg-gray-800 border border-gray-700 rounded-2xl px-4 py-2">
+          <div
+            className="flex items-center gap-2 bg-gray-800 border border-gray-700 rounded-2xl px-4 py-2 opacity-60"
+            title="Deprecated. The dial used to control how often the legacy poller auto-fired due tasks. Recurring tasks now run via Vercel cron (every minute), so this dial only changes the UI refresh tempo. Will be removed in a future cleanup."
+          >
             {/* Animated icon */}
             <RefreshCw
               className="w-3.5 h-3.5 text-indigo-400 shrink-0"
               style={{ animation: `spin ${pollInterval}s linear infinite` }}
             />
-            <span className="text-xs text-gray-400 shrink-0">Poll every</span>
+            <span className="text-xs text-gray-400 shrink-0 line-through decoration-gray-600">Poll every</span>
 
             {/* Preset buttons */}
             <div className="flex items-center gap-1">
