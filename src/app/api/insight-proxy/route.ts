@@ -165,7 +165,10 @@ function extractSerialNumbers(raw: unknown): string[] {
   if (typeof raw === "string") {
     const s = raw.trim();
     if (!s || s.startsWith("System.") || s === "[object Object]") return [];
-    return [s];
+    // Insight Format A: serialNumbers field contains a comma-separated string.
+    // Split so each individual serial becomes its own element — required for
+    // expand_serials to actually fan out one row per asset.
+    return s.split(",").map((p) => p.trim()).filter(Boolean);
   }
   if (Array.isArray(raw)) return raw.flatMap((v) => extractSerialNumbers(v));
   if (typeof raw === "object") {
