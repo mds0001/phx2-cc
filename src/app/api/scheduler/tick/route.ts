@@ -48,11 +48,22 @@ export async function GET(req: NextRequest) {
 
   const admin = createAdminClient();
 
-  let { data: run, error: claimErr } = await admin.rpc("scheduler_claim_next_run");
+  // PL/pgSQL functions that RETURN a composite type emit a row of all-NULLs
+  // (not SQL NULL) when no row was assigned to the OUT variable. PostgREST
+  // forwards that as a truthy `{id: null, ...}` object, so a plain `!run`
+  // check would miss it and the recurring-due path below would never fire.
+  const claimedRow = (data: unknown): { id: string } | null => {
+    if (!data || typeof data !== "object") return null;
+    const id = (data as { id?: unknown }).id;
+    return typeof id === "string" && id.length > 0 ? (data as { id: string }) : null;
+  };
+
+  const { data: rawRun, error: claimErr } = await admin.rpc("scheduler_claim_next_run");
   if (claimErr) {
     console.error("[scheduler/tick] claim error:", claimErr.message);
     return NextResponse.json({ error: claimErr.message }, { status: 500 });
   }
+  let run: { id: string } | null = claimedRow(rawRun);
 
   // No run claimable — check for a recurring task whose start_date_time has
   // elapsed and which has no live run. Auto-create a pending row and re-claim.
@@ -73,20 +84,18 @@ export async function GET(req: NextRequest) {
     });
     // Re-claim now that a fresh pending row exists.
     const reclaim = await admin.rpc("scheduler_claim_next_run");
-    if (reclaim.error || !reclaim.data) {
+    const reclaimed = claimedRow(reclaim.data);
+    if (reclaim.error || !reclaimed) {
       // Edge case: created but couldn't reclaim immediately. Will be picked up next tick.
       return NextResponse.json({ status: "auto-created", run_id: created.run_id });
     }
-    run = reclaim.data;
+    run = reclaimed;
   }
 
   // The RPC returns the row, but to guard against PostgREST schema cache lag
   // and any composite-type serialization quirks, refetch by id so the runner
   // gets the canonical full row including freshly-added columns.
-  const claimedId = (run as { id?: string } | null)?.id;
-  if (!claimedId) {
-    return NextResponse.json({ status: "idle" });
-  }
+  const claimedId = run.id;
   const { data: fullRow, error: fetchErr } = await admin
     .from("task_runs")
     .select("*")
