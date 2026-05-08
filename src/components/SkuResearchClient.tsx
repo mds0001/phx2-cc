@@ -127,6 +127,48 @@ function TaxonomyForm({
   const [description, setDescription]   = useState(initial?.description ?? aiSuggestion?.description ?? "");
   const [model, setModel]               = useState(initial?.model ?? aiSuggestion?.model ?? "");
   const [customSubtype, setCustomSubtype] = useState(false);
+  const [pendingNormalize, setPendingNormalize] = useState<{
+    input: string;
+    normalized: string;
+    willChange: boolean;
+    suggestions: { name: string; score: number }[];
+  } | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+
+  // Re-typing the manufacturer voids any pending confirmation.
+  useEffect(() => { setPendingNormalize(null); }, [manufacturer]);
+
+  async function handleSaveClick() {
+    const trimmed = manufacturer.trim();
+    if (!trimmed) {
+      onSave({ manufacturer, type, subtype, description, model });
+      return;
+    }
+    setPreviewing(true);
+    try {
+      const res = await fetch(`/api/manufacturer-preview?name=${encodeURIComponent(trimmed)}`);
+      if (res.ok) {
+        const json = await res.json() as {
+          normalized: string;
+          willChange: boolean;
+          suggestions: { name: string; score: number }[];
+        };
+        const hasSuggestions = (json.suggestions ?? []).length > 0;
+        if (json.willChange || hasSuggestions) {
+          setPendingNormalize({
+            input: trimmed,
+            normalized: json.normalized,
+            willChange: json.willChange,
+            suggestions: json.suggestions ?? [],
+          });
+          setPreviewing(false);
+          return;
+        }
+      }
+    } catch { /* fall through and just save */ }
+    setPreviewing(false);
+    onSave({ manufacturer, type, subtype, description, model });
+  }
 
   useEffect(() => {
     if (aiSuggestion && (aiSuggestion.manufacturer || aiSuggestion.type || aiSuggestion.subtype || aiSuggestion.model || aiSuggestion.description)) {
@@ -309,16 +351,102 @@ function TaxonomyForm({
             className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
         </div>
       </div>
+      {pendingNormalize && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-300 space-y-2">
+          {pendingNormalize.willChange ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span>
+                <span className="font-mono text-amber-200">&quot;{pendingNormalize.input}&quot;</span> will normalize to{" "}
+                <span className="font-mono font-semibold text-white">&quot;{pendingNormalize.normalized}&quot;</span>.
+              </span>
+              <div className="ml-auto flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setManufacturer(pendingNormalize.normalized);
+                    onSave({ manufacturer: pendingNormalize.normalized, type, subtype, description, model });
+                    setPendingNormalize(null);
+                  }}
+                  disabled={saving || !type}
+                  className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-medium transition-all disabled:opacity-50"
+                >
+                  Save as &quot;{pendingNormalize.normalized}&quot;
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSave({ manufacturer: pendingNormalize.input, type, subtype, description, model });
+                    setPendingNormalize(null);
+                  }}
+                  disabled={saving || !type}
+                  className="px-2.5 py-1 rounded border border-gray-700 text-gray-300 hover:text-white hover:bg-gray-800 text-[11px] font-medium transition-all disabled:opacity-50"
+                >
+                  Keep as typed
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingNormalize(null)}
+                  className="px-2 py-1 rounded text-gray-500 hover:text-gray-300 text-[11px] font-medium transition-all"
+                >
+                  Edit
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div>
+                <span className="font-mono text-amber-200">&quot;{pendingNormalize.input}&quot;</span> looks similar to existing manufacturer{pendingNormalize.suggestions.length > 1 ? "s" : ""}. Did you mean:
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {pendingNormalize.suggestions.map((s) => (
+                  <button
+                    key={s.name}
+                    type="button"
+                    onClick={() => {
+                      setManufacturer(s.name);
+                      onSave({ manufacturer: s.name, type, subtype, description, model });
+                      setPendingNormalize(null);
+                    }}
+                    disabled={saving || !type}
+                    className="px-2 py-1 rounded bg-emerald-600/80 hover:bg-emerald-500 text-white text-[11px] font-medium transition-all disabled:opacity-50"
+                    title={`similarity: ${s.score.toFixed(2)}`}
+                  >
+                    {s.name}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSave({ manufacturer: pendingNormalize.input, type, subtype, description, model });
+                    setPendingNormalize(null);
+                  }}
+                  disabled={saving || !type}
+                  className="px-2 py-1 rounded border border-gray-700 text-gray-300 hover:text-white hover:bg-gray-800 text-[11px] font-medium transition-all disabled:opacity-50"
+                >
+                  Keep &quot;{pendingNormalize.input}&quot;
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingNormalize(null)}
+                  className="px-2 py-1 rounded text-gray-500 hover:text-gray-300 text-[11px] font-medium transition-all"
+                >
+                  Edit
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       <div className="flex items-center gap-2 pt-1 flex-wrap">
         <button onClick={onCancel}
           className="px-3 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-white hover:bg-gray-800 text-sm transition-all">
           Cancel
         </button>
         <button
-          onClick={() => onSave({ manufacturer, type, subtype, description, model })}
-          disabled={saving || !type}
+          onClick={handleSaveClick}
+          disabled={saving || previewing || !type || pendingNormalize !== null}
           className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-all disabled:opacity-50">
-          {saving ? "Saving…" : (saveLabel ?? "Save & Resolve")}
+          {saving ? "Saving…" : previewing ? "Checking…" : (saveLabel ?? "Save & Resolve")}
         </button>
         {onSkip && (
           <button type="button" onClick={onSkip}
@@ -1067,9 +1195,19 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search SKU…"
-            className="w-full pl-9 pr-3 py-1.5 bg-gray-900 border border-gray-800 rounded-lg text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+            placeholder="Search SKU or manufacturer…"
+            className="w-full pl-9 pr-8 py-1.5 bg-gray-900 border border-gray-800 rounded-lg text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
           />
+          {search && (
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              aria-label="Clear search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
 
       </div>
