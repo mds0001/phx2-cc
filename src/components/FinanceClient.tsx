@@ -15,6 +15,8 @@ import {
 
 const supabase = createBrowserSupabaseClient();
 
+type Disposition = "bill" | "owner_reimbursement" | "ignored";
+
 interface CcTxn {
   id: string;
   date: string;
@@ -25,9 +27,9 @@ interface CcTxn {
   status: string;
   kind: string;
   // local review state
-  vendorId: string;
-  scheduleC: string;
-  skip: boolean;
+  disposition: Disposition;
+  vendorId: string;     // used when disposition='bill'
+  scheduleC: string;    // used when disposition='bill'
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -306,7 +308,7 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
         return -1;
       };
 
-      const colId      = findCol("mercury transaction id", "transaction id", "reference", "id");
+      const colId      = findCol("mercury transaction id", "transaction id", "tracking id", "reference", "id");
       const colDate    = findCol("date (utc)", "date", "posted date", "created date");
       const colAmount  = findCol("amount");
       const colDesc    = findCol("description", "bank description");
@@ -319,7 +321,7 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
         return;
       }
 
-      const parsed: Omit<CcTxn, "vendorId" | "scheduleC" | "skip">[] = rows.slice(1)
+      const parsed: Omit<CcTxn, "vendorId" | "scheduleC" | "disposition">[] = rows.slice(1)
         .filter(r => r[colId]?.trim())
         .map(r => {
           const amount = parseFloat((r[colAmount] ?? "0").replace(/[$,]/g, ""));
@@ -341,31 +343,41 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
         })
         .filter(t => t.status !== "cancelled" && t.status !== "failed" && !isNaN(t.amount) && t.amount > 0);
 
-      // Dedup against existing imports
+      // Dedup against the synced-txn audit log (covers bills, owner reimbursements, ignores)
       const { data: existing } = await supabase
-        .from("cw_bills")
-        .select("mercury_transaction_id")
-        .not("mercury_transaction_id", "is", null);
-      const importedIds = new Set(
-        (existing ?? []).map((r: { mercury_transaction_id: string }) => r.mercury_transaction_id)
+        .from("cw_mercury_synced")
+        .select("mercury_id");
+      const reviewedIds = new Set(
+        (existing ?? []).map((r: { mercury_id: string }) => r.mercury_id)
       );
 
-      const unimported = parsed.filter(t => !importedIds.has(t.id));
+      const unreviewed = parsed.filter(t => !reviewedIds.has(t.id));
 
-      if (unimported.length === 0) {
-        alert(`No new transactions to import. (${parsed.length} row${parsed.length === 1 ? "" : "s"} in CSV, all already imported.)`);
+      if (unreviewed.length === 0) {
+        alert(`No new transactions to review. (${parsed.length} row${parsed.length === 1 ? "" : "s"} in CSV, all already reviewed.)`);
         return;
       }
 
-      // Auto-match vendor by counterparty name / description
-      const mapped: CcTxn[] = unimported.map(t => {
-        const name = (t.counterpartyName ?? t.description ?? "").toLowerCase();
-        const matched = vendors.find(v => name.includes(v.name.toLowerCase()));
+      // Auto-classify + auto-match vendor
+      const mapped: CcTxn[] = unreviewed.map(t => {
+        const haystack = ((t.counterpartyName ?? "") + " " + (t.description ?? "")).toLowerCase();
+        const matched = vendors.find(v => haystack.includes(v.name.toLowerCase()));
+
+        let disposition: Disposition;
+        if (!t.isCharge) {
+          // Incoming money — not a bill. User can flip to a different disposition if needed.
+          disposition = "ignored";
+        } else if (/owner reimbursement|usaa|michael stout/i.test(haystack)) {
+          disposition = "owner_reimbursement";
+        } else {
+          disposition = "bill";
+        }
+
         return {
           ...t,
+          disposition,
           vendorId: matched?.id ?? "",
           scheduleC: matched?.category ?? "18 - Office/Software",
-          skip: !t.isCharge,
         };
       });
 
@@ -379,28 +391,70 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
   }
 
   async function importCcTxn(txn: CcTxn) {
-    if (!txn.vendorId) { alert("Please select a vendor first."); return; }
+    if (txn.disposition === "bill" && !txn.vendorId) {
+      alert("Please select a vendor (or change the disposition).");
+      return;
+    }
     setCcImporting(txn.id);
     try {
-      const today = new Date().toISOString().slice(0, 10);
-      const { data, error } = await supabase
-        .from("cw_bills")
-        .insert({
-          vendor_id: txn.vendorId,
-          description: txn.description,
-          amount: txn.amount,
-          bill_date: txn.date,
-          paid_date: txn.date,
-          status: "paid",
-          payment_method: "mercury_cc",
-          mercury_transaction_id: txn.id,
-          schedule_c_line: txn.scheduleC,
-          tax_year: parseInt(txn.date.slice(0, 4)),
-        })
-        .select("*, vendor:cw_vendors(*)")
-        .single();
-      if (error) { alert("Import failed: " + error.message); return; }
-      if (data) setBills(prev => [data, ...prev]);
+      // Always record what we did in the audit/dedup log.
+      const syncedBase = {
+        mercury_id: txn.id,
+        description: txn.description,
+        amount: txn.amount,
+        txn_date: txn.date,
+      };
+
+      if (txn.disposition === "bill") {
+        const { data: bill, error: billErr } = await supabase
+          .from("cw_bills")
+          .insert({
+            vendor_id: txn.vendorId,
+            description: txn.description,
+            amount: txn.amount,
+            bill_date: txn.date,
+            paid_date: txn.date,
+            status: "paid",
+            payment_method: "mercury_cc",
+            mercury_transaction_id: txn.id,
+            schedule_c_line: txn.scheduleC,
+            tax_year: parseInt(txn.date.slice(0, 4)),
+          })
+          .select("*, vendor:cw_vendors(*)")
+          .single();
+        if (billErr) { alert("Bill insert failed: " + billErr.message); return; }
+        const { error: syncErr } = await supabase
+          .from("cw_mercury_synced")
+          .insert({ ...syncedBase, disposition: "bill", bill_id: bill?.id });
+        if (syncErr) { alert("Synced-log insert failed: " + syncErr.message); return; }
+        if (bill) setBills(prev => [bill, ...prev]);
+      } else if (txn.disposition === "owner_reimbursement") {
+        const { data: ledger, error: ledgerErr } = await supabase
+          .from("cw_owner_ledger")
+          .insert({
+            date: txn.date,
+            description: txn.description,
+            type: "reimbursed",
+            amount: txn.amount,
+            payment_method: "mercury",
+            notes: `Mercury txn: ${txn.id}`,
+          })
+          .select()
+          .single();
+        if (ledgerErr) { alert("Ledger insert failed: " + ledgerErr.message); return; }
+        const { error: syncErr } = await supabase
+          .from("cw_mercury_synced")
+          .insert({ ...syncedBase, disposition: "owner_reimbursement", ledger_id: ledger?.id });
+        if (syncErr) { alert("Synced-log insert failed: " + syncErr.message); return; }
+        if (ledger) setOwnerLedger(prev => [ledger, ...prev]);
+      } else {
+        // ignored — record-only, no downstream row
+        const { error: syncErr } = await supabase
+          .from("cw_mercury_synced")
+          .insert({ ...syncedBase, disposition: "ignored" });
+        if (syncErr) { alert("Synced-log insert failed: " + syncErr.message); return; }
+      }
+
       setCcTxns(prev => prev.filter(t => t.id !== txn.id));
     } finally {
       setCcImporting(null);
@@ -445,11 +499,11 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
                 <button
                   onClick={() => csvInputRef.current?.click()}
                   disabled={ccSyncing}
-                  title="Import Mercury CC transactions from a CSV exported from the Mercury dashboard"
+                  title="Sync Mercury transactions by uploading a CSV exported from the Mercury dashboard"
                   className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-sm font-semibold rounded-xl transition-all"
                 >
                   {ccSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-                  Import CC CSV
+                  Sync with Mercury
                 </button>
                 <button
                   onClick={openNewBill}
@@ -936,80 +990,107 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
 
       {/* Mercury CC Sync panel */}
       {showCcSync && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center pt-16 px-4" style={{background:"rgba(0,0,0,0.7)"}}>
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-3xl max-h-[80vh] flex flex-col shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-10 px-4" style={{background:"rgba(0,0,0,0.7)"}}>
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-[1400px] max-h-[88vh] flex flex-col shadow-2xl">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
               <div>
-                <div className="text-white font-semibold flex items-center gap-2"><CreditCard className="w-4 h-4 text-blue-400" /> Mercury CC — Unimported Charges</div>
-                <div className="text-xs text-gray-500 mt-0.5">{ccTxns.filter(t => !t.skip).length} charge{ccTxns.filter(t => !t.skip).length !== 1 ? "s" : ""} ready to import</div>
+                <div className="text-white font-semibold flex items-center gap-2"><CreditCard className="w-4 h-4 text-blue-400" /> Sync with Mercury — Unreviewed Transactions</div>
+                <div className="text-xs text-gray-500 mt-0.5">
+                  {ccTxns.filter(t => t.disposition === "bill").length} bill{ccTxns.filter(t => t.disposition === "bill").length !== 1 ? "s" : ""}
+                  {" · "}
+                  {ccTxns.filter(t => t.disposition === "owner_reimbursement").length} reimbursement{ccTxns.filter(t => t.disposition === "owner_reimbursement").length !== 1 ? "s" : ""}
+                  {" · "}
+                  {ccTxns.filter(t => t.disposition === "ignored").length} ignored
+                </div>
               </div>
               <button onClick={() => setShowCcSync(false)} className="p-1 rounded text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
             </div>
-            <div className="overflow-y-auto flex-1">
+            <div className="overflow-auto flex-1">
               {ccTxns.length === 0 ? (
-                <div className="px-6 py-12 text-center text-gray-500 text-sm">No unimported transactions found.</div>
+                <div className="px-6 py-12 text-center text-gray-500 text-sm">No transactions to review.</div>
               ) : (
-                <table className="w-full text-sm">
-                  <thead>
+                <table className="w-full text-sm table-fixed">
+                  <colgroup>
+                    <col className="w-28" />
+                    <col />
+                    <col className="w-28" />
+                    <col className="w-44" />
+                    <col className="w-56" />
+                    <col className="w-56" />
+                    <col className="w-28" />
+                  </colgroup>
+                  <thead className="sticky top-0 bg-gray-900 z-10">
                     <tr className="border-b border-gray-800 text-xs text-gray-500">
-                      <th className="text-left px-5 py-3">Date</th>
+                      <th className="text-left px-4 py-3">Date</th>
                       <th className="text-left px-4 py-3">Description</th>
                       <th className="text-right px-4 py-3">Amount</th>
+                      <th className="text-left px-4 py-3">Disposition</th>
                       <th className="text-left px-4 py-3">Vendor</th>
                       <th className="text-left px-4 py-3">Schedule C</th>
-                      <th className="text-center px-4 py-3">Skip</th>
                       <th className="px-4 py-3"></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {ccTxns.map(txn => (
-                      <tr key={txn.id} className={"border-b border-gray-800/60 " + (txn.skip ? "opacity-40" : "")}>
-                        <td className="px-5 py-3 text-gray-400 whitespace-nowrap text-xs">{txn.date}</td>
-                        <td className="px-4 py-3 text-white max-w-xs">
-                          <div className="truncate">{txn.description}</div>
-                          {txn.counterpartyName && txn.counterpartyName !== txn.description && <div className="text-xs text-gray-500 truncate">{txn.counterpartyName}</div>}
-                        </td>
-                        <td className={"px-4 py-3 text-right font-semibold whitespace-nowrap " + (txn.isCharge ? "text-amber-400" : "text-emerald-400")}>
-                          {txn.isCharge ? "-" : "+"}{fmt(txn.amount)}
-                        </td>
-                        <td className="px-4 py-3">
-                          <select
-                            value={txn.vendorId}
-                            onChange={e => setCcTxns(prev => prev.map(t => t.id === txn.id ? { ...t, vendorId: e.target.value } : t))}
-                            className="bg-gray-800 border border-gray-700 text-white text-xs rounded-lg px-2 py-1 w-full focus:outline-none"
-                            disabled={txn.skip}
-                          >
-                            <option value="">-- select --</option>
-                            {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-                          </select>
-                        </td>
-                        <td className="px-4 py-3">
-                          <select
-                            value={txn.scheduleC}
-                            onChange={e => setCcTxns(prev => prev.map(t => t.id === txn.id ? { ...t, scheduleC: e.target.value } : t))}
-                            className="bg-gray-800 border border-gray-700 text-white text-xs rounded-lg px-2 py-1 w-full focus:outline-none"
-                            disabled={txn.skip}
-                          >
-                            {SCHEDULE_C_CATEGORIES.map((c: ScheduleCCategory) => <option key={c.value} value={c.value}>{c.label}</option>)}
-                          </select>
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <input type="checkbox" checked={txn.skip} onChange={e => setCcTxns(prev => prev.map(t => t.id === txn.id ? { ...t, skip: e.target.checked } : t))} className="w-4 h-4 accent-blue-500" />
-                        </td>
-                        <td className="px-4 py-3">
-                          {!txn.skip && (
+                    {ccTxns.map(txn => {
+                      const isBill = txn.disposition === "bill";
+                      const dimmed = txn.disposition === "ignored";
+                      return (
+                        <tr key={txn.id} className={"border-b border-gray-800/60 align-top " + (dimmed ? "opacity-50" : "")}>
+                          <td className="px-4 py-3 text-gray-400 whitespace-nowrap text-xs">{txn.date}</td>
+                          <td className="px-4 py-3 text-white">
+                            <div className="break-words">{txn.description}</div>
+                            {txn.counterpartyName && txn.counterpartyName !== txn.description && <div className="text-xs text-gray-500 break-words mt-0.5">{txn.counterpartyName}</div>}
+                          </td>
+                          <td className={"px-4 py-3 text-right font-semibold whitespace-nowrap " + (txn.isCharge ? "text-amber-400" : "text-emerald-400")}>
+                            {txn.isCharge ? "-" : "+"}{fmt(txn.amount)}
+                          </td>
+                          <td className="px-4 py-3">
+                            <select
+                              value={txn.disposition}
+                              onChange={e => setCcTxns(prev => prev.map(t => t.id === txn.id ? { ...t, disposition: e.target.value as Disposition } : t))}
+                              className="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-2 py-1.5 w-full focus:outline-none"
+                            >
+                              <option value="bill">Bill</option>
+                              <option value="owner_reimbursement">Owner Reimbursement</option>
+                              <option value="ignored">Ignore</option>
+                            </select>
+                          </td>
+                          <td className="px-4 py-3">
+                            {isBill && (
+                              <select
+                                value={txn.vendorId}
+                                onChange={e => setCcTxns(prev => prev.map(t => t.id === txn.id ? { ...t, vendorId: e.target.value } : t))}
+                                className="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-2 py-1.5 w-full focus:outline-none"
+                              >
+                                <option value="">-- select --</option>
+                                {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                              </select>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            {isBill && (
+                              <select
+                                value={txn.scheduleC}
+                                onChange={e => setCcTxns(prev => prev.map(t => t.id === txn.id ? { ...t, scheduleC: e.target.value } : t))}
+                                className="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-2 py-1.5 w-full focus:outline-none"
+                              >
+                                {SCHEDULE_C_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                              </select>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
                             <button
                               onClick={() => importCcTxn(txn)}
-                              disabled={ccImporting === txn.id || !txn.vendorId}
+                              disabled={ccImporting === txn.id || (isBill && !txn.vendorId)}
                               className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition-all whitespace-nowrap"
                             >
                               {ccImporting === txn.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
-                              Import
+                              {dimmed ? "Mark Reviewed" : "Apply"}
                             </button>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               )}
