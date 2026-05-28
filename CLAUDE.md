@@ -59,6 +59,21 @@ Three clients — choose the right one:
 - `src/lib/supabase-server.ts` — server client for Server Components and Server Actions (reads cookies via `next/headers`)
 - `src/lib/supabase-admin.ts` — service-role client that bypasses RLS; used only in API routes for user management operations
 
+#### ⚠️ New tables need explicit GRANTs (Supabase Data API change)
+
+Supabase is flipping the default that auto-exposes `public` tables to the Data API. **Starting Oct 30, 2026**, any *new* table created in `public` will be invisible to `supabase-js` / PostgREST / GraphQL until you add explicit grants. Existing tables are unaffected. This is the **grants** layer (whether the API sees the table at all), separate from **RLS** (which rows a caller sees) — you still need both.
+
+After every `CREATE TABLE` migration, add grants for the roles that table needs:
+
+```sql
+grant select, insert, update, delete on table public.<new_table> to anon, authenticated;
+grant all on table public.<new_table> to service_role;
+-- if the table has a serial/identity PK backed by a sequence:
+grant usage, select on all sequences in schema public to anon, authenticated, service_role;
+```
+
+Tune the `anon`/`authenticated` privileges to what each role should actually do; RLS still filters rows on top. Forgetting the grant is silent — RLS looks fine but every query returns a permission error.
+
 ### Page Structure
 
 Each feature follows the same pattern:
