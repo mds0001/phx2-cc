@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   X, Loader2, Send, CheckCircle2, AlertCircle, Banknote,
-  ArrowRight, ArrowLeft, Wallet, ClipboardCheck, RefreshCw, SkipForward
+  ArrowRight, ArrowLeft, Wallet, ClipboardCheck, RefreshCw, SkipForward,
+  ExternalLink, Lock
 } from "lucide-react";
 import { createClient as createBrowserSupabaseClient } from "@/lib/supabase-browser";
 
@@ -43,6 +44,44 @@ interface Props {
 type Step = 1 | 2 | 3 | 4;
 
 const STEP_LABELS = ["Deposit", "Reimburse", "Draw", "Wrap Up"];
+
+function UuidHelp() {
+  return (
+    <div className="p-4 bg-indigo-500/10 border border-indigo-500/30 rounded-xl space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-sm font-bold text-indigo-300">Where do I get the transaction ID?</div>
+        <a
+          href="https://app.mercury.com/transactions"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg transition-all shrink-0"
+        >
+          Open Mercury <ExternalLink className="w-3 h-3" />
+        </a>
+      </div>
+      <ol className="text-sm text-gray-300 space-y-1.5">
+        <li><b className="text-white">1.</b> Make the transfer in Mercury (if you haven&apos;t already).</li>
+        <li><b className="text-white">2.</b> Click on the transaction in Mercury&apos;s transactions list.</li>
+        <li><b className="text-white">3.</b> Copy the ID from your browser&apos;s <b className="text-white">address bar</b>:</li>
+      </ol>
+      <div>
+        <div className="bg-gray-950 border border-gray-700 rounded-full px-4 py-2.5 font-mono text-xs flex items-center gap-1.5 overflow-x-auto whitespace-nowrap">
+          <Lock className="w-3 h-3 text-gray-500 shrink-0" />
+          <span className="text-gray-500">app.mercury.com/transactions/</span>
+          <span className="text-emerald-300 bg-emerald-500/20 border border-emerald-500/40 rounded px-1.5 py-0.5 font-semibold">d6a81abc-21f5-43c2-a960-6be64344953d</span>
+        </div>
+        <div className="text-xs mt-1.5 pl-5">
+          <span className="text-emerald-400 font-semibold">↑ copy the highlighted part</span>
+          <span className="text-gray-500"> — letters and numbers with dashes — and paste it into the box above</span>
+        </div>
+      </div>
+      <div className="flex items-start gap-2 text-xs text-amber-400/90 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5">
+        <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+        <span><b>Not the &quot;tracking number&quot;</b> shown on the transaction details panel (digits only, like 121145430875939) — that&apos;s a different ID and the form will reject it.</span>
+      </div>
+    </div>
+  );
+}
 
 export default function PaydayWizard({ open, onClose, outstandingBalance, onLedgerEntry }: Props) {
   const [step, setStep] = useState<Step>(1);
@@ -451,11 +490,7 @@ export default function PaydayWizard({ open, onClose, outstandingBalance, onLedg
                       {reimbMode === "send" ? "Send via ACH" : "Record Reimbursement"}
                     </button>
                   </div>
-                  {reimbMode === "record" && (
-                    <p className="text-xs text-gray-500">
-                      Make the transfer in the Mercury dashboard first, then paste the transaction <b>UUID</b> here — never the tracking number.
-                    </p>
-                  )}
+                  {reimbMode === "record" && <UuidHelp />}
                 </div>
               )}
 
@@ -541,11 +576,7 @@ export default function PaydayWizard({ open, onClose, outstandingBalance, onLedg
                     </button>
                   </div>
 
-                  {drawMode === "record" && (
-                    <p className="text-xs text-gray-500">
-                      Use the transaction <b>UUID</b> from Mercury (in the transaction URL), never the tracking number — the ledger dedups on UUID.
-                    </p>
-                  )}
+                  {drawMode === "record" && <UuidHelp />}
                 </>
               )}
 
