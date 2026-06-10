@@ -57,12 +57,14 @@ export default function PaydayWizard({ open, onClose, outstandingBalance, onLedg
 
   // Step 2 — reimburse fronted expenses
   const [reimburseInput, setReimburseInput] = useState<string>("");
+  const [reimbMode, setReimbMode] = useState<"send" | "record">("record");
+  const [reimbUuid, setReimbUuid] = useState<string>("");
   const [reimburseSending, setReimburseSending] = useState(false);
-  const [reimbursed, setReimbursed] = useState<{ amount: number; txnId: string } | null>(null);
+  const [reimbursed, setReimbursed] = useState<{ amount: number; txnId: string; sent: boolean } | null>(null);
 
   // Step 3 — owner draw
   const [drawInput, setDrawInput] = useState<string>("");
-  const [drawMode, setDrawMode] = useState<"send" | "record">("send");
+  const [drawMode, setDrawMode] = useState<"send" | "record">("record");
   const [drawUuid, setDrawUuid] = useState<string>("");
   const [drawSending, setDrawSending] = useState(false);
   const [draw, setDraw] = useState<{ amount: number; txnId: string; sent: boolean } | null>(null);
@@ -102,9 +104,11 @@ export default function PaydayWizard({ open, onClose, outstandingBalance, onLedg
     setSelectedDepositId("");
     setManualDeposit("");
     setReimburseInput("");
+    setReimbMode("record");
+    setReimbUuid("");
     setReimbursed(null);
     setDrawInput("");
-    setDrawMode("send");
+    setDrawMode("record");
     setDrawUuid("");
     setDraw(null);
     loadDeposits();
@@ -131,6 +135,28 @@ export default function PaydayWizard({ open, onClose, outstandingBalance, onLedg
       return;
     }
     setError(null);
+
+    if (reimbMode === "record") {
+      const uuid = reimbUuid.trim();
+      if (!UUID_RE.test(uuid)) {
+        setError("That doesn't look like a Mercury transaction UUID. Use the transaction's UUID (from the Mercury transaction URL or API), not the tracking number.");
+        return;
+      }
+      setReimburseSending(true);
+      const today = new Date().toISOString().slice(0, 10);
+      const entry = await insertLedger({
+        date: today,
+        description: "Reimbursement via Mercury",
+        type: "reimbursed",
+        amount,
+        payment_method: "mercury",
+        notes: "Mercury txn: " + uuid,
+      });
+      setReimburseSending(false);
+      if (entry) setReimbursed({ amount, txnId: uuid, sent: false });
+      return;
+    }
+
     setReimburseSending(true);
     try {
       const res = await fetch("/api/mercury-pay", {
@@ -148,7 +174,7 @@ export default function PaydayWizard({ open, onClose, outstandingBalance, onLedg
         setError("Mercury transfer failed: " + (data.error ?? "unknown") + (data.details ? " — " + JSON.stringify(data.details) : ""));
         return;
       }
-      setReimbursed({ amount, txnId: data.mercuryTransactionId });
+      setReimbursed({ amount, txnId: data.mercuryTransactionId, sent: true });
       const today = new Date().toISOString().slice(0, 10);
       await insertLedger({
         date: today,
@@ -376,7 +402,7 @@ export default function PaydayWizard({ open, onClose, outstandingBalance, onLedg
               {reimbursed ? (
                 <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-sm text-emerald-400">
                   <div className="flex items-center gap-2 font-semibold">
-                    <CheckCircle2 className="w-4 h-4" /> Reimbursement sent — {fmt(reimbursed.amount)}
+                    <CheckCircle2 className="w-4 h-4" /> Reimbursement {reimbursed.sent ? "sent" : "recorded"} — {fmt(reimbursed.amount)}
                   </div>
                   <div className="text-xs text-emerald-400/70 mt-1 break-all">Mercury txn: {reimbursed.txnId}</div>
                 </div>
@@ -385,25 +411,51 @@ export default function PaydayWizard({ open, onClose, outstandingBalance, onLedg
                   Nothing outstanding — skip straight to the draw.
                 </div>
               ) : (
-                <div className="flex items-center gap-2">
-                  <span className="text-gray-500 text-sm">$</span>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0.01"
-                    max={outstandingBalance}
-                    value={reimburseInput !== "" ? reimburseInput : outstandingBalance.toFixed(2)}
-                    onChange={e => setReimburseInput(e.target.value)}
-                    className="w-32 bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-2 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                  <button
-                    onClick={sendReimbursement}
-                    disabled={reimburseSending}
-                    className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-semibold rounded-xl transition-all"
-                  >
-                    {reimburseSending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                    Send Reimbursement via ACH
-                  </button>
+                <div className="space-y-3">
+                  <div className="flex gap-1 bg-gray-800/60 rounded-lg p-1 w-fit border border-gray-700">
+                    <button
+                      onClick={() => setReimbMode("record")}
+                      className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${reimbMode === "record" ? "bg-gray-700 text-white" : "text-gray-500 hover:text-gray-300"}`}
+                    >Record existing transfer</button>
+                    <button
+                      onClick={() => setReimbMode("send")}
+                      className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${reimbMode === "send" ? "bg-gray-700 text-white" : "text-gray-500 hover:text-gray-300"}`}
+                    >Send via Mercury ACH</button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-500 text-sm">$</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      max={outstandingBalance}
+                      value={reimburseInput !== "" ? reimburseInput : outstandingBalance.toFixed(2)}
+                      onChange={e => setReimburseInput(e.target.value)}
+                      className="w-32 bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-2 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    {reimbMode === "record" && (
+                      <input
+                        type="text"
+                        placeholder="Mercury txn UUID"
+                        value={reimbUuid}
+                        onChange={e => setReimbUuid(e.target.value)}
+                        className="flex-1 bg-gray-800 border border-gray-700 text-white text-xs rounded-lg px-2 py-2.5 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                    )}
+                    <button
+                      onClick={sendReimbursement}
+                      disabled={reimburseSending}
+                      className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-semibold rounded-xl transition-all whitespace-nowrap"
+                    >
+                      {reimburseSending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                      {reimbMode === "send" ? "Send via ACH" : "Record Reimbursement"}
+                    </button>
+                  </div>
+                  {reimbMode === "record" && (
+                    <p className="text-xs text-gray-500">
+                      Make the transfer in the Mercury dashboard first, then paste the transaction <b>UUID</b> here — never the tracking number.
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -450,13 +502,13 @@ export default function PaydayWizard({ open, onClose, outstandingBalance, onLedg
                 <>
                   <div className="flex gap-1 bg-gray-800/60 rounded-lg p-1 w-fit border border-gray-700">
                     <button
-                      onClick={() => setDrawMode("send")}
-                      className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${drawMode === "send" ? "bg-gray-700 text-white" : "text-gray-500 hover:text-gray-300"}`}
-                    >Send via Mercury ACH</button>
-                    <button
                       onClick={() => setDrawMode("record")}
                       className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${drawMode === "record" ? "bg-gray-700 text-white" : "text-gray-500 hover:text-gray-300"}`}
                     >Record existing transfer</button>
+                    <button
+                      onClick={() => setDrawMode("send")}
+                      className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${drawMode === "send" ? "bg-gray-700 text-white" : "text-gray-500 hover:text-gray-300"}`}
+                    >Send via Mercury ACH</button>
                   </div>
 
                   <div className="flex items-center gap-2">
