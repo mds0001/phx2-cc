@@ -4,7 +4,7 @@ import { useState, useMemo, useRef } from "react";
 import {
   DollarSign, Plus, X, ChevronDown, CheckCircle2,
   Clock, AlertCircle, Building2, Receipt, Tag, Calendar,
-  CreditCard, FileText, Pencil, Trash2, Send, Loader2, User, ArrowDownCircle, ArrowUpCircle, Download, Upload
+  CreditCard, FileText, Pencil, Trash2, Send, Loader2, User, ArrowDownCircle, ArrowUpCircle, Download, Upload, Banknote
 } from "lucide-react";
 import { createClient as createBrowserSupabaseClient } from "@/lib/supabase-browser";
 import { parseCsv } from "@/lib/csv";
@@ -12,6 +12,7 @@ import {
   Vendor, Bill, SCHEDULE_C_CATEGORIES, PAYMENT_METHODS,
   ScheduleCCategory, PaymentMethod
 } from "@/lib/types";
+import PaydayWizard from "@/components/PaydayWizard";
 
 const supabase = createBrowserSupabaseClient();
 
@@ -115,6 +116,7 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
   const [ccSyncing, setCcSyncing] = useState(false);
   const [ccImporting, setCcImporting] = useState<string | null>(null);
   const csvInputRef = useRef<HTMLInputElement>(null);
+  const [showPayday, setShowPayday] = useState(false);
 
   // Derived stats
   const stats = useMemo(() => {
@@ -512,6 +514,14 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
                   <Plus className="w-4 h-4" /> New Bill
                 </button>
               </div>
+            )}
+            {tab === "owner" && (
+              <button
+                onClick={() => setShowPayday(true)}
+                className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold rounded-xl transition-all"
+              >
+                <Banknote className="w-4 h-4" /> Monthly Payday
+              </button>
             )}
           </div>
         </div>
@@ -1098,6 +1108,13 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
           </div>
         </div>
       )}
+
+      <PaydayWizard
+        open={showPayday}
+        onClose={() => setShowPayday(false)}
+        outstandingBalance={ownerStats.balance}
+        onLedgerEntry={entry => setOwnerLedger(prev => [entry, ...prev])}
+      />
     </div>
   );
 }

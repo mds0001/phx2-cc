@@ -25,4 +25,8 @@ next-env.d.ts
 start dev.bat
 Incorporation docs/
 
-Incorporation docs/
+# Local artifacts & sensitive data — never commit
+*.csv
+ss/
+.tmp/
+.claude/scheduled_tasks.lock
