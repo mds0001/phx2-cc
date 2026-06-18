@@ -867,6 +867,7 @@ async function postRowToIvanti(args: {
       const bo = businessObject ?? "";
       const baseBo = bo.split("#")[0];
       const recordType = bo.includes("#") ? bo.split("#")[1] : "";
+      const entitySet = baseBo.endsWith("s") ? baseBo : baseBo + "s"; // CI#Computer -> CIs (match loader)
       const rowOut: Record<string, unknown> = { ...mapped };
       if (recordType && rowOut[`${baseBo}Type`] === undefined) rowOut[`${baseBo}Type`] = recordType;
       const link_fields = linkFieldNames.map((f) => ({
@@ -884,7 +885,7 @@ async function postRowToIvanti(args: {
           ivanti_url: cfg.url,
           api_key: cfg.api_key,
           tenant_id: cfg.tenant_id ?? "",
-          business_object: bo,
+          business_object: entitySet,
           upsert_key: upsertKeys[0] ?? "Name",
           write_mode: "upsert",
           link_fields,
