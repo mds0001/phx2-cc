@@ -661,10 +661,14 @@ function AzureForm({ config, onChange }: { config: Record<string, string>; onCha
 }
 
 function IvantiForm({
-  config, onChange,
+  config, onChange, agents, agentId, onAgentChange, customerId,
 }: {
   config: Record<string, string>;
   onChange: (k: string, v: string) => void;
+  agents: { id: string; name: string; status: string; customer_id: string }[];
+  agentId: string | null;
+  onAgentChange: (id: string | null) => void;
+  customerId: string | null;
 }) {
   return (
     <>
@@ -682,6 +686,28 @@ function IvantiForm({
         />
       </Field>
 
+      <Field label="Premise Agent (optional)">
+        {!customerId ? (
+          <p className="text-xs text-amber-500">Assign a customer to this endpoint first, then a premise agent can be selected.</p>
+        ) : (() => {
+          const filtered = agents.filter((a) => a.customer_id === customerId);
+          return filtered.length === 0 ? (
+            <p className="text-xs text-gray-600">No agents registered for this customer. Go to Admin &rarr; Agents to register one.</p>
+          ) : (
+            <select
+              value={agentId ?? ""}
+              onChange={(e) => onAgentChange(e.target.value || null)}
+              className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-orange-500/50"
+            >
+              <option value="">None &mdash; write directly from cloud</option>
+              {filtered.map((a) => (
+                <option key={a.id} value={a.id}>{a.name} ({a.status})</option>
+              ))}
+            </select>
+          );
+        })()}
+        <p className="text-xs text-gray-500 mt-1">Bind an on-prem agent to write to a premise Ivanti tenant the cloud cannot reach. When set, writes are dispatched to that agent instead of sent directly.</p>
+      </Field>
       <Field label="REST API Key">
         <PasswordInput
           value={config.api_key ?? ""}
@@ -1313,7 +1339,7 @@ export default function ConnectionEditorClient({
           {type === "odbc"          && <OdbcForm          config={config} onChange={setConfigField} />}
           {type === "portal"        && <PortalForm        config={config} onChange={setConfigField} />}
           {type === "insight"       && <InsightForm       config={config} onChange={setConfigField} />}
-          {type === "ivanti"        && <IvantiForm        config={config} onChange={setConfigField} />}
+          {type === "ivanti"        && <IvantiForm        config={config} onChange={setConfigField} agents={agents} agentId={agentId} onAgentChange={setAgentId} customerId={customerId} />}
           {type === "ivanti_neurons" && <IvantiNeuronsForm config={config} onChange={setConfigField} />}
           {type === "dell"          && <DellForm          config={config} onChange={setConfigField} />}
           {type === "cdw"           && <CdwForm           config={config} onChange={setConfigField} />}

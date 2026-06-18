@@ -857,6 +857,52 @@ async function postRowToIvanti(args: {
   } = args;
   const cfg = targetConn.config as unknown as Record<string, string>;
   const slotPrefix = `[S${slotIdx + 1}]`;
+
+  // Premise Ivanti via on-prem agent (gated on agent_id). When the target Ivanti
+  // connection is bound to an agent, the cloud cannot reach the tenant: dispatch
+  // the row to the agent as an ivanti_write job instead of POSTing to ivanti-proxy.
+  const premiseAgentId = (targetConn as unknown as { agent_id?: string | null }).agent_id ?? null;
+  if (premiseAgentId) {
+    try {
+      const bo = businessObject ?? "";
+      const baseBo = bo.split("#")[0];
+      const recordType = bo.includes("#") ? bo.split("#")[1] : "";
+      const rowOut: Record<string, unknown> = { ...mapped };
+      if (recordType && rowOut[`${baseBo}Type`] === undefined) rowOut[`${baseBo}Type`] = recordType;
+      const link_fields = linkFieldNames.map((f) => ({
+        field: f,
+        link_bo: linkFieldBoNames[f] ?? "",
+        link_field: linkFieldLookupFields[f] ?? "Name",
+        required: false,
+      }));
+      const { error: dispatchErr } = await admin.from("agent_jobs").insert({
+        agent_id: premiseAgentId,
+        task_id: run.task_id,
+        status: "pending",
+        payload: {
+          type: "ivanti_write",
+          ivanti_url: cfg.url,
+          api_key: cfg.api_key,
+          tenant_id: cfg.tenant_id ?? "",
+          business_object: bo,
+          upsert_key: upsertKeys[0] ?? "Name",
+          write_mode: "upsert",
+          link_fields,
+          rows: [rowOut],
+        },
+      });
+      if (dispatchErr) {
+        counters.errored = (counters.errored ?? 0) + 1;
+        await admin.from("task_logs").insert({ task_id: run.task_id, action: "ERROR", details: `${slotPrefix} Row ${rowIdx + 1} agent dispatch failed: ${dispatchErr.message}` });
+      } else {
+        counters.dispatched = (counters.dispatched ?? 0) + 1;
+      }
+    } catch (err) {
+      counters.errored = (counters.errored ?? 0) + 1;
+      await admin.from("task_logs").insert({ task_id: run.task_id, action: "ERROR", details: `${slotPrefix} Row ${rowIdx + 1} agent dispatch exception: ${err instanceof Error ? err.message : String(err)}` });
+    }
+    return;
+  }
   try {
     const res = await fetch(`${ctx.origin}/api/ivanti-proxy`, {
       method: "POST",
