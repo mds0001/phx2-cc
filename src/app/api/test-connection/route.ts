@@ -172,6 +172,26 @@ export async function POST(request: NextRequest) {
         if (!url)     return result(false, "No URL configured");
         if (!api_key) return result(false, "No API key configured");
 
+        // Premise (agent-bound): the cloud cannot reach the tenant, so verify the
+        // bound agent is online instead. The real write path goes through the agent.
+        if (agent_id) {
+          const sbUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+          const svcKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+          const aRes = await fetch(
+            `${sbUrl}/rest/v1/agents?id=eq.${agent_id}&select=name,status,last_seen`,
+            { headers: { apikey: svcKey ?? "", Authorization: `Bearer ${svcKey}`, Accept: "application/json" } }
+          );
+          const [boundAgent] = await aRes.json().catch(() => []);
+          if (!boundAgent) return result(false, "Bound agent not found");
+          const lastSeen = boundAgent.last_seen ? new Date(boundAgent.last_seen).getTime() : 0;
+          const stale = Date.now() - lastSeen > 60_000;
+          if (boundAgent.status !== "online" || stale) {
+            const ago = lastSeen ? `last seen ${Math.round((Date.now() - lastSeen) / 1000)}s ago` : "never seen";
+            return result(false, `Premise agent "${boundAgent.name}" is offline (${ago})`);
+          }
+          return result(true, `Premise mode: agent "${boundAgent.name}" is online; writes route through it (the cloud cannot reach premise tenants directly)`);
+        }
+
         const base = url.replace(/\/$/, "");
         const obj  = business_object || "CI__Computers";
         const odataEndpoint = `${base}/api/odata/businessobject/${obj}?$top=1`;
