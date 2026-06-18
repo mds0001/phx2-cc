@@ -867,7 +867,7 @@ async function postRowToIvanti(args: {
       const bo = businessObject ?? "";
       const baseBo = bo.split("#")[0];
       const recordType = bo.includes("#") ? bo.split("#")[1] : "";
-      const entitySet = baseBo.endsWith("s") ? baseBo : baseBo + "s"; // CI#Computer -> CIs (match loader)
+      const entitySet = bo.toLowerCase() === "auto" ? "CIs" : (baseBo.endsWith("s") ? baseBo : baseBo + "s"); // CI#Computer -> CIs; "auto" (CIType-routed) -> CIs on premise
       const rowOut: Record<string, unknown> = { ...mapped };
       if (recordType && rowOut[`${baseBo}Type`] === undefined) rowOut[`${baseBo}Type`] = recordType;
       const link_fields = linkFieldNames.map((f) => ({
