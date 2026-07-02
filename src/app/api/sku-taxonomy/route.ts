@@ -1,13 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
 import { createClient } from "@/lib/supabase-server";
+import { getCurrentUserAssignment } from "@/lib/permissions";
 
-// POST — upsert a taxonomy entry
+/** Global taxonomy writes are administrator-only (active role). Returns userId on success, or an error response. */
+async function requireAdmin(): Promise<{ userId: string } | NextResponse> {
+  const auth = await getCurrentUserAssignment();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (auth.assignment?.role !== "administrator") {
+    return NextResponse.json({ error: "Forbidden — administrator role required" }, { status: 403 });
+  }
+  return { userId: auth.userId };
+}
+
+// POST — upsert a taxonomy entry (admin only)
 export async function POST(req: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const gate = await requireAdmin();
+    if (gate instanceof NextResponse) return gate;
 
     const body = await req.json() as {
       manufacturer_sku: string;
@@ -32,7 +42,7 @@ export async function POST(req: NextRequest) {
         subtype:          body.subtype?.trim() || null,
         description:      body.description?.trim() || null,
         model:            body.model?.trim() || null,
-        created_by:       user.id,
+        created_by:       gate.userId,
         updated_at:       new Date().toISOString(),
       }, { onConflict: "manufacturer_sku" })
       .select()
@@ -62,12 +72,11 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ data });
 }
 
-// PATCH — toggle or set the ignore flag on a taxonomy entry
+// PATCH — toggle or set the ignore flag on a taxonomy entry (admin only)
 export async function PATCH(req: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const gate = await requireAdmin();
+    if (gate instanceof NextResponse) return gate;
 
     const body = await req.json() as { manufacturer_sku: string; ignore: boolean };
     if (!body.manufacturer_sku) return NextResponse.json({ error: "manufacturer_sku required" }, { status: 400 });
@@ -87,12 +96,11 @@ export async function PATCH(req: NextRequest) {
   }
 }
 
-// DELETE — remove a taxonomy entry by ?sku= query param
+// DELETE — remove a taxonomy entry by ?sku= query param (admin only)
 export async function DELETE(req: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const gate = await requireAdmin();
+    if (gate instanceof NextResponse) return gate;
 
     const sku = req.nextUrl.searchParams.get("sku");
     if (!sku) return NextResponse.json({ error: "sku query param required" }, { status: 400 });
