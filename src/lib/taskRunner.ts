@@ -31,7 +31,46 @@ import {
 import { evaluateFilter } from "@/lib/filterExpression";
 
 const TICK_BUDGET_MS = 250_000;
-const FK_ORDER: InsightRecordType[] = ["purchase_order", "purchase_line_item", "ci"];
+const FK_ORDER: InsightRecordType[] = [
+  "purchase_order",
+  "purchase_line_item",
+  "ci",
+  "software_product",
+  "contract",
+  "contract_line_item",
+];
+
+// -- Software hydration (Phase SW-2) ---------------------------------------
+// Steps that write the entitlement chain (Software -> CI.Contract -> line item).
+// Their rows are gated by InsightStep.category_codes (GA/GB/GC/ZF/ZU) at task
+// config level; the runner injects derived _sw_* source fields for them.
+const SOFTWARE_STEP_TYPES = new Set<InsightRecordType>([
+  "software_product",
+  "contract",
+  "contract_line_item",
+]);
+
+/** ivnt_ContractLineItems.LineItemType routing (locked 2026-07-02):
+ *  ZF/ZU warranty services -> Extended Warranty; GC service/support -> Support;
+ *  renewal SKUs -> Maintenance; everything else software -> License. */
+function lineItemTypeFor(catCode: string, sku: string, description: string): string {
+  if (catCode === "ZF" || catCode === "ZU") return "Extended Warranty";
+  if (catCode === "GC") return "Support";
+  const hay = `${sku} ${description}`.toUpperCase();
+  if (hay.includes("RNWL") || hay.includes("RENEWAL")) return "Maintenance";
+  return "License";
+}
+
+/** ivnt_ContractLineItems record-type discriminator (NOT NULL in the DB) --
+ *  must be sent explicitly; Ivanti does not derive it from LineItemType. */
+function lineItemRecTypeFor(lineItemType: string): string {
+  switch (lineItemType) {
+    case "Maintenance":       return "ivnt_Maintenance";
+    case "Support":           return "ivnt_Support";
+    case "Extended Warranty": return "ivnt_ExtendedWarranty";
+    default:                  return "ivnt_Entitlement"; // License
+  }
+}
 
 export interface ClaimedRun {
   id: string;
@@ -76,6 +115,12 @@ interface UnifiedSlot {
   mapping_profile_id: string | null;
   /** Optional override for target connection at the slot level. */
   target_connection_id?: string | null;
+  /** insight_steps only: drives software derived-field injection. */
+  record_type?: InsightRecordType;
+  /** insight_steps only: per-line productCategory include gate. */
+  category_codes?: string[];
+  /** insight_steps only: per-line productCategory exclude gate. */
+  exclude_category_codes?: string[];
 }
 
 /**
@@ -257,6 +302,14 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
       }
     }
 
+    // Software hydration per-slot state: taxonomy lookups cached per SKU, and
+    // derived upsert keys deduped so expand_serials fan-out / repeated SKUs
+    // don't re-upsert the same product/contract/line-item every row. Both are
+    // per-tick only -- a resumed chunk re-derives, and the Ivanti upserts are
+    // idempotent, so that costs HTTP calls, never correctness.
+    const swSeen = new Set<string>();
+    const swTaxonomyCache = new Map<string, SwTaxonomyInfo>();
+
     while (rowIdx < rows.length) {
       // Time budget: persist & exit
       if (Date.now() - startMs > TICK_BUDGET_MS) {
@@ -291,10 +344,57 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
 
       const row = rows[rowIdx] as Record<string, unknown>;
 
+      // -- Software hydration: per-line productCategory gate ----------------
+      const catCode = String(row["productCategory"] ?? "").trim().toUpperCase();
+      const catBlocked =
+        (!!slot.category_codes && slot.category_codes.length > 0 &&
+          !slot.category_codes.includes(catCode)) ||
+        (!!slot.exclude_category_codes && slot.exclude_category_codes.length > 0 &&
+          !!catCode && slot.exclude_category_codes.includes(catCode));
+      if (catBlocked) {
+        counters.category_skipped = (counters.category_skipped ?? 0) + 1;
+        rowIdx++;
+        await persistProgress(admin, run.id, slotIdx, rowIdx, counters, exceptions);
+        continue;
+      }
+
+      // Software steps: inject derived _sw_* fields and dedupe upsert keys.
+      let effRow = row;
+      if (slot.record_type && SOFTWARE_STEP_TYPES.has(slot.record_type)) {
+        effRow = await deriveSoftwareFields(row, swTaxonomyCache, task.customer_id ?? null, ctx);
+        // Research gate: SKU not yet researched — hold the line, record the
+        // SKU exception so it appears in Tasks-with-Exceptions and the rerun
+        // flow imports it once the engineer classifies the SKU.
+        if (!String(effRow["_sw_ready"] ?? "")) {
+          const exSku = String(effRow["manufacturerPartNumber"] ?? "").trim().toUpperCase() || "(no sku)";
+          const dupe = exceptions.find(
+            (e) => e.sku === exSku && e.row === rowIdx + 1 && e.targetField === slot.record_type
+          );
+          if (!dupe) exceptions.push({ sku: exSku, row: rowIdx + 1, targetField: slot.record_type });
+          counters.software_pending_research = (counters.software_pending_research ?? 0) + 1;
+          await admin.from("task_logs").insert({
+            task_id: run.task_id,
+            action: "SKIP",
+            details: `[S${slotIdx + 1}] Row ${rowIdx + 1}: SKU "${exSku}" not researched — software line held for SKU research`,
+          });
+          rowIdx++;
+          await persistProgress(admin, run.id, slotIdx, rowIdx, counters, exceptions);
+          continue;
+        }
+        const dk = softwareDedupKey(slot.record_type, effRow);
+        if (dk && swSeen.has(dk)) {
+          counters.deduped = (counters.deduped ?? 0) + 1;
+          rowIdx++;
+          await persistProgress(admin, run.id, slotIdx, rowIdx, counters, exceptions);
+          continue;
+        }
+        if (dk) swSeen.add(dk);
+      }
+
       // Filter expression
       let pass = true;
       if (mp.filter_expression) {
-        const result = evaluateFilter(row, mp.filter_expression);
+        const result = evaluateFilter(effRow, mp.filter_expression);
         pass = result.pass;
       }
 
@@ -309,7 +409,7 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
         for (const sm of skuLookupMappings) {
           const srcField = mp.source_fields.find((f) => f.id === sm.sourceFieldId);
           if (!srcField) continue;
-          const skuRaw = String(row[srcField.name] ?? "").trim().toUpperCase();
+          const skuRaw = String(effRow[srcField.name] ?? "").trim().toUpperCase();
           if (!skuRaw) continue;
           const cacheKey = `${sm.id}:${skuRaw}`;
           let resolved = skuLookupCache.get(cacheKey);
@@ -323,7 +423,7 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
                   result_field: sm.skuResultField ?? "type",
                   customer_id: task.customer_id ?? null,
                   context: Object.fromEntries(
-                    Object.entries(row)
+                    Object.entries(effRow)
                       .filter(([, v]) => typeof v === "string" || typeof v === "number")
                       .map(([k, v]) => [k, String(v)])
                   ),
@@ -378,12 +478,12 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
             const sourceValues: Record<string, string> = {};
             for (const fieldId of allAiSourceFieldIds) {
               const field = mp.source_fields.find((f) => f.id === fieldId);
-              if (field) sourceValues[field.name] = String(row[field.name] ?? "");
+              if (field) sourceValues[field.name] = String(effRow[field.name] ?? "");
             }
             aiResults = aiLookupCache.get(JSON.stringify(sourceValues));
           }
 
-          const mapped = applyMappingProfile(row, mp, aiResults, undefined, skuLookupResults);
+          const mapped = applyMappingProfile(effRow, mp, aiResults, undefined, skuLookupResults);
           await postRowToIvanti({
             admin,
             run,
@@ -534,6 +634,9 @@ function resolveSlots(task: ScheduledTask): UnifiedSlot[] {
         label: s.record_type,
         mapping_profile_id: s.mapping_profile_id,
         target_connection_id: s.target_connection_id,
+        record_type: s.record_type,
+        category_codes: s.category_codes,
+        exclude_category_codes: s.exclude_category_codes,
       }));
   }
   // Multi-slot
@@ -602,9 +705,18 @@ export async function createPendingRun(args: {
     ? (task.mapping_slots as MappingSlot[])
     : [{ id: "legacy", mapping_profile_id: task.mapping_profile_id ?? null }];
 
-  const mappingIds = [...new Set(
-    slots.map((s) => s.mapping_profile_id).filter((id): id is string => !!id)
-  )];
+  // insight_steps profiles must be snapshotted too — the runner resolves its
+  // slot list from insight_steps (which take precedence over mapping_slots),
+  // so a step whose profile differs from the legacy mapping_profile_id would
+  // otherwise hit "no mapping profile in snapshot" at run time.
+  const enabledInsightSteps = ((task.insight_steps as InsightStep[] | null) ?? [])
+    .filter((s) => s.enabled !== false);
+  const mappingIds = [...new Set([
+    ...slots.map((s) => s.mapping_profile_id).filter((id): id is string => !!id),
+    ...enabledInsightSteps
+      .map((s) => s.mapping_profile_id)
+      .filter((id): id is string => !!id),
+  ])];
 
   const mappingSnapshots: Record<string, unknown> = {};
   if (mappingIds.length > 0) {
@@ -628,6 +740,9 @@ export async function createPendingRun(args: {
   }
   if (task.source_connection_id) connIds.add(task.source_connection_id);
   if (task.target_connection_id) connIds.add(task.target_connection_id);
+  for (const s of enabledInsightSteps) {
+    if (s.target_connection_id) connIds.add(s.target_connection_id);
+  }
 
   let sourceConnectionSnap: unknown = null;
   let targetConnectionSnap: unknown = null;
@@ -727,6 +842,159 @@ export function advanceStartDateTime(currentIso: string, recurrence: string): st
     default: return currentIso; // one-time or unknown — leave it alone
   }
   return next.toISOString();
+}
+
+// -- Software hydration helpers (Phase SW-2) --------------------------------
+
+interface SwTaxonomyInfo {
+  model: string;
+  manufacturer: string;
+  description: string;
+  sw_title: string;
+  sw_version: string;
+  sw_edition: string;
+  found: boolean;
+}
+
+/**
+ * Inject derived `_sw_*` source fields for the software hydration steps.
+ * Mapping profiles reference these as ordinary source columns:
+ *   _sw_product_name          Software.Name (taxonomy model, else itemDescription)
+ *   _sw_manufacturer          taxonomy-normalized manufacturer, else manufacturerName
+ *   _sw_contract_internal_id  CI__Contracts.ivnt_InternalID ("<MANUFACTURER>-<YYYY>")
+ *   _sw_line_item_type        ivnt_ContractLineItems.LineItemType
+ *   _sw_lcm_unique_id         ivnt_ContractLineItems.LCMUniqueId ("<orderNo>-<orderItem>")
+ *
+ * Unknown SKUs do NOT skip the row (provisional-name import, locked
+ * 2026-07-02): the product is created from itemDescription and the SKU is
+ * queued for research so the name gets cleaned up on a later run.
+ */
+async function deriveSoftwareFields(
+  row: Record<string, unknown>,
+  cache: Map<string, SwTaxonomyInfo>,
+  customerId: string | null,
+  ctx: RunCtx
+): Promise<Record<string, unknown>> {
+  const str = (k: string) => String(row[k] ?? "").trim();
+  const sku = str("manufacturerPartNumber").toUpperCase();
+  const desc = str("itemDescription");
+  const catCode = str("productCategory").toUpperCase();
+
+  let tax = sku ? cache.get(sku) : undefined;
+  if (sku && tax === undefined) {
+    tax = { model: "", manufacturer: "", description: "", sw_title: "", sw_version: "", sw_edition: "", found: false };
+    try {
+      // GET returns the full taxonomy entry without touching the research queue.
+      const getRes = await fetch(
+        `${ctx.origin}/api/sku-lookup?sku=${encodeURIComponent(sku)}`,
+        { headers: { ...vercelBypassHeaders() } }
+      );
+      const getJson = (await getRes.json()) as {
+        data?: {
+          model?: string | null;
+          manufacturer?: string | null;
+          description?: string | null;
+          sw_title?: string | null;
+          sw_version?: string | null;
+          sw_edition?: string | null;
+        } | null;
+      };
+      if (getJson.data) {
+        tax = {
+          model: getJson.data.model?.trim() ?? "",
+          manufacturer: getJson.data.manufacturer?.trim() ?? "",
+          description: getJson.data.description?.trim() ?? "",
+          sw_title: getJson.data.sw_title?.trim() ?? "",
+          sw_version: getJson.data.sw_version?.trim() ?? "",
+          sw_edition: getJson.data.sw_edition?.trim() ?? "",
+          found: true,
+        };
+      } else {
+        // Unknown SKU: POST once so it queues for research. Fire-and-forget;
+        // the row itself proceeds with provisional values either way.
+        await fetch(`${ctx.origin}/api/sku-lookup`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...vercelBypassHeaders() },
+          body: JSON.stringify({
+            sku,
+            result_field: "model",
+            customer_id: customerId,
+            context: Object.fromEntries(
+              Object.entries(row)
+                .filter(([, v]) => typeof v === "string" || typeof v === "number")
+                .map(([k, v]) => [k, String(v)])
+            ),
+          }),
+        }).catch(() => null);
+      }
+    } catch {
+      /* provisional fallbacks below */
+    }
+    cache.set(sku, tax);
+  }
+
+  // Research gate (locked 2026-07-02): product and contract identity come ONLY
+  // from researched taxonomy — the Insight line is entitlement language ("...
+  // license - 1 license"), not product identity. Unresearched software SKUs
+  // hold the whole line (rides the exception -> research -> rerun loop).
+  // Warranty lines (ZF/ZU) reference no software product; they only need the
+  // researched manufacturer for contract naming.
+  const isWarranty = catCode === "ZF" || catCode === "ZU";
+  const manufacturer = (tax?.manufacturer ?? "").trim();
+  const swTitleClean = (tax?.sw_title ?? "").trim();
+  // Don't double the manufacturer when the researched title already leads
+  // with it ("GitHub Enterprise" must not become "GitHub GitHub Enterprise").
+  const nameParts = manufacturer && swTitleClean.toLowerCase().startsWith(manufacturer.toLowerCase())
+    ? [swTitleClean, tax?.sw_version ?? "", tax?.sw_edition ?? ""]
+    : [manufacturer, swTitleClean, tax?.sw_version ?? "", tax?.sw_edition ?? ""];
+  const composedName = nameParts.map((s) => s.trim()).filter(Boolean).join(" ");
+  const ready = !!tax?.found && !!manufacturer && (isWarranty || !!(tax?.sw_title ?? "").trim());
+  // Warranty rows carry no product name — the proxy strips empty link fields,
+  // so their line items simply have no SoftwareProductLink.
+  const productName = isWarranty ? "" : composedName;
+  const dateStr = str("shipDate") || str("orderDate") || str("invoiceDate");
+  const yearMatch = dateStr.match(/\d{4}/);
+  const year = yearMatch ? yearMatch[0] : String(new Date().getFullYear());
+  const orderNo = str("insightOrderNumber") || str("customerOrderNumber");
+  const orderItem = str("insightOrderItem") || str("lineNumber");
+  // Ivanti ivnt_ContractLineItems.Quantity is an int column; Insight sends
+  // decimals like "2.000" which fail SQL varchar->int conversion. Coerce.
+  const qtyFloat = parseFloat(str("quantityOrdered") || str("quantityShipped") || "0");
+  const qtyInt = Number.isFinite(qtyFloat) ? String(Math.round(qtyFloat)) : "0";
+
+  return {
+    ...row,
+    _sw_ready: ready ? "1" : "",
+    _sw_quantity: qtyInt,
+    _sw_product_name: productName,
+    _sw_title: (tax?.sw_title ?? "").trim(),
+    _sw_version: (tax?.sw_version ?? "").trim(),
+    _sw_edition: (tax?.sw_edition ?? "").trim(),
+    _sw_description: (tax?.description ?? "").trim(),
+    _sw_manufacturer: manufacturer,
+    _sw_contract_internal_id: `${manufacturer.toUpperCase()}-${year}`,
+    // Ivanti derives ivnt_ContractStatus from ivnt_ExpiryDate -- without an
+    // expiry the contract renders "Expired". Manufacturer-year contracts
+    // naturally expire at year end.
+    _sw_contract_expiry: `${year}-12-31T00:00:00Z`,
+    _sw_line_item_type: lineItemTypeFor(catCode, sku, desc),
+    _sw_line_item_rectype: lineItemRecTypeFor(lineItemTypeFor(catCode, sku, desc)),
+    _sw_lcm_unique_id: orderNo && orderItem ? `${orderNo}-${orderItem}` : "",
+  };
+}
+
+/** Per-slot dedupe key: the upsert identity each software step writes. */
+function softwareDedupKey(
+  recordType: InsightRecordType,
+  row: Record<string, unknown>
+): string | null {
+  const v = (k: string) => String(row[k] ?? "").trim();
+  switch (recordType) {
+    case "software_product":   return v("_sw_product_name").toLowerCase() || null;
+    case "contract":           return v("_sw_contract_internal_id").toLowerCase() || null;
+    case "contract_line_item": return v("_sw_lcm_unique_id").toLowerCase() || null;
+    default:                   return null;
+  }
 }
 
 async function fetchFileRows(

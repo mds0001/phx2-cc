@@ -7,9 +7,19 @@ export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   try {
-    const supabase = await createServerClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    // Automation bypass: same CRON_SECRET bearer the tick + insight-proxy
+    // routes accept, for headless/scripted run starts (no user session).
+    const cronSecret = process.env.CRON_SECRET;
+    const authHeader = req.headers.get("authorization");
+    const isRunnerCall = !!cronSecret && authHeader === `Bearer ${cronSecret}`;
+
+    let userId: string | null = null;
+    if (!isRunnerCall) {
+      const supabase = await createServerClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      userId = user.id;
+    }
 
     const body = (await req.json().catch(() => ({}))) as {
       task_id?: string;
@@ -19,8 +29,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "task_id required" }, { status: 400 });
     }
 
-    // RLS-aware load — confirms the user can see this task.
-    const { data: task, error: taskErr } = await supabase
+    // Task load — RLS-aware for session calls (confirms the user can see this
+    // task); admin client for automation calls.
+    const admin = createAdminClient();
+    const taskClient = isRunnerCall ? admin : await createServerClient();
+    const { data: task, error: taskErr } = await taskClient
       .from("scheduled_tasks")
       .select("*")
       .eq("id", body.task_id)
@@ -29,11 +42,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Task not found or access denied" }, { status: 404 });
     }
 
-    const admin = createAdminClient();
     const result = await createPendingRun({
       admin,
       task,
-      triggeredBy: user.id,
+      triggeredBy: userId,
       rowFilter: body.row_filter ?? null,
     });
 

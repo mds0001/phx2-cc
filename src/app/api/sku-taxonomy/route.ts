@@ -26,6 +26,11 @@ export async function POST(req: NextRequest) {
       subtype?: string;
       description?: string;
       model?: string;
+      /** Software product identity (type === "Software") — the canonical
+       *  Title / Version / Edition the SKU's entitlement references. */
+      sw_title?: string;
+      sw_version?: string;
+      sw_edition?: string;
     };
 
     if (!body.manufacturer_sku) {
@@ -42,6 +47,9 @@ export async function POST(req: NextRequest) {
         subtype:          body.subtype?.trim() || null,
         description:      body.description?.trim() || null,
         model:            body.model?.trim() || null,
+        sw_title:         body.sw_title?.trim() || null,
+        sw_version:       body.sw_version?.trim() || null,
+        sw_edition:       body.sw_edition?.trim() || null,
         created_by:       gate.userId,
         updated_at:       new Date().toISOString(),
       }, { onConflict: "manufacturer_sku" })

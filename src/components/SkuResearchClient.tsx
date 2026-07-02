@@ -30,6 +30,9 @@ interface TaxonomySuggestion {
   subtype: string;
   description: string;
   model: string;
+  sw_title?: string;
+  sw_version?: string;
+  sw_edition?: string;
 }
 
 const CI_SUBTYPES: Record<string, string[]> = {
@@ -38,6 +41,7 @@ const CI_SUBTYPES: Record<string, string[]> = {
   PeripheralDevice:   ["Badge", "CC Reader", "Display", "Dock", "Document Scanner", "Fax", "Hard-Drive", "Monitor", "Monitor 13 Inch", "Monitor 15 Inch", "Printer", "Projector", "Reader", "Scanner", "UPS", "USB", "Web Cam"],
   ivnt_Infrastructure:["Access Point", "Barcode Scanner", "Chassis", "Database", "Firewall", "Generator", "Hub", "Management", "Network MFD", "Network Test", "NIC Module", "Phone", "Printer", "Projector", "Rack", "Router", "SAN", "Scanner", "Security", "Switch", "Telephony", "UPS", "Video Conference"],
   ivnt_GeneralAsset:  ["BatchJob", "Cart", "Certificate", "Cluster", "Document", "ESX", "Headphones", "Middleware", "ProductivityApp", "System", "TV", "VOIP"],
+  Software:           ["Application", "Operating System", "Security", "Database", "SaaS Subscription", "Maintenance & Support"],
 };
 
 interface TaxonomyEntry {
@@ -48,6 +52,9 @@ interface TaxonomyEntry {
   subtype: string | null;
   description: string | null;
   model: string | null;
+  sw_title: string | null;
+  sw_version: string | null;
+  sw_edition: string | null;
   ignore: boolean;
   updated_at: string;
 }
@@ -114,7 +121,7 @@ function TaxonomyForm({
   sku: string;
   initial?: Partial<TaxonomyEntry>;
   aiSuggestion?: TaxonomySuggestion | null;
-  onSave: (data: { manufacturer: string; type: string; subtype: string; description: string; model: string }) => void;
+  onSave: (data: { manufacturer: string; type: string; subtype: string; description: string; model: string; sw_title: string; sw_version: string; sw_edition: string }) => void;
   onCancel: () => void;
   onSkip?: () => void;
   onIgnore?: () => void;
@@ -126,6 +133,12 @@ function TaxonomyForm({
   const [subtype, setSubtype]           = useState(initial?.subtype ?? aiSuggestion?.subtype ?? "");
   const [description, setDescription]   = useState(initial?.description ?? aiSuggestion?.description ?? "");
   const [model, setModel]               = useState(initial?.model ?? aiSuggestion?.model ?? "");
+  // Software product identity — the canonical product the SKU's entitlement
+  // references (e.g. FQC-10529 -> Windows / 11 / Pro). Drives Ivanti
+  // CI#ivnt_SoftwareProduct creation; imports hold until these are researched.
+  const [swTitle, setSwTitle]     = useState(initial?.sw_title ?? aiSuggestion?.sw_title ?? "");
+  const [swVersion, setSwVersion] = useState(initial?.sw_version ?? aiSuggestion?.sw_version ?? "");
+  const [swEdition, setSwEdition] = useState(initial?.sw_edition ?? aiSuggestion?.sw_edition ?? "");
   const [customSubtype, setCustomSubtype] = useState(false);
   const [pendingNormalize, setPendingNormalize] = useState<{
     input: string;
@@ -141,7 +154,7 @@ function TaxonomyForm({
   async function handleSaveClick() {
     const trimmed = manufacturer.trim();
     if (!trimmed) {
-      onSave({ manufacturer, type, subtype, description, model });
+      onSave({ manufacturer, type, subtype, description, model, sw_title: swTitle, sw_version: swVersion, sw_edition: swEdition });
       return;
     }
     setPreviewing(true);
@@ -167,7 +180,7 @@ function TaxonomyForm({
       }
     } catch { /* fall through and just save */ }
     setPreviewing(false);
-    onSave({ manufacturer, type, subtype, description, model });
+    onSave({ manufacturer, type, subtype, description, model, sw_title: swTitle, sw_version: swVersion, sw_edition: swEdition });
   }
 
   useEffect(() => {
@@ -177,6 +190,9 @@ function TaxonomyForm({
       if (aiSuggestion.subtype)      setSubtype(aiSuggestion.subtype);
       if (aiSuggestion.description)  setDescription(aiSuggestion.description);
       if (aiSuggestion.model)        setModel(aiSuggestion.model);
+      if (aiSuggestion.sw_title)     setSwTitle(aiSuggestion.sw_title);
+      if (aiSuggestion.sw_version)   setSwVersion(aiSuggestion.sw_version);
+      if (aiSuggestion.sw_edition)   setSwEdition(aiSuggestion.sw_edition);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aiSuggestion]);
@@ -192,6 +208,9 @@ function TaxonomyForm({
     if (aiSuggestion.subtype)      setSubtype(aiSuggestion.subtype);
     if (aiSuggestion.description)  setDescription(aiSuggestion.description);
     if (aiSuggestion.model)        setModel(aiSuggestion.model);
+    if (aiSuggestion.sw_title)     setSwTitle(aiSuggestion.sw_title);
+    if (aiSuggestion.sw_version)   setSwVersion(aiSuggestion.sw_version);
+    if (aiSuggestion.sw_edition)   setSwEdition(aiSuggestion.sw_edition);
   }
 
   return (
@@ -264,6 +283,34 @@ function TaxonomyForm({
             placeholder="e.g. Latitude 5540"
             className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
         </div>
+        {type === "Software" && (
+          <div className="col-span-2 bg-indigo-500/5 border border-indigo-500/20 rounded-lg p-2.5">
+            <div className="text-[11px] font-semibold text-indigo-300 mb-1.5">
+              Software Product Identity
+              <span className="ml-1.5 font-normal text-gray-500">— the canonical product this SKU&apos;s entitlement references. Required before import.</span>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <label className="block text-[11px] font-medium text-gray-500 mb-1">Product Title</label>
+                <input value={swTitle} onChange={(e) => setSwTitle(e.target.value)}
+                  placeholder="e.g. Windows"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-medium text-gray-500 mb-1">Version</label>
+                <input value={swVersion} onChange={(e) => setSwVersion(e.target.value)}
+                  placeholder="e.g. 11"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-medium text-gray-500 mb-1">Edition</label>
+                <input value={swEdition} onChange={(e) => setSwEdition(e.target.value)}
+                  placeholder="e.g. Pro"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
+              </div>
+            </div>
+          </div>
+        )}
         <div>
           <label className="block text-[11px] font-medium text-gray-500 mb-1">Type</label>
           <select value={type} onChange={(e) => { setType(e.target.value); setSubtype(""); }}
@@ -274,6 +321,7 @@ function TaxonomyForm({
             <option value="PeripheralDevice">PeripheralDevice</option>
             <option value="ivnt_Infrastructure">ivnt_Infrastructure</option>
             <option value="ivnt_GeneralAsset">ivnt_GeneralAsset</option>
+                    <option value="Software">Software</option>
           </select>
         </div>
         <div>
@@ -299,6 +347,7 @@ function TaxonomyForm({
                     <option value="PeripheralDevice">PeripheralDevice</option>
                     <option value="ivnt_Infrastructure">ivnt_Infrastructure</option>
                     <option value="ivnt_GeneralAsset">ivnt_GeneralAsset</option>
+                    <option value="Software">Software</option>
                   </select>
                 )}
                 <span className="text-gray-600">→ New Subtype</span>
@@ -364,7 +413,7 @@ function TaxonomyForm({
                   type="button"
                   onClick={() => {
                     setManufacturer(pendingNormalize.normalized);
-                    onSave({ manufacturer: pendingNormalize.normalized, type, subtype, description, model });
+                    onSave({ manufacturer: pendingNormalize.normalized, type, subtype, description, model, sw_title: swTitle, sw_version: swVersion, sw_edition: swEdition });
                     setPendingNormalize(null);
                   }}
                   disabled={saving || !type}
@@ -375,7 +424,7 @@ function TaxonomyForm({
                 <button
                   type="button"
                   onClick={() => {
-                    onSave({ manufacturer: pendingNormalize.input, type, subtype, description, model });
+                    onSave({ manufacturer: pendingNormalize.input, type, subtype, description, model, sw_title: swTitle, sw_version: swVersion, sw_edition: swEdition });
                     setPendingNormalize(null);
                   }}
                   disabled={saving || !type}
@@ -404,7 +453,7 @@ function TaxonomyForm({
                     type="button"
                     onClick={() => {
                       setManufacturer(s.name);
-                      onSave({ manufacturer: s.name, type, subtype, description, model });
+                      onSave({ manufacturer: s.name, type, subtype, description, model, sw_title: swTitle, sw_version: swVersion, sw_edition: swEdition });
                       setPendingNormalize(null);
                     }}
                     disabled={saving || !type}
@@ -417,7 +466,7 @@ function TaxonomyForm({
                 <button
                   type="button"
                   onClick={() => {
-                    onSave({ manufacturer: pendingNormalize.input, type, subtype, description, model });
+                    onSave({ manufacturer: pendingNormalize.input, type, subtype, description, model, sw_title: swTitle, sw_version: swVersion, sw_edition: swEdition });
                     setPendingNormalize(null);
                   }}
                   disabled={saving || !type}
@@ -548,7 +597,7 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
   const archivedQueueCount = queue.filter((q) => q.archived).length;
 
   // ── Resolve: upsert taxonomy + mark resolved ───────────────────────────
-  async function handleResolve(item: QueueItem, data: { manufacturer: string; type: string; subtype: string; description: string; model: string }) {
+  async function handleResolve(item: QueueItem, data: { manufacturer: string; type: string; subtype: string; description: string; model: string; sw_title: string; sw_version: string; sw_edition: string }) {
     setSavingId(item.id);
     try {
       // Upsert taxonomy
@@ -712,7 +761,7 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
 
   // ── Add manual taxonomy entry ──────────────────────────────────────────
   const [addSku, setAddSku] = useState("");
-  async function handleAddTaxonomy(data: { manufacturer: string; type: string; subtype: string; description: string; model: string }) {
+  async function handleAddTaxonomy(data: { manufacturer: string; type: string; subtype: string; description: string; model: string; sw_title: string; sw_version: string; sw_edition: string }) {
     if (!addSku.trim()) return;
     setAddSaving(true);
     try {
@@ -754,7 +803,7 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
   }
 
   // -- Edit existing taxonomy entry --
-  async function handleUpdateTaxonomy(entry: TaxonomyEntry, data: { manufacturer: string; type: string; subtype: string; description: string; model: string }) {
+  async function handleUpdateTaxonomy(entry: TaxonomyEntry, data: { manufacturer: string; type: string; subtype: string; description: string; model: string; sw_title: string; sw_version: string; sw_edition: string }) {
     setEditSaving(true);
     try {
       const res = await fetch("/api/sku-taxonomy", {
@@ -778,7 +827,7 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
   }
 
   // -- Classify a SKU from the Exception Runs view --
-  async function handleRunClassify(sku: string, data: { manufacturer: string; type: string; subtype: string; description: string; model: string }, customer_id?: string | null) {
+  async function handleRunClassify(sku: string, data: { manufacturer: string; type: string; subtype: string; description: string; model: string; sw_title: string; sw_version: string; sw_edition: string }, customer_id?: string | null) {
     setRunClassifySaving(true);
     try {
       const res = await fetch("/api/sku-taxonomy", {

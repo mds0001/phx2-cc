@@ -248,7 +248,10 @@ async function resolveLinkFields(
     // Skip this strategy when auto-create is enabled: a previous run may have
     // stored the display value with a wrong RecID (e.g. a fallback manufacturer),
     // which would pollute the resolution and prevent auto-create from firing.
-    if (!recId && !autoCreateLinkFieldNames.includes(key)) {
+    // Also skip it when the caller explicitly configured the linked BO: the
+    // indirect query filters the TARGET BO, and Ivanti BOs that ignore $filter
+    // return row 0 -- silently linking every record to the same arbitrary RecID.
+    if (!recId && !autoCreateLinkFieldNames.includes(key) && !linkFieldBoNames[key]) {
       try {
         const recIdField = `${key}_RecID`;
         const indirectUrl =
@@ -296,17 +299,29 @@ async function resolveLinkFields(
         .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
         .join(" ");
       const autoBoLower = autoBoName.toLowerCase();
-      const createVariants = [
-        `frs_offering_${autoBoName}`,
-        `frs_offering_${autoBoLower}`,
-        autoBoName,
-        `${autoBoName}s`,
-        `${autoBoLower}s`,
-        `frs_${autoBoLower}`,
-        `CI%23${autoBoName}`,
-        `CI%23${autoBoLower}`,
-        `${autoBoName}%23`,
-      ];
+      // When the mapping editor supplied an explicit BO name, trust it FIRST --
+      // probing frs_offering_* before the configured name meant a non-404
+      // failure there aborted the whole loop (see below) and the real BO was
+      // never attempted.
+      const createVariants = linkFieldBoNames[key]
+        ? [
+            autoBoName,
+            `${autoBoName}s`,
+            `${autoBoLower}s`,
+            `frs_offering_${autoBoName}`,
+            `frs_offering_${autoBoLower}`,
+          ]
+        : [
+            `frs_offering_${autoBoName}`,
+            `frs_offering_${autoBoLower}`,
+            autoBoName,
+            `${autoBoName}s`,
+            `${autoBoLower}s`,
+            `frs_${autoBoLower}`,
+            `CI%23${autoBoName}`,
+            `CI%23${autoBoLower}`,
+            `${autoBoName}%23`,
+          ];
       let createError = "";
       let created = false;
       for (const variant of createVariants) {
@@ -338,7 +353,11 @@ async function resolveLinkFields(
             const errText = await createRes.text().catch(() => "");
             createError = `Auto-create to ${variant} failed HTTP ${createRes.status}: ${errText.slice(0, 200)}`;
             console.warn(`[ivanti-proxy] ${createError}`);
-            break; // non-404 error is definitive
+            // Ivanti returns 400 "Definition for business object X was not
+            // found" (not 404) for unknown BO paths -- treat it like a 404 and
+            // try the next variant instead of aborting the loop.
+            if (createRes.status === 400 && errText.includes("was not found")) continue;
+            break; // any other non-404 error is definitive
           }
         } catch (e) {
           createError = `Auto-create exception: ${e instanceof Error ? e.message : String(e)}`;

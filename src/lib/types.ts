@@ -289,7 +289,13 @@ export interface MappingSlot {
   enabled?: boolean;
 }
 
-export type InsightRecordType = "purchase_line_item" | "purchase_order" | "ci";
+export type InsightRecordType =
+  | "purchase_line_item"
+  | "purchase_order"
+  | "ci"
+  | "software_product"
+  | "contract"
+  | "contract_line_item";
 
 export interface InsightStep {
   id: string;
@@ -297,6 +303,12 @@ export interface InsightStep {
   mapping_profile_id: string | null;
   target_connection_id: string | null;
   enabled?: boolean;
+  /** Per-line gate: only rows whose Insight productCategory code is in this
+   *  list are processed by the step. Omit/empty = all rows. */
+  category_codes?: string[];
+  /** Inverse gate: rows whose productCategory code is in this list are
+   *  skipped by the step. Applied after category_codes. */
+  exclude_category_codes?: string[];
 }
 
 // ── Endpoint connections ──────────────────────────────────────

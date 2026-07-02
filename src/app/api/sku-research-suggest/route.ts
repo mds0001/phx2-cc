@@ -8,6 +8,10 @@ interface TaxonomySuggestion {
   subtype: string;
   description: string;
   model: string;
+  /** Software only: canonical product identity the SKU's entitlement references. */
+  sw_title: string;
+  sw_version: string;
+  sw_edition: string;
 }
 
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -142,7 +146,7 @@ async function classifySku(sku: string, context: Record<string, string> | null):
     enrichedLines ? ("\nProduct lookup results (use these to determine manufacturer and model):\n" + enrichedLines) : "",
     contextLines  ? ("\nAdditional context from purchase record:\n" + contextLines) : "",
     "",
-    "Valid types (choose exactly one): Computer, MobileDevice, PeripheralDevice, ivnt_Infrastructure, ivnt_GeneralAsset",
+    "Valid types (choose exactly one): Computer, MobileDevice, PeripheralDevice, ivnt_Infrastructure, ivnt_GeneralAsset, Software",
     "",
     "Valid subtypes by type:",
     "  Computer: All-In-One, Desktop, Laptop, Server, Thin Client, Tablet, Virtual Client, Virtual Desktop, Virtual Server",
@@ -150,6 +154,9 @@ async function classifySku(sku: string, context: Record<string, string> | null):
     "  PeripheralDevice: Badge, CC Reader, Display, Dock, Document Scanner, Fax, Hard-Drive, Monitor, Monitor 13 Inch, Monitor 15 Inch, Printer, Projector, Reader, Scanner, UPS, USB, Web Cam",
     "  ivnt_Infrastructure: Access Point, Barcode Scanner, Chassis, Database, Firewall, Generator, Hub, Management, Network MFD, Network Test, NIC Module, Phone, Printer, Projector, Rack, Router, SAN, Scanner, Security, Switch, Telephony, UPS, Video Conference",
     "  ivnt_GeneralAsset: BatchJob, Cart, Certificate, Cluster, Document, ESX, Headphones, Middleware, ProductivityApp, System, TV, VOIP",
+    "  Software: Application, Operating System, Security, Database, SaaS Subscription, Maintenance & Support",
+    "",
+    "IMPORTANT \u2014 Software identification: licenses, subscriptions, SaaS seats, CALs, software maintenance/support renewals, and electronically-delivered software are type Software \u2014 NOT ivnt_GeneralAsset. Telltale signs: the word license/subscription/renewal in the product name; SKU tokens like LIC, SUB, CAL, ESD, RNWL, E3, E5, -1Y, -3Y; Microsoft license part numbers (e.g. 9EM-00562, FQC-10529); Adobe TLP strings (e.g. 65297617BA01A12); per-user or per-device seat pricing. Subtype guidance: OS licenses \u2192 Operating System; security/AV/firewall subscriptions \u2192 Security; cloud/SaaS seats (GitHub, Monday.com, M365 E3/E5) \u2192 SaaS Subscription; support & maintenance renewals \u2192 Maintenance & Support; everything else \u2192 Application. Hardware that merely ships with bundled software is still hardware.",
     "",
     "Return ONLY a valid JSON object with ALL of these fields populated (no markdown, no explanation, no extra keys):",
     "{",
@@ -157,8 +164,13 @@ async function classifySku(sku: string, context: Record<string, string> | null):
     '  "type": "<one of the valid types listed above>",',
     '  "subtype": "<one of the valid subtypes for the chosen type>",',
     '  "description": "<1 sentence product description under 100 chars>",',
-    '  "model": "<exact model name/number — extract from CDW Product Name or Purchase Record Description above>"',
+    '  "model": "<exact model name/number — extract from CDW Product Name or Purchase Record Description above>",',
+    '  "sw_title": "<Software ONLY: canonical product title the SKU references, e.g. Windows, Acrobat, GitHub Enterprise. NOT the purchase description. Empty string for hardware.>",',
+    '  "sw_version": "<Software ONLY: version, e.g. 11, 2024, DC. Empty string if versionless (SaaS) or hardware.>",',
+    '  "sw_edition": "<Software ONLY: edition/tier, e.g. Pro, Standard, E3, Enterprise. Empty string if none or hardware.>"',
     "}",
+    "",
+    "Software product identity rules: a license/subscription SKU is an ENTITLEMENT that references a canonical software product. sw_title/sw_version/sw_edition identify that product. Example: SKU FQC-10529 (Windows 11 Pro - license) has sw_title Windows, sw_version 11, sw_edition Pro. Multiple SKUs may reference the same product.",
     "",
     "Fill every field to the best of your ability. Use an empty string only if a field truly cannot be determined.",
   ];
@@ -192,6 +204,9 @@ async function classifySku(sku: string, context: Record<string, string> | null):
     subtype:      parsed.subtype ?? "",
     description:  parsed.description ?? "",
     model:        parsed.model ?? "",
+    sw_title:     parsed.sw_title ?? "",
+    sw_version:   parsed.sw_version ?? "",
+    sw_edition:   parsed.sw_edition ?? "",
   };
 }
 
