@@ -114,6 +114,8 @@ function TaxonomyForm({
   initial,
   aiSuggestion,
   onSave,
+  onSaveOverride,
+  overrideLabel,
   onCancel,
   onSkip,
   onIgnore,
@@ -124,6 +126,8 @@ function TaxonomyForm({
   initial?: Partial<TaxonomyEntry>;
   aiSuggestion?: TaxonomySuggestion | null;
   onSave: (data: { manufacturer: string; type: string; subtype: string; description: string; model: string; sw_title: string; sw_version: string; sw_edition: string }) => void;
+  onSaveOverride?: (data: { manufacturer: string; type: string; subtype: string; description: string; model: string; sw_title: string; sw_version: string; sw_edition: string }) => void;
+  overrideLabel?: string;
   onCancel: () => void;
   onSkip?: () => void;
   onIgnore?: () => void;
@@ -499,6 +503,17 @@ function TaxonomyForm({
           className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-all disabled:opacity-50">
           {saving ? "Saving…" : previewing ? "Checking…" : (saveLabel ?? "Save & Resolve")}
         </button>
+        {onSaveOverride && (
+          <button
+            type="button"
+            onClick={() => onSaveOverride({ manufacturer, type, subtype, description, model, sw_title: swTitle, sw_version: swVersion, sw_edition: swEdition })}
+            disabled={saving || previewing || !type}
+            title="Apply this classification to this customer only (creates a pending override)"
+            className="px-3 py-1.5 rounded-lg bg-violet-500/15 hover:bg-violet-500/25 border border-violet-500/40 text-violet-300 text-sm font-medium transition-all disabled:opacity-50"
+          >
+            {overrideLabel ?? "Save as override"}
+          </button>
+        )}
         {onSkip && (
           <button type="button" onClick={onSkip}
             className="px-3 py-1.5 rounded-lg text-gray-500 hover:text-blue-400 hover:bg-gray-800 text-xs font-medium transition-all border border-gray-700">
@@ -831,6 +846,36 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
       showToast(e instanceof Error ? e.message : String(e), "err");
     } finally {
       setEditSaving(false);
+    }
+  }
+
+  // -- Classify an exception SKU as a per-customer override (pending) --
+  async function handleRunClassifyAsOverride(
+    sku: string,
+    data: { manufacturer: string; type: string; subtype: string; description: string; model: string; sw_title: string; sw_version: string; sw_edition: string },
+    customer_id: string | null,
+  ) {
+    if (!customer_id) return;
+    setRunClassifySaving(true);
+    try {
+      const res = await fetch("/api/sku-overrides", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customer_id,
+          manufacturer_sku: sku,
+          ...data,
+          reason: "Customer-specific classification from a run exception",
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "Override create failed");
+      setClassifyingSkuKey(null);
+      showToast("Saved as a pending customer override. Activate it in the Customer Overrides tab.", "ok");
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Override failed", "err");
+    } finally {
+      setRunClassifySaving(false);
     }
   }
 
@@ -1484,6 +1529,8 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                                           saveLabel="Save & Resolve"
                                           onCancel={() => setClassifyingSkuKey(null)}
                                           onSave={(data) => handleRunClassify(sku, data, run.customer_id)}
+                                          onSaveOverride={run.customer_id ? (data) => handleRunClassifyAsOverride(sku, data, run.customer_id) : undefined}
+                                          overrideLabel={run.customer_name ? `Save as ${run.customer_name} override` : "Save as customer override"}
                                           onSkip={() => { handleRunSkip(sku, run.customer_id); setClassifyingSkuKey(null); }}
                                           onIgnore={() => handleRunIgnore(sku, run.customer_id)}
                                         />

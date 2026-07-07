@@ -25,9 +25,15 @@ async function sendViaResend(opts: {
   if (!res.ok) throw new Error(`Resend ${res.status}: ${await res.text().catch(() => "")}`);
 }
 
-async function notifyAdmins(sku: string, seenCount: number) {
+async function notifyAdmins(sku: string, seenCount: number, customerId?: string | null) {
   try {
     const admin = createAdminClient();
+
+    let customerName: string | null = null;
+    if (customerId) {
+      const { data: cust } = await admin.from("customers").select("name").eq("id", customerId).limit(1);
+      customerName = cust?.[0]?.name ?? null;
+    }
 
     const { data: adminRoles } = await admin
       .from("user_roles")
@@ -50,6 +56,7 @@ async function notifyAdmins(sku: string, seenCount: number) {
       `An unrecognized manufacturer SKU was encountered during an import run and requires research.`,
       ``,
       `SKU:       ${sku}`,
+      ...(customerName ? [`Customer:  ${customerName}`] : []),
       `Seen:      ${seenCount} time(s)`,
       ``,
       `Please log in to Threads → Management → SKU Research to classify this SKU.`,
@@ -74,6 +81,7 @@ async function notifyAdmins(sku: string, seenCount: number) {
         <td style="padding:8px 12px;background:#f1f5f9;border-radius:6px 0 0 6px;font-weight:600;color:#64748b;width:80px">SKU</td>
         <td style="padding:8px 12px;background:#f8fafc;border-radius:0 6px 6px 0;font-family:monospace;color:#1e293b">${sku}</td>
       </tr>
+      ${customerName ? `<tr><td style="padding:8px 12px;background:#f1f5f9;border-radius:6px 0 0 6px;font-weight:600;color:#64748b">Customer</td><td style="padding:8px 12px;background:#f8fafc;border-radius:0 6px 6px 0;color:#1e293b">${customerName}</td></tr>` : ""}
       <tr>
         <td style="padding:8px 12px;background:#f1f5f9;border-radius:6px 0 0 6px;font-weight:600;color:#64748b">Seen</td>
         <td style="padding:8px 12px;background:#f8fafc;border-radius:0 6px 6px 0">${seenCount} time(s)</td>
@@ -230,7 +238,7 @@ export async function POST(req: NextRequest) {
 
     // 3. Email admins (fire-and-forget, only on first encounter or every 10 sightings)
     if (!existing || newSeenCount % 10 === 0) {
-      notifyAdmins(normalizedSku, newSeenCount).catch(() => {});
+      notifyAdmins(normalizedSku, newSeenCount, customer_id).catch(() => {});
     }
 
     return result(false, null, normalizedSku);
