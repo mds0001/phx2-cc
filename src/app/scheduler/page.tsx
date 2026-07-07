@@ -31,7 +31,10 @@ export default async function SchedulerPage() {
   // Fetch tasks scoped to active customer (or all if none selected).
   // System tasks are always included regardless of customer filter.
   let tasksQuery = supabase.from("scheduled_tasks").select("*").order("created_at", { ascending: false });
-  if (activeCustomerId) tasksQuery = tasksQuery.or(`customer_id.eq.${activeCustomerId},is_system.eq.true`);
+  // Scope to the active customer, but always include system tasks and any task
+  // this user created (a schedule_administrator must see their own tasks even
+  // when the task's customer_id differs from their assigned customer).
+  if (activeCustomerId) tasksQuery = tasksQuery.or(`customer_id.eq.${activeCustomerId},is_system.eq.true,created_by.eq.${user.id}`);
 
   const { data: tasks } = await tasksQuery;
 

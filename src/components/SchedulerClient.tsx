@@ -375,7 +375,7 @@ export default function SchedulerClient({
   // ── Fetch tasks ──────────────────────────────────────────
   const fetchTasks = useCallback(async () => {
     let q = supabase.from("scheduled_tasks").select("*").order("created_at", { ascending: false });
-    if (activeCustomerId) q = q.or(`customer_id.eq.${activeCustomerId},is_system.eq.true`);
+    if (activeCustomerId) q = q.or(`customer_id.eq.${activeCustomerId},is_system.eq.true,created_by.eq.${userId}`);
     const { data } = await q;
     if (data) {
       setTasks(data);
@@ -404,7 +404,7 @@ export default function SchedulerClient({
       }
       setTrackedCounts(recTally);
     }
-  }, [supabase, activeCustomerId]);
+  }, [supabase, activeCustomerId, userId]);
 
   // ── System template promote / demote / clone ──────────────
   async function handlePromote(id: string) {

@@ -9,7 +9,9 @@ export default async function AgentsPage() {
   if (!user) redirect("/login");
 
   const assignment = await getActiveRoleAssignment(user.id);
-  if (assignment?.role !== "administrator") redirect("/scheduler");
+  if (assignment?.role !== "administrator" && assignment?.role !== "schedule_administrator") {
+    redirect("/scheduler");
+  }
 
   // Fetch agents with their customer name
   const { data: agents } = await supabase

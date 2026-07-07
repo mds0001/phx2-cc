@@ -109,6 +109,7 @@ export default function GlobalShell() {
   const isAdmin   = activeRole?.role === "administrator";
   const isAuditor = activeRole?.role === "schedule_auditor";
   const isBasic   = activeRole?.role === "basic";
+  const isScheduleAdmin = activeRole?.role === "schedule_administrator";
 
   const hidden = HIDDEN_PATHS.some((p) => pathname?.startsWith(p));
 
@@ -288,16 +289,18 @@ export default function GlobalShell() {
           </div>
           )}
 
-          {/* ADMIN - admin only */}
-          {isAdmin && (
+          {/* ADMIN */}
+          {(isAdmin || isScheduleAdmin) && (
           <div className="flex flex-col gap-0.5">
             <SectionHeader label="Admin" />
+            {isAdmin && (
             <NavItem
               icon={<Users className="w-4 h-4" />}
               label="Users"
               href="/users"
               active={pathname?.startsWith("/users") === true}
             />
+            )}
             <NavItem
               icon={<Bot className="w-4 h-4" />}
               label="Agents"
