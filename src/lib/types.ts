@@ -569,6 +569,32 @@ export function applyMappingProfile(
 
 // Pipeline
 
+/** Per-customer override overlay on a global sku_taxonomy row. Sparse
+ *  classification fields (null = inherit); tri-state `ignore`; two-step
+ *  approval via `status` (pending -> active). Backs sku_taxonomy_overrides. */
+export interface SkuTaxonomyOverride {
+  id: string;
+  customer_id: string;
+  manufacturer_sku: string;
+  manufacturer: string | null;
+  type: string | null;
+  subtype: string | null;
+  description: string | null;
+  model: string | null;
+  sw_title: string | null;
+  sw_version: string | null;
+  sw_edition: string | null;
+  ignore: boolean | null;
+  status: "pending" | "active" | "disabled";
+  reason: string;
+  global_snapshot: Record<string, unknown> | null;
+  created_by: string | null;
+  activated_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+
 export type LeadStatus        = 'new' | 'contacted' | 'qualified' | 'disqualified';
 export type LeadSource        = 'website' | 'referral' | 'cold' | 'event' | 'other';
 export type OpportunityStatus = 'active' | 'won' | 'lost';

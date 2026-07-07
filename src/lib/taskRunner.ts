@@ -922,7 +922,7 @@ async function deriveSoftwareFields(
     try {
       // GET returns the full taxonomy entry without touching the research queue.
       const getRes = await fetch(
-        `${ctx.origin}/api/sku-lookup?sku=${encodeURIComponent(sku)}`,
+        `${ctx.origin}/api/sku-lookup?sku=${encodeURIComponent(sku)}${customerId ? `&customer_id=${encodeURIComponent(customerId)}` : ""}`,
         { headers: { ...vercelBypassHeaders() } }
       );
       const getJson = (await getRes.json()) as {

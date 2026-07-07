@@ -4,8 +4,8 @@ import type { SmtpConfig } from "@/lib/types";
 
 type ResultField = "type" | "subtype" | "description" | "model" | "manufacturer";
 
-function result(found: boolean, value: string | null, sku: string) {
-  return NextResponse.json({ found, value, sku });
+function result(found: boolean, value: string | null, sku: string, source?: "override" | "global" | null) {
+  return NextResponse.json({ found, value, sku, ...(source ? { source } : {}) });
 }
 
 /** Send via Resend HTTP API */
@@ -116,6 +116,42 @@ async function notifyAdmins(sku: string, seenCount: number) {
   }
 }
 
+const OVERRIDE_CLASS_FIELDS = [
+  "manufacturer", "type", "subtype", "description", "model",
+  "sw_title", "sw_version", "sw_edition",
+] as const;
+
+/** Merge an ACTIVE per-customer override over the global sku_taxonomy row:
+ *  sparse coalesce on classification fields, tri-state `ignore`. Returns the
+ *  merged row (null if neither exists) plus which source won. */
+async function resolveWithOverride(
+  admin: ReturnType<typeof createAdminClient>,
+  sku: string,
+  customerId: string | null | undefined,
+  globalRow: Record<string, unknown> | null
+): Promise<{ row: Record<string, unknown> | null; source: "override" | "global" | null }> {
+  let override: Record<string, unknown> | null = null;
+  if (customerId) {
+    const { data } = await admin
+      .from("sku_taxonomy_overrides")
+      .select("manufacturer, type, subtype, description, model, sw_title, sw_version, sw_edition, ignore")
+      .eq("customer_id", customerId)
+      .eq("manufacturer_sku", sku)
+      .eq("status", "active")
+      .limit(1);
+    override = data?.[0] ?? null;
+  }
+  if (!override && !globalRow) return { row: null, source: null };
+  if (!override) return { row: globalRow, source: "global" };
+  const merged: Record<string, unknown> = { ...(globalRow ?? {}) };
+  for (const f of OVERRIDE_CLASS_FIELDS) {
+    if (override[f] != null) merged[f] = override[f];
+  }
+  // tri-state ignore: override null => inherit global; else override wins.
+  merged.ignore = override.ignore != null ? override.ignore : (globalRow?.ignore ?? false);
+  return { row: merged, source: "override" };
+}
+
 export async function POST(req: NextRequest) {
   try {
     const { sku, result_field, customer_id, context } = (await req.json()) as {
@@ -134,20 +170,23 @@ export async function POST(req: NextRequest) {
     //    issues with special characters like '#' in SKU names.
     const { data: taxRows } = await admin
       .from("sku_taxonomy")
-      .select("type, subtype, description, model, manufacturer, ignore")
+      .select("type, subtype, description, model, manufacturer, sw_title, sw_version, sw_edition, ignore")
       .eq("manufacturer_sku", normalizedSku)
       .limit(1);
 
-    const taxonomy = taxRows?.[0] ?? null;
+    // Overlay an active per-customer override (sparse coalesce + tri-state ignore).
+    const { row: taxonomy, source } = await resolveWithOverride(
+      admin, normalizedSku, customer_id, (taxRows?.[0] ?? null) as Record<string, unknown> | null
+    );
 
     if (taxonomy) {
-      // Taxonomy-level ignore: skip this SKU permanently during imports
+      // Ignore (global or override): skip this SKU permanently during imports.
       if (taxonomy.ignore) {
-        return result(false, "__IGNORED__", normalizedSku);
+        return result(false, "__IGNORED__", normalizedSku, source);
       }
       const field = result_field ?? "type";
       const value = (taxonomy as Record<string, string | null>)[field] ?? null;
-      return result(true, value, normalizedSku);
+      return result(true, value, normalizedSku, source);
     }
 
     // 2. Not found in taxonomy — check queue status before queuing
@@ -205,14 +244,18 @@ export async function POST(req: NextRequest) {
 // GET: resolve a full taxonomy entry by SKU (used by research UI)
 export async function GET(req: NextRequest) {
   const sku = req.nextUrl.searchParams.get("sku");
+  const customerId = req.nextUrl.searchParams.get("customer_id");
   if (!sku) return NextResponse.json({ error: "sku required" }, { status: 400 });
 
   const admin = createAdminClient();
-  const { data } = await admin
+  const normalizedSku = sku.trim().toUpperCase();
+  const { data: globalRow } = await admin
     .from("sku_taxonomy")
     .select("*")
-    .eq("manufacturer_sku", sku.trim().toUpperCase())
-    .single();
+    .eq("manufacturer_sku", normalizedSku)
+    .limit(1)
+    .maybeSingle();
 
-  return NextResponse.json({ data: data ?? null });
+  const { row, source } = await resolveWithOverride(admin, normalizedSku, customerId, (globalRow ?? null) as Record<string, unknown> | null);
+  return NextResponse.json({ data: row ?? null, source });
 }
