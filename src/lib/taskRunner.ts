@@ -161,12 +161,20 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
     const sourceConn = sourceConnId ? run.source_connection_snap?.all?.[sourceConnId] : null;
     if (!sourceConn) throw new Error(`Source connection not in snapshot (${sourceConnId})`);
 
-    if (sourceConn.type === "insight") {
+    if (sourceConn.type === "insight" || sourceConn.type === "portal") {
       rows = await fetchInsightRows(task, sourceConnId!, ctx);
     } else if (sourceConn.type === "file") {
       rows = await fetchFileRows(task, sourceConn, admin);
+    } else if (sourceConn.type === "ivanti") {
+      // Source business object comes from the mapping profile that owns this source connection.
+      const srcMp = slots
+        .map((s) => (s.mapping_profile_id ? run.mapping_snapshots?.[s.mapping_profile_id] : null))
+        .find((m) => m?.source_connection_id === sourceConnId);
+      rows = await fetchIvantiRows(sourceConn, srcMp?.target_business_object ?? undefined, ctx);
+    } else if (sourceConn.type === "ivanti_neurons") {
+      rows = await fetchNeuronsRows(sourceConn, ctx);
     } else {
-      throw new Error(`Phase 3b runner supports insight + file sources; got "${sourceConn.type}"`);
+      throw new Error(`Runner supports file / insight / portal / ivanti / ivanti_neurons sources; got "${sourceConn.type}"`);
     }
     const path = `${run.id}.json`;
     const blob = new Blob([JSON.stringify(rows)], { type: "application/json" });
@@ -199,6 +207,19 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
   // ── Process loop: resume at (current_slot_idx, current_row_idx) ────────
   let slotIdx = run.current_slot_idx;
   let rowIdx = run.current_row_idx;
+
+  // -- File target: batch export (map all rows -> one file). No per-row
+  // Ivanti loop; skip straight to the shared completion below.
+  const exportSlot = slots[0];
+  const exportMp = exportSlot?.mapping_profile_id ? run.mapping_snapshots?.[exportSlot.mapping_profile_id] ?? null : null;
+  const exportTgtId = exportMp?.target_connection_id ?? exportSlot?.target_connection_id ?? task.target_connection_id ?? null;
+  const exportTgt = exportTgtId ? run.target_connection_snap?.all?.[exportTgtId] : null;
+  if (exportTgt?.type === "file" && exportMp) {
+    const written = await writeFileTarget(rows, exportMp, exportTgt, task, run, admin);
+    counters.processed = (counters.processed ?? 0) + written;
+    counters.created = (counters.created ?? 0) + written;
+    slotIdx = slots.length; // bypass per-row loop; fall through to completion
+  }
 
   while (slotIdx < slots.length) {
     const slot = slots[slotIdx];
@@ -1116,6 +1137,116 @@ async function fetchInsightRows(
     throw new Error(`Insight proxy failed (HTTP ${res.status}): ${text.slice(0, 300)}`);
   }
   const json = (await res.json()) as { rows: Record<string, unknown>[] };
+  return json.rows ?? [];
+}
+
+/** File target: apply the mapping profile to every row and write one
+ *  xlsx/csv/json file to the task_files storage bucket. Returns row count. */
+async function writeFileTarget(
+  rows: Record<string, unknown>[],
+  mp: MappingProfile,
+  targetConn: EndpointConnection,
+  task: ScheduledTask,
+  run: ClaimedRun,
+  admin: SupabaseClient
+): Promise<number> {
+  const filtered = mp.filter_expression
+    ? rows.filter((r) => evaluateFilter(r, mp.filter_expression!).pass)
+    : rows;
+  const mapped = filtered.map((r) => applyMappingProfile(r, mp, {}));
+
+  const cfg = targetConn.config as unknown as {
+    file_type?: string; file_mode?: string; file_path?: string; output_file_name?: string;
+  };
+  const fileType = (cfg.file_type ?? "xlsx").toLowerCase();
+  const fileMode = cfg.file_mode ?? "directory";
+  const dirPath = cfg.file_path
+    ? (cfg.file_path.endsWith("/") ? cfg.file_path : cfg.file_path + "/")
+    : `exports/${task.id}/`;
+  const stamp = new Date(run.started_at ?? Date.now()).toISOString().replace(/[:T]/g, "-").slice(0, 19);
+  const base = (mp.target_business_object ?? "export").replace(/[^a-zA-Z0-9_]/g, "_");
+  const stripExt = (n: string) => (n.includes(".") ? n.slice(0, n.lastIndexOf(".")) : n);
+  const withExt = (n: string) => `${stripExt(n)}.${fileType}`;
+  const autoName = `${base}_${stamp}_${run.id.slice(0, 6)}.${fileType}`;
+  const fileName = fileMode === "file" && cfg.file_path
+    ? withExt(cfg.file_path.split("/").pop() ?? autoName)
+    : cfg.output_file_name?.trim() ? withExt(cfg.output_file_name.trim()) : autoName;
+  const storagePath = fileMode === "file" && cfg.file_path ? cfg.file_path : `${dirPath}${fileName}`;
+
+  const XLSX = await import("xlsx");
+  let blob: Blob;
+  if (fileType === "json") {
+    blob = new Blob([JSON.stringify(mapped, null, 2)], { type: "application/json" });
+  } else if (fileType === "csv") {
+    const ws = XLSX.utils.json_to_sheet(mapped);
+    blob = new Blob([XLSX.utils.sheet_to_csv(ws)], { type: "text/csv" });
+  } else {
+    const ws = XLSX.utils.json_to_sheet(mapped);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Export");
+    const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" }) as unknown as ArrayBuffer;
+    blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  }
+
+  const { error: upErr } = await admin.storage.from("task_files").upload(storagePath, blob, { upsert: true });
+  if (upErr) throw new Error(`Failed to upload export file: ${upErr.message}`);
+  const { data: signed } = await admin.storage.from("task_files").createSignedUrl(storagePath, 86400);
+  const dl = signed?.signedUrl ? ` - Download: ${signed.signedUrl}` : "";
+  await admin.from("task_logs").insert({
+    task_id: run.task_id,
+    action: "SUCCESS",
+    details: `Export complete - ${mapped.length} record(s) written to "${fileName}" [${fileType.toUpperCase()}]${dl}`,
+  });
+  return mapped.length;
+}
+
+/** Ivanti (REST/OData) source: read all records of the mapping profile business object. */
+async function fetchIvantiRows(
+  sourceConn: EndpointConnection,
+  businessObject: string | undefined,
+  ctx: RunCtx
+): Promise<Record<string, unknown>[]> {
+  const cfg = sourceConn.config as unknown as { url?: string; api_key?: string; tenant_id?: string };
+  const res = await fetch(`${ctx.origin}/api/ivanti-proxy`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...vercelBypassHeaders() },
+    body: JSON.stringify({
+      ivantiUrl: cfg.url,
+      apiKey: cfg.api_key,
+      businessObject,
+      tenantId: cfg.tenant_id,
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Ivanti source read failed (HTTP ${res.status}): ${text.slice(0, 300)}`);
+  }
+  const json = (await res.json()) as { rows?: Record<string, unknown>[] };
+  return json.rows ?? [];
+}
+
+/** Ivanti Neurons inventory source: read the configured dataset via the neurons proxy. */
+async function fetchNeuronsRows(
+  sourceConn: EndpointConnection,
+  ctx: RunCtx
+): Promise<Record<string, unknown>[]> {
+  const cfg = sourceConn.config as unknown as { auth_url?: string; client_id?: string; client_secret?: string; base_url?: string; dataset?: string };
+  const res = await fetch(`${ctx.origin}/api/ivanti-neurons-proxy`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...vercelBypassHeaders() },
+    body: JSON.stringify({
+      authUrl: cfg.auth_url,
+      clientId: cfg.client_id,
+      clientSecret: cfg.client_secret,
+      baseUrl: cfg.base_url,
+      dataset: cfg.dataset ?? "devices",
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Ivanti Neurons source read failed (HTTP ${res.status}): ${text.slice(0, 300)}`);
+  }
+  const json = (await res.json()) as { rows?: Record<string, unknown>[] };
   return json.rows ?? [];
 }
 
