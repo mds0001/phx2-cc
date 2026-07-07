@@ -3096,10 +3096,20 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                   });
                   if (!hasInsightSteps && !anyInsightSource) return null;
 
+                  const SW_CATEGORY_CODES: { code: string; label: string }[] = [
+                    { code: "GA", label: "Operating Systems" },
+                    { code: "GB", label: "Applications" },
+                    { code: "GC", label: "Support" },
+                    { code: "ZF", label: "Warranty (electronic)" },
+                    { code: "ZU", label: "Warranty (complex)" },
+                  ];
                   const RECORD_TYPES: { value: InsightRecordType; label: string; dot: string }[] = [
                     { value: "purchase_line_item", label: "Purchase Line Item", dot: "bg-emerald-400" },
                     { value: "purchase_order",     label: "Purchase Order",     dot: "bg-cyan-400"    },
                     { value: "ci",                 label: "CI (Asset)",         dot: "bg-violet-400"  },
+                    { value: "software_product",   label: "Software Product",   dot: "bg-amber-400"   },
+                    { value: "contract",           label: "Contract",           dot: "bg-orange-400"  },
+                    { value: "contract_line_item", label: "Contract Line Item", dot: "bg-rose-400"    },
                   ];
 
                   return (
@@ -3236,6 +3246,31 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                                         </option>
                                       ))}
                                   </select>
+                                  <div className="md:col-span-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] leading-tight pt-1">
+                                    <span className="text-gray-500 uppercase tracking-wider font-semibold">Category gate</span>
+                                    <span className="text-gray-500">Only</span>
+                                    {SW_CATEGORY_CODES.map(({ code, label }) => {
+                                      const on = (step.category_codes ?? []).includes(code);
+                                      return (
+                                        <button key={"inc-" + code} type="button" title={label}
+                                          onClick={() => setEditForm((p) => ({ ...p, insightSteps: p.insightSteps.map((s) => s.record_type === rtype ? { ...s, category_codes: on ? (s.category_codes ?? []).filter((c) => c !== code) : [...(s.category_codes ?? []), code] } : s) }))}
+                                          className={"px-1.5 py-0.5 rounded font-mono border transition-colors " + (on ? "bg-indigo-500/20 border-indigo-500/40 text-indigo-300" : "border-gray-700 text-gray-500 hover:text-gray-300")}>
+                                          {code}
+                                        </button>
+                                      );
+                                    })}
+                                    <span className="text-gray-500 ml-1">Except</span>
+                                    {SW_CATEGORY_CODES.map(({ code, label }) => {
+                                      const on = (step.exclude_category_codes ?? []).includes(code);
+                                      return (
+                                        <button key={"exc-" + code} type="button" title={label}
+                                          onClick={() => setEditForm((p) => ({ ...p, insightSteps: p.insightSteps.map((s) => s.record_type === rtype ? { ...s, exclude_category_codes: on ? (s.exclude_category_codes ?? []).filter((c) => c !== code) : [...(s.exclude_category_codes ?? []), code] } : s) }))}
+                                          className={"px-1.5 py-0.5 rounded font-mono border transition-colors " + (on ? "bg-rose-500/20 border-rose-500/40 text-rose-300" : "border-gray-700 text-gray-500 hover:text-gray-300")}>
+                                          {code}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
                                 </div>
                               )}
                             </div>
