@@ -17,7 +17,7 @@ async function fetchAllTaxonomy(admin: ReturnType<typeof createAdminClient>) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { data, error } = await (admin as any)
       .from("sku_taxonomy")
-      .select("id, manufacturer_sku, manufacturer, type, subtype, description, model, ignore, updated_at")
+      .select("id, manufacturer_sku, manufacturer, type, subtype, description, model, sw_title, sw_version, sw_edition, ignore, updated_at")
       .order("manufacturer_sku")
       .range(page * pageSize, (page + 1) * pageSize - 1);
 
@@ -75,6 +75,7 @@ export default async function SkuResearchPage() {
       runs={(runsResult.data ?? []) as Parameters<typeof SkuResearchClient>[0]["runs"]}
       customers={customers ?? []}
       activeCustomerId={activeCustomerId}
+      userRole={role ?? null}
     />
   );
 }

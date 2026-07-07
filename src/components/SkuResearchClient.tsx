@@ -6,6 +6,7 @@ import {
   Package, Clock, Eye, RotateCcw, Tag, Database, Pencil, Trash2, Sparkles, Loader2, Ban,
 } from "lucide-react";
 import CustomerSwitcher, { type CustomerOption } from "@/components/CustomerSwitcher";
+import SkuOverridesPanel from "@/components/SkuOverridesPanel";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -78,6 +79,7 @@ interface Props {
   runs: SkuRunException[];
   customers?: CustomerOption[];
   activeCustomerId?: string | null;
+  userRole?: string | null;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -520,11 +522,17 @@ function TaxonomyForm({
 
 // ── Main Component ─────────────────────────────────────────────────────────
 
-export default function SkuResearchClient({ queue: initialQueue, taxonomy: initialTaxonomy, runs: initialRuns, customers = [], activeCustomerId = null }: Props) {
+export default function SkuResearchClient({ queue: initialQueue, taxonomy: initialTaxonomy, runs: initialRuns, customers = [], activeCustomerId = null, userRole = null }: Props) {
   const [queue,    setQueue]    = useState<QueueItem[]>(initialQueue);
   const [taxonomy, setTaxonomy] = useState<TaxonomyEntry[]>(initialTaxonomy);
   const [runs,     setRuns]     = useState<SkuRunException[]>(initialRuns);
-  const [tab,      setTab]      = useState<"runs" | "taxonomy">("runs");
+  const [tab,      setTab]      = useState<"runs" | "taxonomy" | "overrides">("runs");
+  const isAdmin = userRole === "administrator";
+  const globalBySku = useMemo(() => {
+    const m: Record<string, Record<string, unknown>> = {};
+    for (const t of taxonomy) m[t.manufacturer_sku] = t as unknown as Record<string, unknown>;
+    return m;
+  }, [taxonomy]);
   const [expandedRunIds,     setExpandedRunIds]     = useState<Set<string>>(new Set());
   const [classifyingSkuKey,  setClassifyingSkuKey]  = useState<string | null>(null); // "<runId>:<sku>"
   const [runClassifySaving,  setRunClassifySaving]  = useState(false);
@@ -670,7 +678,7 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
       });
       setQueue((prev) => prev.map((q) => q.id === item.id ? { ...q, status: "skipped" } : q));
       showToast(`SKU ${item.manufacturer_sku} skipped`);
-    } catch { showToast("Failed to skip SKU", true); }
+    } catch { showToast("Failed to skip SKU", "err"); }
   }
 
   // ── Ignore (permanent) ────────────────────────────────────────────────────
@@ -1220,7 +1228,7 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
 
         {/* Tabs */}
         <div className="flex gap-1 mt-5">
-          {(["runs", "taxonomy"] as const).map((t) => (
+          {(["runs", "taxonomy", "overrides"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -1231,7 +1239,8 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
               }`}
             >
               {t === "runs" ? `Tasks with Exceptions (${runs.filter(r => !r.archived).length})`
-               : `Taxonomy (${taxonomy.length})`}
+               : t === "taxonomy" ? `Taxonomy (${taxonomy.length})`
+               : "Customer Overrides"}
             </button>
           ))}
         </div>
@@ -1684,6 +1693,17 @@ export default function SkuResearchClient({ queue: initialQueue, taxonomy: initi
                 </table>
               </div>
             )}
+          </div>
+        )}
+
+        {tab === "overrides" && (
+          <div className="h-full overflow-y-auto">
+            <SkuOverridesPanel
+              customers={customers}
+              activeCustomerId={activeCustomerId}
+              isAdmin={isAdmin}
+              globalBySku={globalBySku}
+            />
           </div>
         )}
       </div>
