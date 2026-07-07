@@ -307,6 +307,14 @@ export default function GlobalShell() {
               href="/agents"
               active={pathname?.startsWith("/agents") === true}
             />
+            {isScheduleAdmin && (
+            <NavItem
+              icon={<Tag className="w-4 h-4" />}
+              label="SKU Research"
+              href="/boh/sku-research"
+              active={pathname?.startsWith("/boh/sku-research") === true}
+            />
+            )}
           </div>
           )}
 
