@@ -362,6 +362,20 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
       let effRow = row;
       if (slot.record_type && SOFTWARE_STEP_TYPES.has(slot.record_type)) {
         effRow = await deriveSoftwareFields(row, swTaxonomyCache, task.customer_id ?? null, ctx);
+        // Taxonomy ignore: SKU marked ignore=true. Drop the line silently
+        // (no exception, no product). The software gate would otherwise hold
+        // it forever, since ignored SKUs carry no sw_title.
+        if (String(effRow["_sw_ignored"] ?? "")) {
+          counters.software_ignored = (counters.software_ignored ?? 0) + 1;
+          await admin.from("task_logs").insert({
+            task_id: run.task_id,
+            action: "SKIP",
+            details: `[S${slotIdx + 1}] Row ${rowIdx + 1}: SKU "${String(effRow["manufacturerPartNumber"] ?? "").trim().toUpperCase()}" marked ignored - software line skipped`,
+          });
+          rowIdx++;
+          await persistProgress(admin, run.id, slotIdx, rowIdx, counters, exceptions);
+          continue;
+        }
         // Research gate: SKU not yet researched — hold the line, record the
         // SKU exception so it appears in Tasks-with-Exceptions and the rerun
         // flow imports it once the engineer classifies the SKU.
@@ -853,6 +867,7 @@ interface SwTaxonomyInfo {
   sw_title: string;
   sw_version: string;
   sw_edition: string;
+  ignore: boolean;
   found: boolean;
 }
 
@@ -882,7 +897,7 @@ async function deriveSoftwareFields(
 
   let tax = sku ? cache.get(sku) : undefined;
   if (sku && tax === undefined) {
-    tax = { model: "", manufacturer: "", description: "", sw_title: "", sw_version: "", sw_edition: "", found: false };
+    tax = { model: "", manufacturer: "", description: "", sw_title: "", sw_version: "", sw_edition: "", found: false, ignore: false };
     try {
       // GET returns the full taxonomy entry without touching the research queue.
       const getRes = await fetch(
@@ -897,6 +912,7 @@ async function deriveSoftwareFields(
           sw_title?: string | null;
           sw_version?: string | null;
           sw_edition?: string | null;
+          ignore?: boolean | null;
         } | null;
       };
       if (getJson.data) {
@@ -907,6 +923,7 @@ async function deriveSoftwareFields(
           sw_title: getJson.data.sw_title?.trim() ?? "",
           sw_version: getJson.data.sw_version?.trim() ?? "",
           sw_edition: getJson.data.sw_edition?.trim() ?? "",
+          ignore: !!getJson.data.ignore,
           found: true,
         };
       } else {
@@ -965,6 +982,7 @@ async function deriveSoftwareFields(
   return {
     ...row,
     _sw_ready: ready ? "1" : "",
+    _sw_ignored: tax?.ignore ? "1" : "",
     _sw_quantity: qtyInt,
     _sw_product_name: productName,
     _sw_title: (tax?.sw_title ?? "").trim(),
