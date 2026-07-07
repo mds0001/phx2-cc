@@ -2207,7 +2207,7 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                                       const lnkMatch = bodyText.match(/— (Download|Details): (https?:\/\/\S+)/);
                                       const renderedBody = lnkMatch ? (() => {
                                         const fullMarker = lnkMatch[0];
-                                        const label = lnkMatch[1] === "Download" ? "Download" : "View Record";
+                                        const label = lnkMatch[1] === "Download" ? (decodeURIComponent(lnkMatch[2].split("?")[0].split("/").pop() ?? "Download")) : "View Record";
                                         const url = lnkMatch[2];
                                         const before = bodyText.slice(0, bodyText.indexOf(fullMarker));
                                         return <>{before}<a href={url} target="_blank" rel="noopener noreferrer" className="underline text-indigo-400 hover:text-indigo-300">{label}</a></>;

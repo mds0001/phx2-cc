@@ -1191,11 +1191,11 @@ async function writeFileTarget(
   const { error: upErr } = await admin.storage.from("task_files").upload(storagePath, blob, { upsert: true });
   if (upErr) throw new Error(`Failed to upload export file: ${upErr.message}`);
   const { data: signed } = await admin.storage.from("task_files").createSignedUrl(storagePath, 86400);
-  const dl = signed?.signedUrl ? ` - Download: ${signed.signedUrl}` : "";
+  const dl = signed?.signedUrl ? ` — Download: ${signed.signedUrl}` : "";
   await admin.from("task_logs").insert({
     task_id: run.task_id,
     action: "SUCCESS",
-    details: `Export complete - ${mapped.length} record(s) written to "${fileName}" [${fileType.toUpperCase()}]${dl}`,
+    details: `Export complete — ${mapped.length} record(s) [${fileType.toUpperCase()}]${dl}`,
   });
   return mapped.length;
 }
