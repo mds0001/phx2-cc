@@ -1893,7 +1893,7 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                                 Edit
                               </button>
 
-                              {isAdmin && (() => {
+                              {(() => {
                                 const sr = serverRuns[task.id];
                                 const liveStatus =
                                   sr && (sr.status === "pending" || sr.status === "running" || sr.status === "cancelling")
