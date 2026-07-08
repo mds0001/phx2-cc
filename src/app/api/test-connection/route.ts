@@ -395,10 +395,40 @@ export async function POST(request: NextRequest) {
       // ── Ivanti Neurons Inventory API ─────────────────────────
       case "ivanti_neurons": {
         const { auth_url, client_id, client_secret, base_url, dataset } = config;
+        if ((auth_url ?? "").trim().toLowerCase() === "demo" || (base_url ?? "").trim().toLowerCase() === "demo") {
+          return result(true, "Demo mode — simulated fleet with usage metering, no Neurons calls. Devices & software come from the built-in fixture.");
+        }
         if (!auth_url)      return result(false, "No Auth URL configured");
         if (!client_id)     return result(false, "No Client ID configured");
         if (!client_secret) return result(false, "No Client Secret configured");
         if (!base_url)      return result(false, "No Base URL configured");
+
+        // Preferred: documented Data Services flow (landscape host + X-headers).
+        try {
+          const dsu = new URL(auth_url);
+          const dsTenant = dsu.pathname.split("/").filter(Boolean)[0] ?? "";
+          if (dsTenant) {
+            const dsBase = `${dsu.origin}/api/apigatewaydataservices/v1`;
+            const dsTokRes = await fetch(`${dsBase}/token`, {
+              headers: { "X-ClientId": client_id, "X-ClientSecret": client_secret, "X-TenantId": dsTenant, Accept: "application/json" },
+              signal: AbortSignal.timeout(15_000),
+            });
+            const rawTok = (await dsTokRes.text().catch(() => "")).trim().replace(/^"|"$/g, "");
+            if (dsTokRes.ok && rawTok && !rawTok.startsWith("<")) {
+              const dsToken = rawTok.startsWith("{") ? ((JSON.parse(rawTok) as { access_token?: string }).access_token ?? "") : rawTok;
+              const dsDs = dataset || "devices";
+              const dsInv = await fetch(`${dsBase}/${dsDs}?$top=1`, {
+                headers: { Authorization: `Bearer ${dsToken}`, Accept: "application/json" },
+                signal: AbortSignal.timeout(15_000),
+              });
+              if (dsInv.ok && (dsInv.headers.get("content-type") ?? "").includes("json")) {
+                const dsData = await dsInv.json().catch(() => ({})) as { value?: unknown[]; "@odata.count"?: number };
+                const dsCount = dsData["@odata.count"] ?? (Array.isArray(dsData.value) ? dsData.value.length : "?");
+                return result(true, `Connected (Data Services) — ${dsCount} ${dsDs} record(s) found`);
+              }
+            }
+          }
+        } catch { /* fall through to the legacy OIDC flow below */ }
 
         // Step 1: obtain token
         const tokenBody = new URLSearchParams({

@@ -358,11 +358,14 @@ export interface IvantiConfig {
 }
 
 export interface IvantiNeuronsConfig {
-  auth_url: string;       // e.g. https://<tenant>.ivanticloud.com/<tenant-id>/connect/token
+  auth_url: string;       // e.g. https://<tenant>.ivanticloud.com/<tenant-id>/connect/token — or "demo" for the built-in fleet
   client_id: string;      // OAuth2 App Registration Client ID
   client_secret: string;  // OAuth2 App Registration Client Secret
   base_url: string;       // e.g. https://<tenant>.ivanticloud.com/api/apigatewaydataservices/v1
   dataset: string;        // "devices" | "people"
+  /** "true" = run discovery software inventory through normalization and emit
+   *  the Installed/Licensable software fields (devices dataset only). */
+  include_software?: string;
 }
 
 export interface DellConfig {

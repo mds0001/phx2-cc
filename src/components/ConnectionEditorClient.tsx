@@ -981,7 +981,7 @@ function IvantiNeuronsForm({ config, onChange }: { config: Record<string, string
           placeholder="https://<tenant>.ivanticloud.com/<tenant-id>/connect/token"
           type="url"
         />
-        <p className="text-xs text-gray-500 mt-1">Token endpoint copied from your App Registration in the Neurons console</p>
+        <p className="text-xs text-gray-500 mt-1">Token endpoint copied from your App Registration in the Neurons console — or type <span className="font-mono text-indigo-400">demo</span> to use the built-in simulated fleet (no credentials needed)</p>
       </Field>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1032,6 +1032,18 @@ function IvantiNeuronsForm({ config, onChange }: { config: Record<string, string
           <span className="font-mono">/devices</span> — reconciled hardware endpoints &nbsp;|&nbsp;
           <span className="font-mono">/people</span> — user inventory
         </p>
+      </Field>
+
+      <Field label="Detected Software">
+        <select
+          value={config.include_software ?? "false"}
+          onChange={(e) => onChange("include_software", e.target.value)}
+          className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+        >
+          <option value="false">Devices only (skip software inventory)</option>
+          <option value="true">Resolve discovery software &amp; usage metering (devices dataset)</option>
+        </select>
+        <p className="text-xs text-gray-500 mt-1">Unrecognized software strings are sent to Software Research; resolved products hydrate the Installed &amp; Licensable Software tabs with Last Used / Launch Count / Minutes Used</p>
       </Field>
     </>
   );

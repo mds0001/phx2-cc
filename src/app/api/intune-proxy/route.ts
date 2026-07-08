@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
 import { DEMO_DEVICES, DEMO_TENANT } from "@/lib/intuneDemoFleet";
+import {
+  loadKnowledge, resolveDeviceApps, attachSoftwareFields, UnknownCollector,
+  type Knowledge, type RawApp,
+} from "@/lib/softwareNormalization";
 
 /**
  * Intune proxy — reads managed devices (and optionally their detected apps)
@@ -46,24 +50,6 @@ interface DetectedApp {
   displayName?: string;
   version?: string;
   publisher?: string;
-}
-
-interface CatalogRow {
-  id: string;
-  manufacturer: string;
-  title: string;
-  version: string | null;
-  edition: string | null;
-  licensable: boolean;
-}
-
-interface SignatureRow {
-  id: string;
-  publisher: string | null;
-  name_pattern: string;
-  version_pattern: string | null;
-  verdict: "product" | "component_of" | "noise";
-  catalog_id: string | null;
 }
 
 async function getGraphToken(tenantId: string, clientId: string, clientSecret: string): Promise<string> {
@@ -126,84 +112,8 @@ async function graphGetAll(url: string, token: string, cap: number): Promise<Rec
   return out;
 }
 
-const norm = (s: unknown): string => (typeof s === "string" ? s.trim().toLowerCase() : "");
-
-/** Convert a SQL LIKE pattern (%, _) to an anchored case-insensitive RegExp. */
-function likeToRegex(pattern: string): RegExp {
-  const escaped = pattern
-    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    .replace(/%/g, ".*")
-    .replace(/_/g, ".");
-  return new RegExp(`^${escaped}$`, "i");
-}
-
-interface CompiledSignature {
-  sig: SignatureRow;
-  nameRe: RegExp;
-  versionRe: RegExp | null;
-}
-
-function compileSignatures(sigs: SignatureRow[]): CompiledSignature[] {
-  const compiled: CompiledSignature[] = [];
-  for (const sig of sigs) {
-    try {
-      compiled.push({
-        sig,
-        nameRe: likeToRegex(sig.name_pattern),
-        versionRe: sig.version_pattern ? likeToRegex(sig.version_pattern) : null,
-      });
-    } catch {
-      // A malformed pattern must never break a read — skip it.
-    }
-  }
-  // Specific publisher before any-publisher, longer (more specific) name patterns first.
-  compiled.sort((a, b) => {
-    const pubA = a.sig.publisher ? 0 : 1;
-    const pubB = b.sig.publisher ? 0 : 1;
-    if (pubA !== pubB) return pubA - pubB;
-    return b.sig.name_pattern.length - a.sig.name_pattern.length;
-  });
-  return compiled;
-}
-
-function matchSignature(
-  compiled: CompiledSignature[],
-  publisher: string,
-  name: string,
-  version: string
-): SignatureRow | null {
-  for (const c of compiled) {
-    if (c.sig.publisher && norm(c.sig.publisher) !== norm(publisher)) continue;
-    if (!c.nameRe.test(name)) continue;
-    if (c.versionRe && !c.versionRe.test(version)) continue;
-    return c.sig;
-  }
-  return null;
-}
-
-function catalogFullName(c: CatalogRow): string {
-  // Skip the manufacturer when the title already leads with it
-  // ("Zoom" + "Zoom Workplace" -> "Zoom Workplace", not "Zoom Zoom Workplace").
-  const mfrFirst = (c.manufacturer ?? "").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
-  const titleFirst = (c.title ?? "").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
-  const parts = mfrFirst && mfrFirst === titleFirst
-    ? [c.title, c.version, c.edition]
-    : [c.manufacturer, c.title, c.version, c.edition];
-  return parts.filter(Boolean).join(" ");
-}
-
 const bytesToGB = (b: unknown): number | null =>
   typeof b === "number" && b > 0 ? Math.round(b / 1024 ** 3) : null;
-
-/** Track a raw app string no signature matched, for the research queue. */
-interface UnknownApp {
-  publisher: string;
-  name: string;
-  sample_version: string;
-  seen_count: number;
-  devices: Set<string>;
-  co_installed_sample: string[];
-}
 
 // ── PUT: source read — one row per managed device ─────────────────────────
 export async function PUT(req: NextRequest) {
@@ -244,23 +154,12 @@ export async function PUT(req: NextRequest) {
           maxDevices
         )) as GraphDevice[]);
 
-    // Knowledge layer: active signatures + the catalog rows they point at.
-    let compiled: CompiledSignature[] = [];
-    const catalogById = new Map<string, CatalogRow>();
+    // Knowledge layer: active signatures + catalog (shared engine).
     const admin = createAdminClient();
-    if (includeSoftware) {
-      const [sigRes, catRes] = await Promise.all([
-        admin.from("software_signatures")
-          .select("id, publisher, name_pattern, version_pattern, verdict, catalog_id")
-          .eq("status", "active"),
-        admin.from("software_catalog")
-          .select("id, manufacturer, title, version, edition, licensable"),
-      ]);
-      compiled = compileSignatures((sigRes.data ?? []) as SignatureRow[]);
-      for (const c of (catRes.data ?? []) as CatalogRow[]) catalogById.set(c.id, c);
-    }
-
-    const unknowns = new Map<string, UnknownApp>();
+    const knowledge: Knowledge = includeSoftware
+      ? await loadKnowledge(admin)
+      : { compiled: [], catalogById: new Map() };
+    const unknowns = new UnknownCollector();
 
     // Fetch detected apps per device with a small worker pool (Graph rejects
     // $expand=detectedApps on the collection; only the single-device GET works).
@@ -312,100 +211,20 @@ export async function PUT(req: NextRequest) {
       if (!includeSoftware) return row;
 
       const apps = d.id ? appsByDevice.get(d.id) ?? [] : [];
-      const appNames = apps.map((a) => a.displayName ?? "").filter(Boolean);
-      // catalog product -> first-seen raw installed version (from a direct product match)
-      const products = new Map<string, { cat: CatalogRow; rawVersion: string }>();
-
-      for (const app of apps) {
-        const name = (app.displayName ?? "").trim();
-        if (!name) continue;
-        const publisher = (app.publisher ?? "").trim();
-        const version = (app.version ?? "").trim();
-        const sig = matchSignature(compiled, publisher, name, version);
-
-        if (sig) {
-          if (sig.verdict === "noise" || !sig.catalog_id) continue;
-          const cat = catalogById.get(sig.catalog_id);
-          if (cat) {
-            const existing = products.get(cat.id);
-            if (!existing) products.set(cat.id, { cat, rawVersion: sig.verdict === "product" ? version : "" });
-            else if (!existing.rawVersion && sig.verdict === "product") existing.rawVersion = version;
-          }
-          continue;
-        }
-
-        // Unmatched — collect for the research queue.
-        const rawKey = `${norm(publisher)}||${norm(name)}`;
-        let u = unknowns.get(rawKey);
-        if (!u) {
-          u = {
-            publisher,
-            name,
-            sample_version: version,
-            seen_count: 0,
-            devices: new Set(),
-            // Co-installed apps from the first device that surfaced this string —
-            // fingerprint context for later AI research (components travel in packs).
-            co_installed_sample: appNames.filter((n) => n !== name).slice(0, 10),
-          };
-          unknowns.set(rawKey, u);
-        }
-        u.seen_count++;
-        if (d.id) u.devices.add(d.id);
-      }
-
-      const entries = [...products.values()];
-      const licNames = entries.filter((e) => e.cat.licensable).map((e) => catalogFullName(e.cat)).sort();
-      row.LicensableSoftware = licNames.join("; ");
-      row.LicensableSoftwareCount = licNames.length;
-      row.DetectedAppCount = apps.length;
-      // Raw evidence + resolved products for the hydration step / audit.
-      row._detected_apps = apps.map((a) => ({
-        name: a.displayName ?? "",
-        publisher: a.publisher ?? "",
-        version: a.version ?? "",
+      const rawApps: RawApp[] = apps.map((a) => ({
+        name: (a.displayName ?? "").trim(),
+        publisher: (a.publisher ?? "").trim(),
+        version: (a.version ?? "").trim(),
       }));
-      // All resolved products (free ones included) — Installed Software hydration.
-      row._installed_products = entries.map((e) => ({
-        manufacturer: e.cat.manufacturer,
-        title: e.cat.title,
-        version: e.cat.version,
-        edition: e.cat.edition,
-        full_name: catalogFullName(e.cat),
-        licensable: e.cat.licensable,
-        raw_version: e.rawVersion,
-      }));
-      // Licensable subset — software product CI creation + Licensable Software tab.
-      row._licensable_products = entries.filter((e) => e.cat.licensable).map((e) => ({
-        manufacturer: e.cat.manufacturer,
-        title: e.cat.title,
-        version: e.cat.version,
-        edition: e.cat.edition,
-        full_name: catalogFullName(e.cat),
-        licensable: true,
-        raw_version: e.rawVersion,
-      }));
+      const resolved = resolveDeviceApps(rawApps, knowledge, unknowns, d.id ?? "");
+      attachSoftwareFields(row, resolved, rawApps.length);
+      // Raw evidence for the hydration step / audit.
+      row._detected_apps = rawApps;
       return row;
     });
 
     // Record unmatched strings in the research queue (never fail the read over it).
-    let queued = 0;
-    if (includeSoftware && unknowns.size > 0) {
-      const items = [...unknowns.entries()].map(([raw_key, u]) => ({
-        raw_key,
-        publisher: u.publisher,
-        name: u.name,
-        sample_version: u.sample_version,
-        seen_count: u.seen_count,
-        device_count: u.devices.size,
-        customer_id: customerId ?? "",
-        context: { co_installed_sample: u.co_installed_sample },
-      }));
-      const { error: bumpErr } = await admin.rpc("software_queue_bump", { items });
-      if (bumpErr) console.error("[intune-proxy] queue bump failed:", bumpErr.message);
-      else queued = items.length;
-    }
-
+    const queued = includeSoftware ? await unknowns.bump(admin, customerId ?? null) : 0;
     return NextResponse.json({
       rows,
       meta: {

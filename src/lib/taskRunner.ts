@@ -172,7 +172,7 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
         .find((m) => m?.source_connection_id === sourceConnId);
       rows = await fetchIvantiRows(sourceConn, srcMp?.target_business_object ?? undefined, ctx);
     } else if (sourceConn.type === "ivanti_neurons") {
-      rows = await fetchNeuronsRows(sourceConn, ctx);
+      rows = await fetchNeuronsRows(task, sourceConn, ctx);
     } else if (sourceConn.type === "intune") {
       rows = await fetchIntuneRows(task, sourceConn, ctx);
     } else {
@@ -1244,10 +1244,11 @@ async function fetchIvantiRows(
 
 /** Ivanti Neurons inventory source: read the configured dataset via the neurons proxy. */
 async function fetchNeuronsRows(
+  task: ScheduledTask,
   sourceConn: EndpointConnection,
   ctx: RunCtx
 ): Promise<Record<string, unknown>[]> {
-  const cfg = sourceConn.config as unknown as { auth_url?: string; client_id?: string; client_secret?: string; base_url?: string; dataset?: string };
+  const cfg = sourceConn.config as unknown as { auth_url?: string; client_id?: string; client_secret?: string; base_url?: string; dataset?: string; include_software?: string };
   const res = await fetch(`${ctx.origin}/api/ivanti-neurons-proxy`, {
     method: "PUT",
     headers: { "Content-Type": "application/json", ...vercelBypassHeaders() },
@@ -1257,6 +1258,8 @@ async function fetchNeuronsRows(
       clientSecret: cfg.client_secret,
       baseUrl: cfg.base_url,
       dataset: cfg.dataset ?? "devices",
+      includeSoftware: cfg.include_software === "true",
+      customerId: task.customer_id ?? null,
     }),
   });
   if (!res.ok) {
@@ -1429,6 +1432,11 @@ interface LicensableProduct {
   full_name: string;
   licensable?: boolean;
   raw_version?: string;
+  /** Usage metering (Neurons discovery sources) — feeds the Licensable
+   *  Software tab's Last Used / Launch Count / Minutes Used columns. */
+  last_used?: string | null;
+  launch_count?: number | null;
+  minutes_used?: number | null;
 }
 
 // ── Intune software hydration (direct Ivanti OData) ─────────────────────────
@@ -1574,10 +1582,14 @@ async function hydrateInstalledSoftware(args: {
           apiKey: cfg.api_key,
           tenantId: cfg.tenant_id,
           businessObject: "CI#ivnt_SoftwareProduct",
+          // The tenant DERIVES the CI Name from ivnt_Title by business rule,
+          // and Name is the tenant-wide unique index — so ivnt_Title carries
+          // the FULL product name (unique per catalog identity), keeping
+          // derived Names collision-free.
           data: {
             Name: p.full_name,
             ivnt_SWFullName: p.full_name,
-            ivnt_Title: p.title ?? "",
+            ivnt_Title: p.full_name,
             ivnt_Version: p.version ?? "",
             ivnt_Edition: p.edition ?? "",
             Manufacturer: p.manufacturer ?? "",
@@ -1694,6 +1706,9 @@ async function hydrateInstalledSoftware(args: {
           ParentLink_Category: "CI",
           ParentLink_RecID: ciRecId,
           ComputerLink_RecID: ciRecId,
+          ...(p.last_used ? { ivnt_LastUsed: p.last_used } : {}),
+          ...(p.launch_count != null ? { ivnt_LaunchCount: p.launch_count } : {}),
+          ...(p.minutes_used != null ? { ivnt_MinutesUsed: p.minutes_used } : {}),
           ...(productRecId
             ? { ivnt_SoftwareProduct_Category: "CI", ivnt_SoftwareProduct_RecID: productRecId }
             : {}),
@@ -1715,13 +1730,21 @@ async function hydrateInstalledSoftware(args: {
   for (const subtype of ["InstalledApplication", "ivnt_SoftwareProduct"] as const) {
     try {
       const subtypeSet = `FRS_CIComponent%23${subtype}s`;
-      const url = `${base}/api/odata/businessobject/${subtypeSet}?$filter=${encodeURIComponent(
+      const filter = encodeURIComponent(
         `DeviceName eq '${odataQuote(deviceName)}' and Tag eq '${INTUNE_COMPONENT_TAG}'`
-      )}&$select=RecId,ComponentId&$top=500`;
-      const res = await fetch(url, { headers: ivantiDirectHeaders(cfg) });
-      if (!res.ok) continue;
-      const json = (await res.json().catch(() => ({}))) as { value?: Array<{ RecId?: string; ComponentId?: string }> };
-      for (const row of json.value ?? []) {
+      );
+      // Tenants cap OData reads at 100 records — page with $skip.
+      const existing: Array<{ RecId?: string; ComponentId?: string }> = [];
+      for (let skipN = 0; skipN < 5000; skipN += 100) {
+        const url = `${base}/api/odata/businessobject/${subtypeSet}?$filter=${filter}&$select=RecId,ComponentId&$top=100&$skip=${skipN}`;
+        const res = await fetch(url, { headers: ivantiDirectHeaders(cfg) });
+        if (!res.ok) break;
+        const json = (await res.json().catch(() => ({}))) as { value?: Array<{ RecId?: string; ComponentId?: string }> };
+        const page = json.value ?? [];
+        existing.push(...page);
+        if (page.length < 100) break;
+      }
+      for (const row of existing) {
         if (!row.RecId || !row.ComponentId || expected.has(row.ComponentId)) continue;
         const del = await fetch(`${base}/api/odata/businessobject/${subtypeSet}('${row.RecId}')`, {
           method: "DELETE",
