@@ -8,6 +8,7 @@ import {
   Upload, X, FileText, Loader2, Zap, Download,
   FolderOpen, Folder, ChevronRight, Home,
   Wifi, WifiOff, FlaskConical, ShoppingCart, Package, Building2, Search, Bot, Link2,
+  MonitorSmartphone,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
 import type { EndpointConnection, ConnectionType } from "@/lib/types";
@@ -26,6 +27,7 @@ const TYPE_OPTIONS: { value: ConnectionType; label: string; icon: React.ReactNod
   { value: "dell",   label: "Dell",    icon: <ShoppingCart className="w-5 h-5" />, desc: "Dell Premier API — catalog, quotes & orders" },
   { value: "cdw",    label: "CDW",     icon: <Package      className="w-5 h-5" />, desc: "CDW API — PO status, orders & catalog" },
   { value: "azure",  label: "Azure",   icon: <Building2    className="w-5 h-5" />, desc: "Azure Enterprise App — OAuth2 client credentials" },
+  { value: "intune", label: "Intune",  icon: <MonitorSmartphone className="w-5 h-5" />, desc: "Microsoft Intune — device & software inventory (Graph API)" },
 ];
 
 const TYPE_COLOR: Record<ConnectionType, string> = {
@@ -38,6 +40,7 @@ const TYPE_COLOR: Record<ConnectionType, string> = {
   dell:   "bg-blue-500/10 border-blue-500/40 text-blue-400",
   cdw:    "bg-red-500/10 border-red-500/40 text-red-400",
   azure:  "bg-cyan-500/10 border-cyan-500/40 text-cyan-400",
+  intune: "bg-teal-500/10 border-teal-500/40 text-teal-400",
   ivanti_neurons: "bg-indigo-500/10 border-indigo-500/40 text-indigo-400",
   insight:         "bg-emerald-500/10 border-emerald-500/40 text-emerald-400",
 };
@@ -52,6 +55,7 @@ const TYPE_RING: Record<ConnectionType, string> = {
   dell:   "ring-blue-500",
   cdw:    "ring-red-500",
   azure:  "ring-cyan-500",
+  intune: "ring-teal-500",
   ivanti_neurons: "ring-indigo-500",
   insight:         "ring-emerald-500",
 };
@@ -603,6 +607,65 @@ function InsightForm({ config, onChange }: { config: Record<string, string>; onC
   );
 }
 
+function IntuneForm({ config, onChange }: { config: Record<string, string>; onChange: (k: string, v: string) => void }) {
+  return (
+    <>
+      <div className="flex items-center gap-2 px-4 py-3 bg-teal-500/10 border border-teal-500/20 rounded-xl">
+        <MonitorSmartphone className="w-4 h-4 text-teal-400 shrink-0" />
+        <p className="text-xs text-teal-300">Microsoft Intune — reads managed devices &amp; detected software via the Graph API (client credentials)</p>
+      </div>
+
+      <Field label="Tenant ID">
+        <TextInput
+          value={config.tenant_id ?? ""}
+          onChange={(v) => onChange("tenant_id", v)}
+          placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx or contoso.onmicrosoft.com"
+        />
+        <p className="text-xs text-gray-500 mt-1">Entra admin center &rarr; Overview &rarr; Tenant ID — or type <span className="font-mono text-teal-400">demo</span> to use the built-in simulated fleet (no credentials needed)</p>
+      </Field>
+
+      <Field label="Client ID (Application ID)">
+        <TextInput
+          value={config.client_id ?? ""}
+          onChange={(v) => onChange("client_id", v)}
+          placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+        />
+        <p className="text-xs text-gray-500 mt-1">App Registration &rarr; Overview &rarr; Application (client) ID</p>
+      </Field>
+
+      <Field label="Client Secret">
+        <PasswordInput
+          value={config.client_secret ?? ""}
+          onChange={(v) => onChange("client_secret", v)}
+          placeholder="App Registration secret value"
+        />
+        <p className="text-xs text-gray-500 mt-1">Requires <span className="font-mono text-gray-400">DeviceManagementManagedDevices.Read.All</span> (application permission) with admin consent</p>
+      </Field>
+
+      <Field label="Max Devices (optional)">
+        <TextInput
+          value={config.max_devices ?? ""}
+          onChange={(v) => onChange("max_devices", v)}
+          placeholder="Blank = all devices"
+        />
+        <p className="text-xs text-gray-500 mt-1">Cap on devices read per run — useful when testing against a large tenant</p>
+      </Field>
+
+      <Field label="Detected Software">
+        <select
+          value={config.include_software ?? "true"}
+          onChange={(e) => onChange("include_software", e.target.value)}
+          className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-teal-500 text-sm"
+        >
+          <option value="true">Read detected apps &amp; resolve licensable software</option>
+          <option value="false">Devices only (skip software inventory)</option>
+        </select>
+        <p className="text-xs text-gray-500 mt-1">Unrecognized install strings are sent to Software Research for classification</p>
+      </Field>
+    </>
+  );
+}
+
 function AzureForm({ config, onChange }: { config: Record<string, string>; onChange: (k: string, v: string) => void }) {
   return (
     <>
@@ -1042,6 +1105,7 @@ export default function ConnectionEditorClient({
       t === "dell"   ? { base_url: "https://apigtwb2c.us.dell.com", scope: "oob" } :
       t === "cdw"    ? { base_url: "https://portal.apiconnect.cdw.com" } :
       t === "azure"  ? { scope: "https://graph.microsoft.com/.default", base_url: "https://graph.microsoft.com/v1.0" } :
+      t === "intune" ? { include_software: "true" } :
       t === "ivanti_neurons" ? { dataset: "devices" } :
       t === "insight"        ? { url: "https://", oauth_token_path: "/oauth/token?grant_type=client_credentials", invoice_path: "/NA/CustomerInvoice", status_path: "/NA/GetStatus", grant_type: "client_credentials" } :
       {}
@@ -1344,6 +1408,7 @@ export default function ConnectionEditorClient({
           {type === "dell"          && <DellForm          config={config} onChange={setConfigField} />}
           {type === "cdw"           && <CdwForm           config={config} onChange={setConfigField} />}
           {type === "azure"         && <AzureForm         config={config} onChange={setConfigField} />}
+          {type === "intune"        && <IntuneForm        config={config} onChange={setConfigField} />}
         </section>
 
         {/* Save footer */}

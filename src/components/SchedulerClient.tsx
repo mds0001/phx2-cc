@@ -3239,7 +3239,7 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
                                   >
                                     <option value="">-- Target from mapping --</option>
                                     {endpointConnections
-                                      .filter((c) => c.type !== "file" && c.type !== "insight")
+                                      .filter((c) => c.type !== "file" && c.type !== "insight" && c.type !== "intune")
                                       .map((c) => (
                                         <option key={c.id} value={c.id}>
                                           {c.name} [{c.type.toUpperCase()}]

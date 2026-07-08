@@ -9,6 +9,7 @@ import {
   CalendarClock, GitMerge, Plug, Building2, Users,
   FileText, BarChart3, Activity, ShieldCheck, LogOut, Bot, Tag,
   TrendingUp, UserPlus, Sun, Moon, Contrast, ChevronDown, DollarSign,
+  AppWindow,
 } from "lucide-react";
 
 // Types
@@ -279,6 +280,12 @@ export default function GlobalShell() {
               href="/boh/sku-research"
               active={pathname?.startsWith("/boh/sku-research") === true}
               badge={skuTweCount > 0 ? skuTweCount : undefined}
+            />
+            <NavItem
+              icon={<AppWindow className="w-4 h-4" />}
+              label="Software Research"
+              href="/boh/software-research"
+              active={pathname?.startsWith("/boh/software-research") === true}
             />
             <NavItem
               icon={<DollarSign className="w-4 h-4" />}

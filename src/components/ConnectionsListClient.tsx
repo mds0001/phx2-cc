@@ -6,6 +6,7 @@ import {
   Plus, Plug, Trash2, Edit2, File, Cloud, Mail, Database, Globe,
   Zap, ShoppingCart, Package, Building2, Search,
   Lock, Copy, Shield, ShieldOff, Loader2, CheckCircle2, XCircle, Bot, Link2,
+  MonitorSmartphone,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
 import type { EndpointConnection, ConnectionType } from "@/lib/types";
@@ -21,12 +22,13 @@ const TYPE_META: Record<ConnectionType, { label: string; icon: React.ReactNode; 
   dell:           { label: "Dell",           icon: <ShoppingCart className="w-3.5 h-3.5" />, color: "text-blue-400",    bg: "bg-blue-500/10 border-blue-500/25"       },
   cdw:            { label: "CDW",            icon: <Package      className="w-3.5 h-3.5" />, color: "text-red-400",     bg: "bg-red-500/10 border-red-500/25"         },
   azure:          { label: "Azure",          icon: <Building2    className="w-3.5 h-3.5" />, color: "text-cyan-400",    bg: "bg-cyan-500/10 border-cyan-500/25"       },
+  intune:         { label: "Intune",         icon: <MonitorSmartphone className="w-3.5 h-3.5" />, color: "text-teal-400",    bg: "bg-teal-500/10 border-teal-500/25"       },
   insight:        { label: "Insight",        icon: <Link2        className="w-3.5 h-3.5" />, color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/25" },
 };
 
 const TYPE_ORDER: ConnectionType[] = [
   "file", "cloud", "ivanti", "ivanti_neurons", "dell", "cdw",
-  "azure", "insight", "smtp", "odbc", "portal",
+  "azure", "insight", "intune", "smtp", "odbc", "portal",
 ];
 
 function configSummary(conn: EndpointConnection): string {
@@ -42,6 +44,7 @@ function configSummary(conn: EndpointConnection): string {
     case "dell":           return c.base_url || "No URL";
     case "cdw":            return c.base_url || "No URL";
     case "azure":          return c.base_url || "No URL";
+    case "intune":         return c.tenant_id || "No tenant";
     case "insight":        return c.url || "No URL";
     default:               return "";
   }

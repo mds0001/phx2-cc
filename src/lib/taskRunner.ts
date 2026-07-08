@@ -173,8 +173,10 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
       rows = await fetchIvantiRows(sourceConn, srcMp?.target_business_object ?? undefined, ctx);
     } else if (sourceConn.type === "ivanti_neurons") {
       rows = await fetchNeuronsRows(sourceConn, ctx);
+    } else if (sourceConn.type === "intune") {
+      rows = await fetchIntuneRows(task, sourceConn, ctx);
     } else {
-      throw new Error(`Runner supports file / insight / portal / ivanti / ivanti_neurons sources; got "${sourceConn.type}"`);
+      throw new Error(`Runner supports file / insight / portal / ivanti / ivanti_neurons / intune sources; got "${sourceConn.type}"`);
     }
     const path = `${run.id}.json`;
     const blob = new Blob([JSON.stringify(rows)], { type: "application/json" });
@@ -220,6 +222,9 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
     counters.created = (counters.created ?? 0) + written;
     slotIdx = slots.length; // bypass per-row loop; fall through to completion
   }
+
+  // Software products already ensured in Ivanti this chunk (by ivnt_SWFullName).
+  const swProductCache = new Set<string>();
 
   while (slotIdx < slots.length) {
     const slot = slots[slotIdx];
@@ -536,6 +541,15 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
             counters,
             ctx,
           });
+
+          // Intune software hydration: rows carrying resolved licensable products
+          // (attached by /api/intune-proxy) get them upserted as software CIs and,
+          // when the task configures a relationship, linked to the device CI.
+          await hydrateInstalledSoftware({
+            admin, run, task, slotIdx, rowIdx,
+            sourceRow: effRow, mapped, mp, targetConn, upsertKeys, counters, ctx,
+            swProductCache,
+          });
         }
       }
 
@@ -581,6 +595,9 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
     details:
       `Done — ${counters.created ?? 0} created, ${counters.updated ?? 0} updated, ` +
       `${counters.skipped ?? 0} skipped, ${counters.filtered ?? 0} filtered, ${counters.errored ?? 0} errored` +
+      ((counters.sw_products ?? 0) > 0 || (counters.sw_linked ?? 0) > 0
+        ? `, ${counters.sw_products ?? 0} software product(s), ${counters.sw_linked ?? 0} software link(s)`
+        : "") +
       (exceptions.length > 0 ? `, ${exceptions.length} SKU exception(s) queued` : ""),
   });
 
@@ -1250,6 +1267,36 @@ async function fetchNeuronsRows(
   return json.rows ?? [];
 }
 
+/** Intune source: managed devices (+ resolved licensable software) via the intune proxy. */
+async function fetchIntuneRows(
+  task: ScheduledTask,
+  sourceConn: EndpointConnection,
+  ctx: RunCtx
+): Promise<Record<string, unknown>[]> {
+  const cfg = sourceConn.config as unknown as {
+    tenant_id?: string; client_id?: string; client_secret?: string;
+    max_devices?: string; include_software?: string;
+  };
+  const res = await fetch(`${ctx.origin}/api/intune-proxy`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...vercelBypassHeaders() },
+    body: JSON.stringify({
+      tenantId: cfg.tenant_id,
+      clientId: cfg.client_id,
+      clientSecret: cfg.client_secret,
+      maxDevices: cfg.max_devices ? parseInt(cfg.max_devices, 10) || 0 : 0,
+      includeSoftware: cfg.include_software !== "false",
+      customerId: task.customer_id ?? null,
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Intune source read failed (HTTP ${res.status}): ${text.slice(0, 300)}`);
+  }
+  const json = (await res.json()) as { rows?: Record<string, unknown>[] };
+  return json.rows ?? [];
+}
+
 async function postRowToIvanti(args: {
   admin: SupabaseClient;
   run: ClaimedRun;
@@ -1371,6 +1418,320 @@ async function postRowToIvanti(args: {
       action: "ERROR",
       details: `${slotPrefix} Row ${rowIdx + 1} exception: ${err instanceof Error ? err.message : String(err)}`,
     });
+  }
+}
+
+interface LicensableProduct {
+  manufacturer: string | null;
+  title: string | null;
+  version: string | null;
+  edition: string | null;
+  full_name: string;
+  licensable?: boolean;
+  raw_version?: string;
+}
+
+// ── Intune software hydration (direct Ivanti OData) ─────────────────────────
+// Writes the OOB model both device-form tabs read:
+//   Installed Software  = FRS_CIComponent#InstalledApplication  (all products)
+//   Licensable Software = FRS_CIComponent#ivnt_SoftwareProduct  (licensable only,
+//                         FK ivnt_SoftwareProduct_RecID -> CI#ivnt_SoftwareProduct)
+// Components attach to the device CI via ParentLink (field-backed relationship
+// CIAssociatedFRS_CIComponent) and are keyed on ComponentId so re-runs upsert.
+// Ivanti rejects *_RecID fields on POST (create), so link fields ride a
+// follow-up PATCH — same two-step the ivanti-proxy uses.
+
+const INTUNE_COMPONENT_TAG = "IntuneImport";
+
+function ivantiDirectHeaders(cfg: Record<string, string>): Record<string, string> {
+  const h: Record<string, string> = {
+    Authorization: `rest_api_key=${cfg.api_key}`,
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  };
+  if (cfg.tenant_id) h["X-Tenant-Id"] = cfg.tenant_id;
+  return h;
+}
+
+const odataQuote = (v: string) => v.replace(/'/g, "''");
+
+async function ivantiFindRecId(
+  base: string,
+  cfg: Record<string, string>,
+  entitySet: string,
+  field: string,
+  value: string
+): Promise<string | null> {
+  const url = `${base}/api/odata/businessobject/${entitySet}?$filter=${encodeURIComponent(`${field} eq '${odataQuote(value)}'`)}&$select=RecId&$top=1`;
+  const res = await fetch(url, { headers: ivantiDirectHeaders(cfg) });
+  if (!res.ok) return null;
+  const json = (await res.json().catch(() => ({}))) as { value?: Array<{ RecId?: string }> };
+  return json.value?.[0]?.RecId ?? null;
+}
+
+/** Upsert one software component row keyed on ComponentId. Returns the RecId. */
+async function upsertSoftwareComponent(args: {
+  base: string;
+  cfg: Record<string, string>;
+  subtype: "InstalledApplication" | "ivnt_SoftwareProduct";
+  componentId: string;
+  baseFields: Record<string, unknown>;
+  patchFields: Record<string, unknown>;
+}): Promise<{ recId: string; outcome: "created" | "updated" }> {
+  const { base, cfg, subtype, componentId, baseFields, patchFields } = args;
+  const subtypeSet = `FRS_CIComponent%23${subtype}s`;
+
+  let recId = await ivantiFindRecId(base, cfg, subtypeSet, "ComponentId", componentId);
+  let outcome: "created" | "updated" = "updated";
+  if (!recId) {
+    const res = await fetch(`${base}/api/odata/businessobject/FRS_CIComponents`, {
+      method: "POST",
+      headers: ivantiDirectHeaders(cfg),
+      body: JSON.stringify({
+        FRS_CIComponentType: subtype,
+        ComponentId: componentId,
+        Tag: INTUNE_COMPONENT_TAG,
+        ...baseFields,
+      }),
+    });
+    if (!res.ok) {
+      throw new Error(`component create failed (${res.status}): ${(await res.text().catch(() => "")).slice(0, 200)}`);
+    }
+    const json = (await res.json().catch(() => ({}))) as { RecId?: string };
+    recId = json.RecId ?? null;
+    outcome = "created";
+  }
+  if (!recId) throw new Error("component create returned no RecId");
+
+  const patchRes = await fetch(`${base}/api/odata/businessobject/${subtypeSet}('${recId}')`, {
+    method: "PATCH",
+    headers: ivantiDirectHeaders(cfg),
+    body: JSON.stringify(patchFields),
+  });
+  if (!patchRes.ok) {
+    throw new Error(`component patch failed (${patchRes.status}): ${(await patchRes.text().catch(() => "")).slice(0, 200)}`);
+  }
+  return { recId, outcome };
+}
+
+/** Intune software hydration: software product CIs + both component tabs +
+ *  reconcile (Intune-tagged components not in the current scan are removed). */
+async function hydrateInstalledSoftware(args: {
+  admin: SupabaseClient;
+  run: ClaimedRun;
+  task: ScheduledTask;
+  slotIdx: number;
+  rowIdx: number;
+  sourceRow: Record<string, unknown>;
+  mapped: Record<string, unknown>;
+  mp: MappingProfile;
+  targetConn: EndpointConnection;
+  upsertKeys: string[];
+  counters: Record<string, number>;
+  ctx: RunCtx;
+  swProductCache: Set<string>;
+}) {
+  const {
+    admin, run, task, slotIdx, rowIdx, sourceRow, mapped,
+    targetConn, upsertKeys, counters, ctx, swProductCache,
+  } = args;
+  void task;
+
+  // _installed_products present (even empty) marks an Intune software scan row.
+  if (!Array.isArray(sourceRow._installed_products)) return;
+  if (targetConn.type !== "ivanti") return;
+
+  const cfg = targetConn.config as unknown as Record<string, string>;
+  const slotPrefix = `[S${slotIdx + 1}]`;
+
+  // Premise tenants are unreachable from the cloud — the agent write path for
+  // components lands with the on-prem phase of this feature.
+  if ((targetConn as unknown as { agent_id?: string | null }).agent_id) {
+    if (!counters.sw_premise_skipped) {
+      counters.sw_premise_skipped = 1;
+      await admin.from("task_logs").insert({
+        task_id: run.task_id,
+        action: "INFO",
+        details: `${slotPrefix} Software component hydration skipped — premise target (agent path not yet implemented)`,
+      });
+    }
+    return;
+  }
+
+  const installed = (sourceRow._installed_products as LicensableProduct[]).filter((p) => p?.full_name);
+  const licensable = installed.filter((p) => p.licensable !== false);
+  const base = (cfg.url ?? "").replace(/\/$/, "");
+
+  // 1. Ensure licensable products exist as CI#ivnt_SoftwareProduct (once per chunk).
+  for (const p of licensable) {
+    if (swProductCache.has(p.full_name)) continue;
+    try {
+      const res = await fetch(`${ctx.origin}/api/ivanti-proxy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...vercelBypassHeaders() },
+        body: JSON.stringify({
+          ivantiUrl: cfg.url,
+          apiKey: cfg.api_key,
+          tenantId: cfg.tenant_id,
+          businessObject: "CI#ivnt_SoftwareProduct",
+          data: {
+            Name: p.full_name,
+            ivnt_SWFullName: p.full_name,
+            ivnt_Title: p.title ?? "",
+            ivnt_Version: p.version ?? "",
+            ivnt_Edition: p.edition ?? "",
+            Manufacturer: p.manufacturer ?? "",
+          },
+          upsertKeys: ["ivnt_SWFullName"],
+        }),
+      });
+      if (res.ok) {
+        swProductCache.add(p.full_name);
+        counters.sw_products = (counters.sw_products ?? 0) + 1;
+      } else {
+        counters.sw_errors = (counters.sw_errors ?? 0) + 1;
+        const body = await res.text().catch(() => "");
+        await admin.from("task_logs").insert({
+          task_id: run.task_id,
+          action: "ERROR",
+          details: `${slotPrefix} Row ${rowIdx + 1} software product "${p.full_name}" upsert failed (${res.status}): ${body.slice(0, 300)}`,
+        });
+      }
+    } catch (err) {
+      counters.sw_errors = (counters.sw_errors ?? 0) + 1;
+      await admin.from("task_logs").insert({
+        task_id: run.task_id,
+        action: "ERROR",
+        details: `${slotPrefix} Row ${rowIdx + 1} software product "${p.full_name}" exception: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  // 2. Resolve the device CI by the row's first upsert key.
+  const keyField = upsertKeys[0];
+  const keyValue = keyField ? mapped[keyField] : null;
+  if (!keyField || typeof keyValue !== "string" || !keyValue.trim()) return;
+
+  let ciRecId: string | null = null;
+  try {
+    ciRecId = await ivantiFindRecId(base, cfg, "CIs", keyField, keyValue);
+  } catch {
+    ciRecId = null;
+  }
+  if (!ciRecId) {
+    counters.sw_errors = (counters.sw_errors ?? 0) + 1;
+    await admin.from("task_logs").insert({
+      task_id: run.task_id,
+      action: "ERROR",
+      details: `${slotPrefix} Row ${rowIdx + 1} hydration: device CI not found (${keyField}='${keyValue}')`,
+    });
+    return;
+  }
+
+  const deviceName = String(sourceRow.DeviceName ?? mapped.Name ?? keyValue);
+  const expected = new Set<string>();
+
+  // 3. Installed Software components — every resolved product.
+  for (const p of installed) {
+    const componentId = `INTUNE|${keyValue}|${p.full_name}`;
+    expected.add(componentId);
+    try {
+      const { outcome } = await upsertSoftwareComponent({
+        base, cfg,
+        subtype: "InstalledApplication",
+        componentId,
+        baseFields: {
+          DisplayName: p.full_name,
+          Manufacturer: p.manufacturer ?? "",
+          DeviceName: deviceName,
+        },
+        patchFields: {
+          VersionNumber: p.raw_version || p.version || "",
+          DiscoveryMethod: "Intune Import",
+          ParentLink_Category: "CI",
+          ParentLink_RecID: ciRecId,
+          ComputerLink_RecID: ciRecId,
+        },
+      });
+      counters.sw_installed = (counters.sw_installed ?? 0) + (outcome === "created" ? 1 : 0);
+    } catch (err) {
+      counters.sw_errors = (counters.sw_errors ?? 0) + 1;
+      await admin.from("task_logs").insert({
+        task_id: run.task_id,
+        action: "ERROR",
+        details: `${slotPrefix} Row ${rowIdx + 1} installed component "${p.full_name}": ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  // 4. Licensable Software components — licensable products, linked to the
+  //    software product CI so the tab shows Title/Version/Edition.
+  const productRecIds = new Map<string, string | null>();
+  for (const p of licensable) {
+    const componentId = `INTUNE-LIC|${keyValue}|${p.full_name}`;
+    expected.add(componentId);
+    try {
+      if (!productRecIds.has(p.full_name)) {
+        productRecIds.set(
+          p.full_name,
+          await ivantiFindRecId(base, cfg, "CI%23ivnt_SoftwareProducts", "ivnt_SWFullName", p.full_name)
+        );
+      }
+      const productRecId = productRecIds.get(p.full_name) ?? null;
+      const { outcome } = await upsertSoftwareComponent({
+        base, cfg,
+        subtype: "ivnt_SoftwareProduct",
+        componentId,
+        baseFields: {
+          DisplayName: p.full_name,
+          Manufacturer: p.manufacturer ?? "",
+          DeviceName: deviceName,
+        },
+        patchFields: {
+          ivnt_Title: p.title ?? "",
+          ivnt_Version: p.version ?? "",
+          ivnt_SoftwareEdition: p.edition ?? "",
+          ParentLink_Category: "CI",
+          ParentLink_RecID: ciRecId,
+          ComputerLink_RecID: ciRecId,
+          ...(productRecId
+            ? { ivnt_SoftwareProduct_Category: "CI", ivnt_SoftwareProduct_RecID: productRecId }
+            : {}),
+        },
+      });
+      counters.sw_licensable = (counters.sw_licensable ?? 0) + (outcome === "created" ? 1 : 0);
+    } catch (err) {
+      counters.sw_errors = (counters.sw_errors ?? 0) + 1;
+      await admin.from("task_logs").insert({
+        task_id: run.task_id,
+        action: "ERROR",
+        details: `${slotPrefix} Row ${rowIdx + 1} licensable component "${p.full_name}": ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  // 5. Reconcile: remove Intune-tagged components for this device that the
+  //    current scan no longer contains (uninstalled software disappears).
+  for (const subtype of ["InstalledApplication", "ivnt_SoftwareProduct"] as const) {
+    try {
+      const subtypeSet = `FRS_CIComponent%23${subtype}s`;
+      const url = `${base}/api/odata/businessobject/${subtypeSet}?$filter=${encodeURIComponent(
+        `DeviceName eq '${odataQuote(deviceName)}' and Tag eq '${INTUNE_COMPONENT_TAG}'`
+      )}&$select=RecId,ComponentId&$top=500`;
+      const res = await fetch(url, { headers: ivantiDirectHeaders(cfg) });
+      if (!res.ok) continue;
+      const json = (await res.json().catch(() => ({}))) as { value?: Array<{ RecId?: string; ComponentId?: string }> };
+      for (const row of json.value ?? []) {
+        if (!row.RecId || !row.ComponentId || expected.has(row.ComponentId)) continue;
+        const del = await fetch(`${base}/api/odata/businessobject/${subtypeSet}('${row.RecId}')`, {
+          method: "DELETE",
+          headers: ivantiDirectHeaders(cfg),
+        });
+        if (del.ok || del.status === 204) counters.sw_removed = (counters.sw_removed ?? 0) + 1;
+      }
+    } catch {
+      // Reconcile is best-effort; the next run retries.
+    }
   }
 }
 

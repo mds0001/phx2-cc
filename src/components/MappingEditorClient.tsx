@@ -488,6 +488,31 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
               return [...prev, ...newMappings];
             });
           }
+      } else if (conn.type === "intune") {
+        // Intune device rows have a fixed shape (flattened by /api/intune-proxy)
+        const intuneFields: string[] = [
+          "IntuneDeviceId", "DeviceName", "SerialNumber", "Manufacturer", "Model",
+          "OperatingSystem", "OSVersion", "UserPrincipalName", "UserDisplayName",
+          "EmailAddress", "ComplianceState", "OwnerType",
+          "EnrolledDateTime", "LastSyncDateTime", "TotalStorageGB", "FreeStorageGB",
+          "WiFiMacAddress", "EthernetMacAddress", "AzureADDeviceId",
+          "LicensableSoftware", "LicensableSoftwareCount", "DetectedAppCount",
+        ];
+        const fields: FieldDef[] = intuneFields.map((name) => ({ id: uid(), name }));
+        if (side === "source") {
+          const existingByName = new Map(sourceFields.map((f) => [f.name, f.id]));
+          const mergedFields = fields.map((f) => ({ ...f, id: existingByName.get(f.name) ?? f.id }));
+          setSourceFields(mergedFields);
+          const validSourceIds = new Set(mergedFields.map((f) => f.id));
+          setMappings((prev) => prev.filter((m) => validSourceIds.has(m.sourceFieldId)));
+          setSelectedSourceId(null);
+        } else {
+          const existingByName = new Map(targetFields.map((f) => [f.name, f.id]));
+          const mergedFields = fields.map((f) => ({ ...f, id: existingByName.get(f.name) ?? f.id }));
+          setTargetFields(mergedFields);
+          const validTargetIds = new Set(mergedFields.map((f) => f.id));
+          setMappings((prev) => prev.filter((m) => validTargetIds.has(m.targetFieldId)));
+        }
       } else if (conn.type === "insight") {
         // Insight GetStatus2 response fields (static — shape is fixed by the API spec)
         const insightFields: string[] = [

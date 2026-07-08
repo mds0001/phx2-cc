@@ -139,6 +139,11 @@ export interface ScheduledTask {
   /** When true, every successful create/update stores the Ivanti RecID in
    *  task_created_records, enabling the Undo button to delete by RecID directly. */
   debug_mode?: boolean;
+  /** Ivanti relationship name used to link resolved software products to the
+   *  device CI during Intune software hydration (tenant-specific, discovered
+   *  from the target instance). Null/empty = upsert the software product CIs
+   *  but skip linking. */
+  software_link_relationship?: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -313,7 +318,7 @@ export interface InsightStep {
 
 // ── Endpoint connections ──────────────────────────────────────
 
-export type ConnectionType = "file" | "cloud" | "smtp" | "odbc" | "portal" | "ivanti" | "ivanti_neurons" | "dell" | "cdw" | "azure" | "insight";
+export type ConnectionType = "file" | "cloud" | "smtp" | "odbc" | "portal" | "ivanti" | "ivanti_neurons" | "dell" | "cdw" | "azure" | "insight" | "intune";
 
 export type FileType = "xlsx" | "json" | "xml" | "csv";
 export type FileMode = "file" | "directory";
@@ -383,6 +388,16 @@ export interface AzureConfig {
   base_url: string;    // API base URL after auth
 }
 
+export interface IntuneConfig {
+  tenant_id: string;      // Entra (Azure AD) tenant ID — GUID or primary domain
+  client_id: string;      // App Registration Client ID
+  client_secret: string;  // App Registration client secret value
+  /** Optional cap on devices read per run ("" / "0" = all devices). */
+  max_devices?: string;
+  /** "false" skips the per-device detected-apps fetch (device fields only). Default on. */
+  include_software?: string;
+}
+
 export interface InsightConfig {
   client_id: string;
   client_key: string;
@@ -392,7 +407,7 @@ export interface InsightConfig {
 
 export type ConnectionConfig =
   | FileConfig | CloudConfig | SmtpConfig | OdbcConfig | PortalConfig
-  | IvantiConfig | IvantiNeuronsConfig | DellConfig | CdwConfig | AzureConfig | InsightConfig;
+  | IvantiConfig | IvantiNeuronsConfig | DellConfig | CdwConfig | AzureConfig | InsightConfig | IntuneConfig;
 
 export interface EndpointConnection {
   id: string;

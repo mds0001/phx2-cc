@@ -12,7 +12,7 @@ import type { LicenseType, LicenseTypeKind, ConnectionType } from "@/lib/types";
 // ── Helpers ───────────────────────────────────────────────────
 
 const CONNECTION_TYPES: ConnectionType[] = [
-  "ivanti", "ivanti_neurons", "dell", "cdw", "azure", "insight",
+  "ivanti", "ivanti_neurons", "dell", "cdw", "azure", "insight", "intune",
   "cloud", "file", "smtp", "odbc", "portal",
 ];
 
@@ -22,6 +22,7 @@ const CONNECTION_LABELS: Record<ConnectionType, string> = {
   dell:            "Dell",
   cdw:             "CDW",
   azure:           "Azure",
+  intune:          "Intune",
   insight:         "Insight",
   cloud:           "Cloud",
   file:            "File",

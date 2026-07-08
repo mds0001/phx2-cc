@@ -497,6 +497,63 @@ export async function POST(request: NextRequest) {
         return result(true, `Connected — OAuth token obtained (${label})`);
       }
 
+      // ── Intune (Microsoft Graph) ─────────────────────────────
+      case "intune": {
+        const { tenant_id, client_id, client_secret } = config;
+        if (!tenant_id)     return result(false, "No Tenant ID configured");
+        if (tenant_id.trim().toLowerCase() === "demo") {
+          return result(true, "Demo mode — simulated fleet, no Graph calls. Devices & detected software come from the built-in fixture.");
+        }
+        if (!client_id)     return result(false, "No Client ID configured");
+        if (!client_secret) return result(false, "No Client Secret configured");
+
+        // Step 1: client-credentials token from Entra ID
+        let graphToken: string;
+        try {
+          const tokenRes = await fetch(`https://login.microsoftonline.com/${encodeURIComponent(tenant_id)}/oauth2/v2.0/token`, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+              grant_type: "client_credentials",
+              client_id,
+              client_secret,
+              scope: "https://graph.microsoft.com/.default",
+            }).toString(),
+            signal: AbortSignal.timeout(12_000),
+          });
+          if (!tokenRes.ok) {
+            const txt = await tokenRes.text().catch(() => "");
+            return result(false, `Token request failed — HTTP ${tokenRes.status}: ${txt.slice(0, 200)}`);
+          }
+          const tokenData = await tokenRes.json().catch(() => ({})) as { access_token?: string };
+          if (!tokenData.access_token) return result(false, "Token endpoint responded but returned no access_token");
+          graphToken = tokenData.access_token;
+        } catch (e) {
+          return result(false, `Entra ID unreachable: ${e instanceof Error ? e.message : String(e)}`);
+        }
+
+        // Step 2: read one managed device to prove the Intune permission works
+        try {
+          const devRes = await fetch("https://graph.microsoft.com/v1.0/deviceManagement/managedDevices?$top=1&$select=id,deviceName", {
+            method: "GET",
+            headers: { Authorization: `Bearer ${graphToken}`, Accept: "application/json" },
+            signal: AbortSignal.timeout(12_000),
+          });
+          if (devRes.ok) {
+            const data = await devRes.json().catch(() => ({})) as { value?: { deviceName?: string }[] };
+            const first = data.value?.[0]?.deviceName;
+            return result(true, `Connected — managed devices readable${first ? ` (e.g. "${first}")` : " (no devices enrolled yet)"}`);
+          }
+          const body2 = await devRes.text().catch(() => "");
+          if (devRes.status === 403) {
+            return result(false, "Token OK but Graph returned 403 — grant DeviceManagementManagedDevices.Read.All (application) and admin-consent it");
+          }
+          return result(false, `Graph request failed — HTTP ${devRes.status}: ${body2.slice(0, 200)}`);
+        } catch (e) {
+          return result(false, `Graph unreachable: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+
       default:
         return result(false, `Unknown connection type: ${type}`);
     }

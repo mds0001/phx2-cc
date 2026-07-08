@@ -17,6 +17,7 @@ const CREDENTIAL_FIELDS: Partial<Record<ConnectionType, string[]>> = {
   dell:           ["client_id", "client_secret", "forwarded_client_id", "premier_account_id"],
   cdw:            ["subscription_key", "account_number"],
   azure:          ["client_id", "client_secret", "tenant_id"],
+  intune:         ["client_id", "client_secret", "tenant_id"],
   // file: no credentials — template structure is the value
 };
 
