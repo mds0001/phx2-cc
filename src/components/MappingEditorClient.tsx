@@ -408,12 +408,27 @@ export default function MappingEditorClient({ profile, isNew, userId, returnTo, 
       } else if (conn.type === "file") {
         if (side === "source") {
           // Source file — read headers from the stored XLSX/CSV
-          const cfg = conn.config as { file_path?: string; file_mode?: string; file_name?: string };
+          const cfg = conn.config as { file_path?: string; file_mode?: string; file_name?: string; backend?: string };
           if (!cfg.file_path) throw new Error("No file path configured on this connection.");
           if (cfg.file_mode === "directory") throw new Error("Directory-mode connections cannot be enumerated. Set the connection to file mode with a specific file selected.");
-          const { data: fileData, error: dlErr } = await supabase.storage.from("task_files").download(cfg.file_path);
-          if (dlErr || !fileData) throw new Error("Failed to download file: " + dlErr?.message);
-          const buf = await fileData.arrayBuffer();
+          let buf: ArrayBuffer;
+          if ((cfg.backend ?? "supabase") !== "supabase") {
+            // Cloud-backend file (S3 / GCS / Drive / OneDrive) — server-side proxy
+            const res = await fetch("/api/file-storage", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ op: "download", config: conn.config, path: cfg.file_path }),
+            });
+            if (!res.ok) {
+              const j = (await res.json().catch(() => ({}))) as { error?: string };
+              throw new Error("Failed to download file: " + (j.error ?? `HTTP ${res.status}`));
+            }
+            buf = await res.arrayBuffer();
+          } else {
+            const { data: fileData, error: dlErr } = await supabase.storage.from("task_files").download(cfg.file_path);
+            if (dlErr || !fileData) throw new Error("Failed to download file: " + dlErr?.message);
+            buf = await fileData.arrayBuffer();
+          }
           const wb = XLSX.read(buf, { type: "array" });
           const sheet = wb.Sheets[wb.SheetNames[0]];
           const xlRows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });

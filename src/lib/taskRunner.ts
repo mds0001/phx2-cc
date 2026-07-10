@@ -29,6 +29,7 @@ import {
   type InsightRecordType,
 } from "@/lib/types";
 import { evaluateFilter } from "@/lib/filterExpression";
+import { downloadStorage, uploadStorage, storageLocation, type FileBackendConfig } from "@/lib/fileStorage";
 
 const TICK_BUDGET_MS = 250_000;
 const FK_ORDER: InsightRecordType[] = [
@@ -164,7 +165,7 @@ export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunC
     if (sourceConn.type === "insight" || sourceConn.type === "portal") {
       rows = await fetchInsightRows(task, sourceConnId!, ctx);
     } else if (sourceConn.type === "file") {
-      rows = await fetchFileRows(task, sourceConn, admin);
+      rows = await fetchFileRows(task, sourceConn);
     } else if (sourceConn.type === "ivanti") {
       // Source business object comes from the mapping profile that owns this source connection.
       const srcMp = slots
@@ -1055,8 +1056,7 @@ function softwareDedupKey(
 
 async function fetchFileRows(
   task: ScheduledTask,
-  sourceConn: EndpointConnection,
-  admin: SupabaseClient
+  sourceConn: EndpointConnection
 ): Promise<Record<string, unknown>[]> {
   const cfg = sourceConn.config as unknown as {
     file_path?: string;
@@ -1088,13 +1088,13 @@ async function fetchFileRows(
     throw new Error(`Phase 3b only supports xlsx files; got file_type="${fileType}".`);
   }
 
-  const { data: blob, error: dlErr } = await admin.storage
-    .from("task_files")
-    .download(resolvedPath);
-  if (dlErr || !blob) {
-    throw new Error(`Failed to download "${resolvedPath}" from task_files bucket: ${dlErr?.message ?? "not found"}`);
+  const bcfg = sourceConn.config as unknown as FileBackendConfig;
+  let arrayBuffer: ArrayBuffer;
+  try {
+    arrayBuffer = await downloadStorage(bcfg, resolvedPath);
+  } catch (e) {
+    throw new Error(`Failed to download "${storageLocation(bcfg, resolvedPath)}": ${e instanceof Error ? e.message : String(e)}`);
   }
-  const arrayBuffer = await blob.arrayBuffer();
 
   // Lazy-load xlsx — keep cold-start of /api/scheduler/tick fast for non-file runs.
   const XLSX = await import("xlsx");
@@ -1205,10 +1205,15 @@ async function writeFileTarget(
     blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   }
 
-  const { error: upErr } = await admin.storage.from("task_files").upload(storagePath, blob, { upsert: true });
-  if (upErr) throw new Error(`Failed to upload export file: ${upErr.message}`);
-  const { data: signed } = await admin.storage.from("task_files").createSignedUrl(storagePath, 86400);
-  const dl = signed?.signedUrl ? ` — Download: ${signed.signedUrl}` : "";
+  const bcfg = targetConn.config as unknown as FileBackendConfig;
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let up: { path: string; url?: string };
+  try {
+    up = await uploadStorage(bcfg, storagePath, bytes, blob.type || "application/octet-stream");
+  } catch (e) {
+    throw new Error(`Failed to upload export file to ${storageLocation(bcfg, storagePath)}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const dl = up.url ? ` — Download: ${up.url}` : ` — Location: ${storageLocation(bcfg, storagePath)}`;
   await admin.from("task_logs").insert({
     task_id: run.task_id,
     action: "SUCCESS",

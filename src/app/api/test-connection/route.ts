@@ -80,10 +80,11 @@ export async function POST(request: NextRequest) {
       // ── File ─────────────────────────────────────────────────
       case "file": {
         const filePath = config.file_path;
-        if (!filePath) return result(false, "No file configured");
+        const backend = config.backend || "supabase";
 
         // Local (agent) mode -- verify the bound agent is online
         if (config.file_mode === "local") {
+          if (!filePath) return result(false, "No file configured");
           const fileName = filePath.split(/[\\/]/).pop() ?? filePath;
           if (!agent_id) return result(false, "No agent assigned to this endpoint");
           const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -103,6 +104,25 @@ export async function POST(request: NextRequest) {
           return result(true, `Agent "${agent.name}" is online -- will read ${fileName} at runtime`);
         }
 
+        // Cloud backends (S3 / GCS / Google Drive / OneDrive): verify
+        // credentials + container access, then the configured file if any.
+        if (backend !== "supabase") {
+          try {
+            const { testStorage, statStorage } = await import("@/lib/fileStorage");
+            const msg = await testStorage(config);
+            if (config.file_mode === "file" && filePath) {
+              const exists = await statStorage(config, filePath);
+              return exists
+                ? result(true, `${msg}; file found: ${config.file_name || filePath.split("/").pop()}`)
+                : result(false, `${msg}; but file "${filePath}" was not found`);
+            }
+            return result(true, msg);
+          } catch (e) {
+            return result(false, e instanceof Error ? e.message : String(e));
+          }
+        }
+
+        if (!filePath) return result(false, "No file configured");
         const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
         const anonKey    = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
         const url = `${supabaseUrl}/storage/v1/object/task_files/${filePath}`;

@@ -31,10 +31,27 @@ const TYPE_ORDER: ConnectionType[] = [
   "azure", "insight", "intune", "smtp", "odbc", "portal",
 ];
 
+const FILE_BACKEND_ORDER = ["supabase", "s3", "gcs", "gdrive", "onedrive"] as const;
+const FILE_BACKEND_LABELS: Record<string, string> = {
+  supabase: "Supabase Storage",
+  s3:       "Amazon S3",
+  gcs:      "Google Cloud Storage",
+  gdrive:   "Google Drive",
+  onedrive: "OneDrive",
+};
+
+function fileBackend(conn: EndpointConnection): string {
+  return (conn.config as { backend?: string }).backend ?? "supabase";
+}
+
 function configSummary(conn: EndpointConnection): string {
   const c = conn.config as unknown as Record<string, string>;
   switch (conn.type) {
-    case "file":           return c.file_name || c.file_path?.split("/").pop() || "No file selected";
+    case "file": {
+      const f = c.file_name || c.file_path?.split("/").pop() || "No file selected";
+      const bk = c.backend && c.backend !== "supabase" ? (FILE_BACKEND_LABELS[c.backend] ?? c.backend) : null;
+      return bk ? `${bk} \u00b7 ${f}` : f;
+    }
     case "cloud":          return c.url      || "No URL";
     case "smtp":           return c.server   ? `${c.server}:${c.port || "587"}` : "No server";
     case "odbc":           return c.server_name ? `${c.server_name}:${c.port || "1433"}` : "No server";
@@ -139,12 +156,26 @@ export default function ConnectionsListClient({
 
   const isSearching = search.trim().length > 0;
 
-  const grouped = useMemo<{ type: ConnectionType; items: EndpointConnection[] }[]>(() => {
+  const grouped = useMemo<{ type: ConnectionType; label?: string; items: EndpointConnection[] }[]>(() => {
     if (isSearching) return [];
     const knownTypes = new Set(TYPE_ORDER);
-    const result = TYPE_ORDER
-      .map((t) => ({ type: t, items: visibleConnections.filter((c) => c.type === t) }))
-      .filter((g) => g.items.length > 0);
+    const result: { type: ConnectionType; label?: string; items: EndpointConnection[] }[] = [];
+    for (const t of TYPE_ORDER) {
+      const items = visibleConnections.filter((c) => c.type === t);
+      if (items.length === 0) continue;
+      if (t === "file") {
+        // Categorize file endpoints by cloud backend
+        const knownBackends = new Set<string>(FILE_BACKEND_ORDER);
+        for (const bk of FILE_BACKEND_ORDER) {
+          const sub = items.filter((c) => fileBackend(c) === bk);
+          if (sub.length > 0) result.push({ type: t, label: `File — ${FILE_BACKEND_LABELS[bk]}`, items: sub });
+        }
+        const other = items.filter((c) => !knownBackends.has(fileBackend(c)));
+        if (other.length > 0) result.push({ type: t, label: "File — Other", items: other });
+      } else {
+        result.push({ type: t, items });
+      }
+    }
     const extras = visibleConnections.filter((c) => !knownTypes.has(c.type));
     if (extras.length > 0) {
       Array.from(new Set(extras.map((c) => c.type))).forEach((t) => {
@@ -413,19 +444,19 @@ export default function ConnectionsListClient({
                 </div>
               )
             ) : (
-              grouped.map(({ type, items }) => {
+              grouped.map(({ type, label, items }) => {
                 const meta = TYPE_META[type] ?? {
                   label: type, icon: <Plug className="w-3.5 h-3.5" />, color: "text-gray-400", bg: "bg-gray-500/10 border-gray-500/25",
                 };
                 return (
-                  <section key={type}>
+                  <section key={`${type}:${label ?? ""}`}>
                     {/* Group header */}
                     <div className="flex items-center gap-3 mb-3">
                       <div className={`w-6 h-6 rounded-md flex items-center justify-center border ${meta.bg} ${meta.color}`}>
                         {meta.icon}
                       </div>
                       <h2 className={`text-xs font-semibold uppercase tracking-widest ${meta.color}`}>
-                        {meta.label}
+                        {label ?? meta.label}
                       </h2>
                       <span className="px-2 py-0.5 rounded-full bg-gray-800 border border-gray-700 text-xs text-gray-500 font-medium">
                         {items.length}

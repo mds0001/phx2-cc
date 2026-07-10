@@ -109,21 +109,42 @@ function PasswordInput({ value, onChange, placeholder }: { value: string; onChan
 
 
 // ── Storage folder browser ────────────────────────────────────
-function StorageBrowser({ onSelect, onClose }: { onSelect: (path: string) => void; onClose: () => void }) {
+function StorageBrowser({ config, pickFiles = false, onSelect, onClose }: {
+  config: Record<string, string>;
+  pickFiles?: boolean;
+  onSelect: (path: string, fileName?: string) => void;
+  onClose: () => void;
+}) {
   const supabase = createClient();
+  const backend = config.backend || "supabase";
   const [currentPath, setCurrentPath] = useState<string>("");
   const [items, setItems] = useState<{ name: string; id: string | null }[]>([]);
   const [loading, setLoading] = useState(false);
 
+  const [listError, setListError] = useState<string | null>(null);
+
   async function listFolder(prefix: string) {
     setLoading(true);
+    setListError(null);
     try {
-      const { data, error } = await supabase.storage.from("task_files").list(prefix || undefined, { limit: 200 });
-      if (error) throw error;
-      setItems(data ?? []);
+      if (backend === "supabase") {
+        const { data, error } = await supabase.storage.from("task_files").list(prefix || undefined, { limit: 200 });
+        if (error) throw error;
+        setItems(data ?? []);
+      } else {
+        const res = await fetch("/api/file-storage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ op: "list", config, prefix }),
+        });
+        const json = (await res.json()) as { entries?: { name: string; isFolder: boolean }[]; error?: string };
+        if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+        setItems((json.entries ?? []).map((e) => ({ name: e.name, id: e.isFolder ? null : "file" })));
+      }
       setCurrentPath(prefix);
-    } catch {
+    } catch (e) {
       setItems([]);
+      setListError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
@@ -134,6 +155,7 @@ function StorageBrowser({ onSelect, onClose }: { onSelect: (path: string) => voi
   useEffect(() => { listFolder(""); }, []);
 
   const folders = items.filter((i) => i.id === null); // folders have no id
+  const files = pickFiles ? items.filter((i) => i.id !== null) : [];
   const breadcrumbs = currentPath ? currentPath.split("/").filter(Boolean) : [];
 
   function navigateTo(parts: string[]) {
@@ -150,7 +172,7 @@ function StorageBrowser({ onSelect, onClose }: { onSelect: (path: string) => voi
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
           <h3 className="text-white font-semibold text-sm flex items-center gap-2">
             <FolderOpen className="w-4 h-4 text-amber-400" />
-            Select Directory
+            {pickFiles ? "Select File" : "Select Directory"}
           </h3>
           <button onClick={onClose} className="w-7 h-7 rounded-lg bg-gray-800 hover:bg-gray-700 flex items-center justify-center text-gray-400 hover:text-white transition-all">
             <X className="w-3.5 h-3.5" />
@@ -181,20 +203,31 @@ function StorageBrowser({ onSelect, onClose }: { onSelect: (path: string) => voi
             <div className="flex items-center justify-center py-8">
               <Loader2 className="w-5 h-5 text-amber-400 animate-spin" />
             </div>
-          ) : folders.length === 0 ? (
-            <p className="text-xs text-gray-500 text-center py-8">No sub-folders here</p>
+          ) : listError ? (
+            <p className="text-xs text-red-400 text-center py-8 px-4 break-words">{listError}</p>
+          ) : folders.length === 0 && files.length === 0 ? (
+            <p className="text-xs text-gray-500 text-center py-8">{pickFiles ? "Nothing here" : "No sub-folders here"}</p>
           ) : (
-            folders.map((folder) => {
-              const fullPath = currentPath ? `${currentPath}${folder.name}/` : `${folder.name}/`;
-              return (
-                <div key={folder.name} className="flex items-center gap-2 rounded-lg hover:bg-gray-800 px-2 py-1.5 group cursor-pointer"
-                  onClick={() => listFolder(fullPath)}>
-                  <Folder className="w-4 h-4 text-amber-400 shrink-0" />
-                  <span className="text-sm text-white flex-1 truncate">{folder.name}</span>
-                  <ChevronRight className="w-3.5 h-3.5 text-gray-600 group-hover:text-gray-400 shrink-0" />
+            <>
+              {folders.map((folder) => {
+                const fullPath = currentPath ? `${currentPath}${folder.name}/` : `${folder.name}/`;
+                return (
+                  <div key={folder.name} className="flex items-center gap-2 rounded-lg hover:bg-gray-800 px-2 py-1.5 group cursor-pointer"
+                    onClick={() => listFolder(fullPath)}>
+                    <Folder className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span className="text-sm text-white flex-1 truncate">{folder.name}</span>
+                    <ChevronRight className="w-3.5 h-3.5 text-gray-600 group-hover:text-gray-400 shrink-0" />
+                  </div>
+                );
+              })}
+              {files.map((f) => (
+                <div key={f.name} className="flex items-center gap-2 rounded-lg hover:bg-gray-800 px-2 py-1.5 group cursor-pointer"
+                  onClick={() => { onSelect(currentPath + f.name, f.name); onClose(); }}>
+                  <FileText className="w-4 h-4 text-gray-400 shrink-0" />
+                  <span className="text-sm text-white flex-1 truncate">{f.name}</span>
                 </div>
-              );
-            })
+              ))}
+            </>
           )}
         </div>
 
@@ -208,12 +241,14 @@ function StorageBrowser({ onSelect, onClose }: { onSelect: (path: string) => voi
             >
               Cancel
             </button>
-            <button
-              onClick={() => { onSelect(currentPath); onClose(); }}
-              className="flex-1 px-4 py-2 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-sm font-semibold rounded-xl transition-all"
-            >
-              Select This Folder
-            </button>
+            {!pickFiles && (
+              <button
+                onClick={() => { onSelect(currentPath); onClose(); }}
+                className="flex-1 px-4 py-2 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-sm font-semibold rounded-xl transition-all"
+              >
+                Select This Folder
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -223,6 +258,14 @@ function StorageBrowser({ onSelect, onClose }: { onSelect: (path: string) => voi
 
 // ── File form ─────────────────────────────────────────────────
 const FILE_TYPES = ["xlsx", "json", "xml", "csv"] as const;
+
+const FILE_BACKENDS = [
+  { key: "supabase", label: "Supabase",     desc: "Built-in storage (default)" },
+  { key: "s3",       label: "Amazon S3",    desc: "S3 or S3-compatible bucket" },
+  { key: "gcs",      label: "Google Cloud", desc: "Google Cloud Storage bucket" },
+  { key: "gdrive",   label: "Google Drive", desc: "Drive folder via service account" },
+  { key: "onedrive", label: "OneDrive",     desc: "OneDrive / SharePoint drive via Graph" },
+] as const;
 
 function FileForm({ config, onChange, agents, agentId, onAgentChange, customerId }: {
   config: Record<string, string>;
@@ -241,6 +284,9 @@ function FileForm({ config, onChange, agents, agentId, onAgentChange, customerId
   const fileType = (config.file_type ?? "xlsx") as string;
   const fileMode = (config.file_mode ?? "file") as "file" | "directory" | "local";
   const [showBrowser, setShowBrowser] = useState(false);
+  const backend = config.backend || "supabase";
+  const isCloudBackend = backend !== "supabase";
+  const [showFileBrowser, setShowFileBrowser] = useState(false);
 
   async function handleFilePick(file: File) {
     setUploading(true);
@@ -266,6 +312,26 @@ function FileForm({ config, onChange, agents, agentId, onAgentChange, customerId
 
   async function handleDownload() {
     if (!config.file_path) return;
+    if (isCloudBackend) {
+      const res = await fetch("/api/file-storage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ op: "download", config, path: config.file_path }),
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        alert("Download failed: " + (j.error ?? `HTTP ${res.status}`));
+        return;
+      }
+      const data = await res.blob();
+      const objUrl = URL.createObjectURL(data);
+      const a = document.createElement("a");
+      a.href = objUrl;
+      a.download = config.file_name ?? config.file_path.split("/").pop() ?? "file";
+      a.click();
+      URL.revokeObjectURL(objUrl);
+      return;
+    }
     const { data, error } = await supabase.storage.from("task_files").download(config.file_path);
     if (error || !data) { alert("Download failed: " + error?.message); return; }
     const url = URL.createObjectURL(data);
@@ -280,6 +346,109 @@ function FileForm({ config, onChange, agents, agentId, onAgentChange, customerId
 
   return (
     <>
+      {/* Cloud backend */}
+      <Field label="Cloud Backend">
+        <div className="flex gap-2 flex-wrap">
+          {FILE_BACKENDS.map((b) => (
+            <button
+              key={b.key}
+              type="button"
+              title={b.desc}
+              onClick={() => {
+                onChange("backend", b.key);
+                if (b.key !== "supabase" && fileMode === "local") onChange("file_mode", "file");
+              }}
+              className={`flex-1 min-w-[110px] px-3 py-2 rounded-xl border text-xs font-semibold transition-all ${
+                backend === b.key
+                  ? "bg-amber-500/20 border-amber-500/60 text-amber-300"
+                  : "bg-gray-800 border-gray-700 text-gray-400 hover:border-amber-500/40 hover:text-amber-400"
+              }`}
+            >
+              {b.label}
+            </button>
+          ))}
+        </div>
+      </Field>
+
+      {/* Backend credentials */}
+      {backend === "s3" && (
+        <>
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Bucket">
+              <TextInput value={config.s3_bucket ?? ""} onChange={(v) => onChange("s3_bucket", v)} placeholder="my-bucket" />
+            </Field>
+            <Field label="Region">
+              <TextInput value={config.s3_region ?? ""} onChange={(v) => onChange("s3_region", v)} placeholder="us-east-1" />
+            </Field>
+          </div>
+          <Field label="Access Key ID">
+            <TextInput value={config.s3_access_key_id ?? ""} onChange={(v) => onChange("s3_access_key_id", v)} placeholder="AKIA…" />
+          </Field>
+          <Field label="Secret Access Key">
+            <PasswordInput value={config.s3_secret_access_key ?? ""} onChange={(v) => onChange("s3_secret_access_key", v)} placeholder="Secret access key" />
+          </Field>
+          <Field label="Custom Endpoint" hint="Optional — for S3-compatible stores (MinIO, Wasabi, R2). Leave blank for AWS.">
+            <TextInput value={config.s3_endpoint ?? ""} onChange={(v) => onChange("s3_endpoint", v)} placeholder="https://s3.example.com" type="url" />
+          </Field>
+        </>
+      )}
+      {backend === "gcs" && (
+        <>
+          <Field label="Bucket">
+            <TextInput value={config.gcs_bucket ?? ""} onChange={(v) => onChange("gcs_bucket", v)} placeholder="my-bucket" />
+          </Field>
+          <Field label="Service Account Key (JSON)" hint="Paste the full key file from Google Cloud IAM. The service account needs Storage Object Admin on the bucket.">
+            <textarea
+              value={config.gcs_service_account_json ?? ""}
+              onChange={(e) => onChange("gcs_service_account_json", e.target.value)}
+              placeholder='{"type":"service_account", …}'
+              rows={4}
+              className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-xs font-mono"
+            />
+          </Field>
+        </>
+      )}
+      {backend === "gdrive" && (
+        <>
+          <Field label="Root Folder ID" hint="From the folder URL: drive.google.com/drive/folders/<ID>. All paths are relative to this folder.">
+            <TextInput value={config.gdrive_folder_id ?? ""} onChange={(v) => onChange("gdrive_folder_id", v)} placeholder="1AbC…" />
+          </Field>
+          <Field label="Service Account Key (JSON)" hint="Paste the full key file. Share the root folder with the service account's client_email (Editor access).">
+            <textarea
+              value={config.gdrive_service_account_json ?? ""}
+              onChange={(e) => onChange("gdrive_service_account_json", e.target.value)}
+              placeholder='{"type":"service_account", …}'
+              rows={4}
+              className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-xs font-mono"
+            />
+          </Field>
+        </>
+      )}
+      {backend === "onedrive" && (
+        <>
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Tenant ID">
+              <TextInput value={config.od_tenant_id ?? ""} onChange={(v) => onChange("od_tenant_id", v)} placeholder="contoso.onmicrosoft.com or GUID" />
+            </Field>
+            <Field label="Client ID">
+              <TextInput value={config.od_client_id ?? ""} onChange={(v) => onChange("od_client_id", v)} placeholder="App registration client ID" />
+            </Field>
+          </div>
+          <Field label="Client Secret">
+            <PasswordInput value={config.od_client_secret ?? ""} onChange={(v) => onChange("od_client_secret", v)} placeholder="Client secret value" />
+          </Field>
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Drive ID" hint="Explicit drive — or leave blank and set a user.">
+              <TextInput value={config.od_drive_id ?? ""} onChange={(v) => onChange("od_drive_id", v)} placeholder="b!xyz…" />
+            </Field>
+            <Field label="User (UPN)" hint="Uses this user's default OneDrive.">
+              <TextInput value={config.od_user_principal ?? ""} onChange={(v) => onChange("od_user_principal", v)} placeholder="user@contoso.com" />
+            </Field>
+          </div>
+          <p className="text-xs text-gray-500 -mt-2">The Entra app registration needs <span className="font-mono">Files.ReadWrite.All</span> (application) with admin consent.</p>
+        </>
+      )}
+
       {/* File Type */}
       <Field label="File Type">
         <div className="flex gap-2">
@@ -303,7 +472,7 @@ function FileForm({ config, onChange, agents, agentId, onAgentChange, customerId
       {/* Mode: specific file vs directory */}
       <Field label="Target">
         <div className="flex gap-2 mb-3">
-          {(["file", "directory", "local"] as const).map((m) => (
+          {(isCloudBackend ? (["file", "directory"] as const) : (["file", "directory", "local"] as const)).map((m) => (
             <button
               key={m}
               type="button"
@@ -324,7 +493,59 @@ function FileForm({ config, onChange, agents, agentId, onAgentChange, customerId
           ))}
         </div>
 
-        {fileMode === "file" ? (
+        {fileMode === "file" && isCloudBackend ? (
+          /* ── Specific file on a cloud backend: pick an existing file ── */
+          <>
+            {displayName ? (
+              <div className="flex items-center gap-3 bg-gray-800 border border-amber-500/30 rounded-xl px-4 py-3">
+                <div className="w-9 h-9 rounded-lg bg-amber-500/10 border border-amber-500/25 flex items-center justify-center shrink-0">
+                  <FileText className="w-4 h-4 text-amber-400" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-white font-medium truncate">{displayName}</p>
+                  <p className="text-xs text-gray-500 truncate">{config.file_path}</p>
+                </div>
+                <button type="button" onClick={clearFile} className="shrink-0 text-gray-500 hover:text-red-400 transition-colors" title="Remove file">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowFileBrowser(true)}
+                className="w-full flex flex-col items-center gap-3 px-6 py-8 rounded-xl border-2 border-dashed border-gray-600 hover:border-amber-500/50 hover:bg-gray-800/50 transition-all"
+              >
+                <div className="w-12 h-12 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
+                  <FolderOpen className="w-5 h-5 text-amber-400" />
+                </div>
+                <div className="text-center">
+                  <p className="text-sm font-medium text-white">Browse {FILE_BACKENDS.find((b) => b.key === backend)?.label} for a file</p>
+                  <p className="text-xs text-gray-500 mt-1">.{fileType} file</p>
+                </div>
+              </button>
+            )}
+            {displayName && (
+              <div className="flex items-center gap-4 mt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowFileBrowser(true)}
+                  className="flex items-center gap-2 text-xs text-gray-500 hover:text-amber-400 transition-colors"
+                >
+                  <FolderOpen className="w-3.5 h-3.5" />
+                  Choose different file
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownload}
+                  className="flex items-center gap-2 text-xs text-gray-500 hover:text-amber-400 transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Download
+                </button>
+              </div>
+            )}
+          </>
+        ) : fileMode === "file" ? (
           /* ── Specific file: upload / drop zone ── */
           <>
             {displayName ? (
@@ -466,8 +687,20 @@ function FileForm({ config, onChange, agents, agentId, onAgentChange, customerId
       {uploadError && <p className="text-xs text-red-400">{uploadError}</p>}
       {showBrowser && (
         <StorageBrowser
+          config={config}
           onSelect={(p) => onChange("file_path", p)}
           onClose={() => setShowBrowser(false)}
+        />
+      )}
+      {showFileBrowser && (
+        <StorageBrowser
+          config={config}
+          pickFiles
+          onSelect={(p, fileName) => {
+            onChange("file_path", p);
+            onChange("file_name", fileName ?? p.split("/").pop() ?? "");
+          }}
+          onClose={() => setShowFileBrowser(false)}
         />
       )}
     </>

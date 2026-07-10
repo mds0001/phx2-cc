@@ -1052,7 +1052,7 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
           if (!srcConnData) continue;
           const srcConn = srcConnData as EndpointConnection;
           if (srcConn.type !== "file") continue;
-          const srcConfig = srcConn.config as { file_path?: string; file_name?: string };
+          const srcConfig = srcConn.config as { file_path?: string; file_name?: string; backend?: string };
 
           const taskDir = task.source_file_path?.trim().replace(/\/$/, "") ?? null;
           const connFileName = srcConfig.file_name ?? null;
@@ -1060,12 +1060,23 @@ const pendingMappingRef = useRef<{ id: string; mode: string; taskId: string | nu
           const resolvedSourceFilePath = connFilePath || (taskDir && connFileName ? `${taskDir}/${connFileName}` : null);
           if (!resolvedSourceFilePath) continue;
 
-          const { data: fileData, error: dlError } = await supabase.storage.from("task_files").download(resolvedSourceFilePath);
-          if (dlError || !fileData) {
+          let srcBuf: ArrayBuffer | null = null;
+          if ((srcConfig.backend ?? "supabase") !== "supabase") {
+            const res = await fetch("/api/file-storage", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ op: "download", config: srcConn.config, path: resolvedSourceFilePath }),
+            });
+            if (res.ok) srcBuf = await res.arrayBuffer();
+          } else {
+            const { data: fileData } = await supabase.storage.from("task_files").download(resolvedSourceFilePath);
+            if (fileData) srcBuf = await fileData.arrayBuffer();
+          }
+          if (!srcBuf) {
             await supabase.from("task_logs").insert({ task_id: task.id, action: "WARN", details: `File not found: ${resolvedSourceFilePath} — skipping slot` });
             continue;
           }
-          const wb = XLSX.read(await fileData.arrayBuffer(), { type: "array" });
+          const wb = XLSX.read(srcBuf, { type: "array" });
           const sheetName = wb.SheetNames[0];
           const rows: Record<string, unknown>[] = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: null });
           if (rows.length === 0) continue;

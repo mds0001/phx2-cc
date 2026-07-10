@@ -322,12 +322,33 @@ export type ConnectionType = "file" | "cloud" | "smtp" | "odbc" | "portal" | "iv
 
 export type FileType = "xlsx" | "json" | "xml" | "csv";
 export type FileMode = "file" | "directory";
+/** Cloud backend a file endpoint lives on. Absent = "supabase" (legacy default). */
+export type FileBackend = "supabase" | "s3" | "gcs" | "gdrive" | "onedrive";
 export interface FileConfig {
+  backend?: FileBackend;
   file_type: FileType;
   file_mode: FileMode;
   file_path: string;        // storage path (file mode) or directory prefix (directory mode)
   file_name?: string;       // display name of the selected file
   output_file_name?: string; // explicit output filename (directory mode)
+  // s3 — also covers S3-compatible stores via the optional custom endpoint
+  s3_region?: string;
+  s3_bucket?: string;
+  s3_access_key_id?: string;
+  s3_secret_access_key?: string;
+  s3_endpoint?: string;
+  // gcs — service-account key JSON (the full downloaded key file, stringified)
+  gcs_bucket?: string;
+  gcs_service_account_json?: string;
+  // gdrive — service account + root folder shared with its client_email
+  gdrive_service_account_json?: string;
+  gdrive_folder_id?: string;
+  // onedrive — Entra app registration (client credentials) + drive selector
+  od_tenant_id?: string;
+  od_client_id?: string;
+  od_client_secret?: string;
+  od_drive_id?: string;       // explicit drive ID…
+  od_user_principal?: string; // …or resolve the default drive of this user (UPN)
 }
 export interface CloudConfig  { url: string; customer_id: string; customer_secret: string }
 export interface SmtpConfig   { server: string; port: string; login_name: string; password: string; from_address?: string }
