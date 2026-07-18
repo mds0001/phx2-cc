@@ -36,6 +36,18 @@ npm run seed:system  # Sync all system templates (is_system=true) from prod → 
 
 No test suite is configured — there is no test runner or test files in this project.
 
+```bash
+npm run import:xml    # Import XML-defined templates into the DB (scripts/import-xml-templates.mjs)
+```
+
+### Deployment scripts (repo root, PowerShell)
+
+- `push.ps1` — stage all, prompt for a commit message, commit, push `origin main` → triggers a Vercel deploy. **Do not run without confirmed dev testing** (see the mandatory workflow below). Note its hard-coded default commit message is stale — always supply a real message.
+- `commit.ps1 "msg"` — same, plus it clears stale `.git/*.lock` files first; pushes to the current branch's upstream.
+- `start-dev.ps1` — thin wrapper around `npm run dev`.
+
+Vercel auto-deploys on push to `main`; there is no separate deploy command.
+
 ## Environment Variables
 
 Required in `.env.local`:
@@ -51,6 +63,8 @@ This is a **Next.js 15 App Router** application with Supabase as the backend. Th
 ### Auth & Middleware
 
 `middleware.ts` gates every route (except `/login`, static assets, and `/api/*`). It uses `@supabase/ssr` with cookies, redirecting unauthenticated users to `/login` and already-authenticated users away from `/login` to `/dashboard`.
+
+It also enforces **MFA**: if a user's `app_metadata.mfa_enabled === true`, requests without a valid `mfa_verified` cookie are bounced to `/login?mfa=required` (except the `/api/auth/mfa/*` routes needed to complete verification). The MFA endpoints (`/api/auth/mfa/{send,verify,enable,disable}`) and cookie validation live in `src/lib/mfa-server.ts`.
 
 ### Supabase Clients
 
@@ -103,9 +117,29 @@ When a task runs in `SchedulerClient`, it reads Excel source data, applies the m
 
 `src/app/boh/` is a separate section for customer and license management (`Customer`, `CustomerLicense` types). The dashboard summarizes BOH alerts (failed payments, expiring licenses).
 
-### User Management
+### User Management, Roles & Customer Scoping
 
-`/api/users/invite` and `/api/users/[id]` use the admin Supabase client (service role) to invite users and manage profiles. Users have a `user_type` (`admin | user`) and `role` (`administrator | schedule_administrator`).
+`/api/users/invite` and `/api/users/[id]` use the admin Supabase client (service role) to invite users and manage profiles.
+
+A user has a `profiles.user_type` (`admin | user | basic`) **and, separately, one or more role assignments** in the `user_roles` table (`UserRoleAssignment` in `types.ts`). Do not conflate the two — access decisions are driven by the *active role assignment*, not `user_type`.
+
+- `UserRole` is `administrator | schedule_administrator | basic | schedule_auditor`.
+- A user can hold **multiple** `user_roles` rows; one is `is_primary`. The currently active one is chosen by the `active_role_id` cookie (see `src/lib/permissions.ts` → `getActiveRoleAssignment` / `getCurrentUserAssignment`). `isReadOnly()` (basic + schedule_auditor) and `isAuditor()` gate write access.
+- **Customer scoping** (`src/lib/customer-context.ts` → `resolveCustomerFilter`): `schedule_administrator` / `schedule_auditor` assignments are pinned to their `customer_id`; an `administrator` uses the cookie-based customer switcher (`active_customer_id`, `null` = all customers). Server pages resolve the active assignment, then the customer filter, and scope their Supabase queries by it. Both cookies are `httpOnly: false` on purpose so the client switchers can update optimistically.
+
+### Agent Subsystem (`/api/agent/*`)
+
+A **desktop runner** (external process, one per customer) pulls jobs and pushes extracted rows to the cloud so on-prem files never need to be exposed. It authenticates with `X-Agent-Id` / `X-Agent-Key` headers, validated in `src/lib/agent-auth.ts` (`validateAgentRequest` — SHA-256 hash compare against `agents.api_key_hash`; `retired` agents are rejected). Managed in the UI via `AgentsClient` / `/api/agent/generate-token`.
+
+Flow: agent `register` → `heartbeat` → `fetch-file` (pull a queued job's source file) → `data` (POST extracted row chunks; the server reads the destination config from `agent_jobs.payload` and forwards to `/api/ivanti-proxy` server-to-server) → `file-result` / `job-complete`. The agent never holds destination credentials — they stay server-side in the job payload.
+
+### Other Subsystems (pointers)
+
+- **Billing** — Stripe (`src/lib/stripe.ts`, `stripe-client.ts`, `/api/stripe/*`: setup-intent, save-card, charge, webhook). Used by BOH customer billing; `StripeCardSection` on the client.
+- **CRM pipeline** — `leads → opportunities → quotes`, under `src/app/boh/{leads,opportunities}` with `/api/pipeline/{convert,promote,send-quote}`. Admin-only (`user_type === "admin"` check in the routes).
+- **SKU research** — `/api/sku-research-queue`, `/api/sku-run-exceptions`, `/api/sku-exception-notify`; quote-building support (`QuoteBuilderPanel`).
+- **Rule-type flow editor** — `RuleTypeEditorClient` / `TaskPlumbingModal` use `@xyflow/react` for a node-graph view of a task's source→mapping→target plumbing.
+- **Insight QA** — `/api/insight-qa/*` implements an OAuth token + CustomerInvoice endpoint (a mock/probe of the Insight QA API).
 
 ### UI Conventions
 
