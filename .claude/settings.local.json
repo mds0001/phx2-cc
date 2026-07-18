@@ -25,7 +25,15 @@
       "Bash(grep -E \"profiles|profile\\\\?\\\\\\\\.|profile\\\\\\\\.\\\\b\")",
       "Bash(git *)",
       "Bash(pwsh -NoProfile -File ./push.ps1)",
-      "PowerShell(./push.ps1)"
+      "PowerShell(./push.ps1)",
+      "PowerShell(npm *)",
+      "PowerShell($c = Get-Command node,npm,git -ErrorAction SilentlyContinue | Select-Object Name,Source; $c | Format-Table -AutoSize; \"---\"; \"winget: \" + \\(\\(Get-Command winget -ErrorAction SilentlyContinue\\).Source\\); \"policy: \" + \\(Get-ExecutionPolicy -Scope CurrentUser\\))",
+      "PowerShell(Set-ExecutionPolicy *)",
+      "PowerShell(winget install *)",
+      "PowerShell($p = \"C:\\\\Program Files\\\\Git\\\\cmd\\\\git.exe\"; \"exists: \" + \\(Test-Path $p\\); if \\(Test-Path $p\\) { & $p --version })"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\mdsto\\projects\\threads-agent"
     ]
   }
 }
