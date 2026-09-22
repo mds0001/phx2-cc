@@ -49,6 +49,8 @@ const STATUS_STYLES: Record<string, string> = {
   void:   "text-gray-500 bg-gray-500/10 border-gray-500/20",
 };
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const fmt = (n: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
 const fmtDate = (d: string) => new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 
@@ -232,65 +234,68 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
     if (data) setBills(prev => prev.map(b => b.id === bill.id ? data : b));
   }
 
-  async function payViaMercury(bill: Bill, smokeTest = true) {
+  // Manual entry only — the automated Mercury ACH send was removed (the
+  // route had no auth check, paid a stale hardcoded recipient, and the
+  // real workflow has always been: transfer by hand in Mercury, then
+  // record the transaction UUID here).
+  async function recordMercuryPayment(bill: Bill) {
+    const raw = window.prompt("Mercury transaction ID for this payment (from the Mercury transaction URL, not the tracking number):");
+    const uuid = raw?.trim();
+    if (!uuid) return;
+    if (!UUID_RE.test(uuid)) {
+      setPayResult({ msg: "That doesn't look like a Mercury transaction UUID (letters/numbers with dashes).", ok: false });
+      return;
+    }
     setPaying(bill.id);
     setPayResult(null);
-    try {
-      const res = await fetch("/api/mercury-pay", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ billId: bill.id, amount: bill.amount, note: bill.description, smokeTest }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setPayResult({ msg: "Error: " + (data.error ?? "unknown") + (data.details ? " — " + JSON.stringify(data.details) : ""), ok: false });
-      } else {
-        setPayResult({ msg: (smokeTest ? "Smoke test" : "Payment") + " sent! $" + data.amount + " · Mercury txn: " + data.mercuryTransactionId, ok: true });
-        if (!smokeTest) {
-          const today = new Date().toISOString().slice(0, 10);
-          const { data: updated } = await supabase
-            .from("cw_bills")
-            .update({ status: "paid", paid_date: today, mercury_transaction_id: data.mercuryTransactionId })
-            .eq("id", bill.id)
-            .select("*, vendor:cw_vendors(*)")
-            .single();
-          if (updated) setBills(prev => prev.map(b => b.id === bill.id ? updated : b));
-        }
-      }
-    } catch (e) {
-      setPayResult({ msg: "Network error: " + String(e), ok: false });
-    } finally {
-      setPaying(null);
+    const today = new Date().toISOString().slice(0, 10);
+    const { data, error } = await supabase
+      .from("cw_bills")
+      .update({ status: "paid", paid_date: today, mercury_transaction_id: uuid })
+      .eq("id", bill.id)
+      .select("*, vendor:cw_vendors(*)")
+      .single();
+    setPaying(null);
+    if (error) {
+      setPayResult({ msg: "Failed to record payment: " + error.message, ok: false });
+      return;
+    }
+    if (data) {
+      setBills(prev => prev.map(b => b.id === bill.id ? data : b));
+      setPayResult({ msg: "Payment recorded — " + fmt(bill.amount) + " · Mercury txn: " + uuid, ok: true });
     }
   }
 
-  async function reimburseViaMercury(amount: number) {
+  // Manual entry only — see the note on recordMercuryPayment above.
+  async function recordReimbursement(amount: number) {
+    if (!amount || amount <= 0) {
+      setPayResult({ msg: "Enter a reimbursement amount greater than zero.", ok: false });
+      return;
+    }
+    const raw = window.prompt("Mercury transaction ID for this reimbursement (from the Mercury transaction URL, not the tracking number):");
+    const uuid = raw?.trim();
+    if (!uuid) return;
+    if (!UUID_RE.test(uuid)) {
+      setPayResult({ msg: "That doesn't look like a Mercury transaction UUID (letters/numbers with dashes).", ok: false });
+      return;
+    }
     setPaying("owner-reimburse");
     setPayResult(null);
-    try {
-      const res = await fetch("/api/mercury-pay", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ billId: "owner-reimburse-" + Date.now(), amount, note: "Owner reimbursement via Mercury ACH", smokeTest: false }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setPayResult({ msg: "Error: " + (data.error ?? "unknown") + (data.details ? " — " + JSON.stringify(data.details) : ""), ok: false });
-      } else {
-        setPayResult({ msg: "Reimbursement sent! $" + data.amount + " · Mercury txn: " + data.mercuryTransactionId, ok: true });
-        const today = new Date().toISOString().slice(0, 10);
-        const { data: entry } = await supabase
-          .from("cw_owner_ledger")
-          .insert({ date: today, description: "Reimbursement via Mercury ACH", type: "reimbursed", amount, payment_method: "mercury", notes: "Mercury txn: " + data.mercuryTransactionId })
-          .select()
-          .single();
-        if (entry) setOwnerLedger(prev => [entry, ...prev]);
-        setReimburseAmount("");
-      }
-    } catch (e) {
-      setPayResult({ msg: "Network error: " + String(e), ok: false });
-    } finally {
-      setPaying(null);
+    const today = new Date().toISOString().slice(0, 10);
+    const { data: entry, error } = await supabase
+      .from("cw_owner_ledger")
+      .insert({ date: today, description: "Reimbursement via Mercury", type: "reimbursed", amount, payment_method: "mercury", notes: "Mercury txn: " + uuid })
+      .select()
+      .single();
+    setPaying(null);
+    if (error) {
+      setPayResult({ msg: "Failed to record reimbursement: " + error.message, ok: false });
+      return;
+    }
+    if (entry) {
+      setOwnerLedger(prev => [entry, ...prev]);
+      setPayResult({ msg: "Reimbursement recorded — $" + amount.toFixed(2) + " · Mercury txn: " + uuid, ok: true });
+      setReimburseAmount("");
     }
   }
 
@@ -645,10 +650,10 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
                                   <CheckCircle2 className="w-3.5 h-3.5" />
                                 </button>
                                 <button
-                                    onClick={() => payViaMercury(bill, false)}
+                                    onClick={() => recordMercuryPayment(bill)}
                                     disabled={paying === bill.id}
                                     className="p-1 rounded text-blue-400 hover:bg-blue-500/10 transition-all disabled:opacity-50"
-                                    title={"Pay " + fmt(bill.amount) + " via Mercury ACH"}
+                                    title={"Record a Mercury payment for this bill (" + fmt(bill.amount) + ") — transfer in Mercury first, then enter the transaction ID here"}
                                   >
                                     {paying === bill.id
                                       ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -757,7 +762,7 @@ export default function FinanceClient({ vendors: initialVendors, bills: initialB
                       className="w-24 bg-gray-800 border border-gray-700 text-white text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />
                     <button
-                      onClick={() => reimburseViaMercury(parseFloat(reimburseAmount !== "" ? reimburseAmount : ownerStats.balance.toFixed(2)))}
+                      onClick={() => recordReimbursement(parseFloat(reimburseAmount !== "" ? reimburseAmount : ownerStats.balance.toFixed(2)))}
                       disabled={paying === "owner-reimburse"}
                       className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-all"
                     >
