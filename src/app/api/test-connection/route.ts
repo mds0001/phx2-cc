@@ -1,39 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as net from "net";
 import { createClient } from "@/lib/supabase-server";
-import * as dns from "dns/promises";
-
-// ── SSRF guard ────────────────────────────────
-function isPrivateIp(ip: string): boolean {
-  // Block loopback, link-local, RFC-1918, and APIPA ranges
-  return (
-    /^127\./.test(ip) ||
-    /^::1$/.test(ip) ||
-    /^10\./.test(ip) ||
-    /^172\.(1[6-9]|2[0-9]|3[01])\./.test(ip) ||
-    /^192\.168\./.test(ip) ||
-    /^169\.254\./.test(ip) ||
-    /^fc[0-9a-f]{2}:/i.test(ip) ||
-    /^fd[0-9a-f]{2}:/i.test(ip)
-  );
-}
-
-async function isSsrfTarget(urlOrHost: string): Promise<boolean> {
-  try {
-    // If it looks like a URL, extract the hostname
-    let host = urlOrHost;
-    if (urlOrHost.startsWith("http://") || urlOrHost.startsWith("https://")) {
-      host = new URL(urlOrHost).hostname;
-    }
-    // Block bare IP addresses directly
-    if (isPrivateIp(host)) return true;
-    // Resolve hostnames and block if any resolved IP is private
-    const addrs = await dns.resolve(host).catch(() => [] as string[]);
-    return addrs.some(isPrivateIp);
-  } catch {
-    return false;
-  }
-}
+import { isSsrfTarget } from "@/lib/ssrf-guard";
 
 // ── Helpers ───────────────────────────────────────────────────
 function result(success: boolean, message: string) {

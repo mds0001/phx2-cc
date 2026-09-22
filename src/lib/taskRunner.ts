@@ -136,6 +136,18 @@ function vercelBypassHeaders(): Record<string, string> {
   return secret ? { "x-vercel-protection-bypass": secret } : {};
 }
 
+/** Headers for the runner's server-to-server calls to /api/ivanti-proxy and
+ *  /api/intune-proxy, which require a user session or this CRON_SECRET bearer
+ *  (see lib/proxy-auth.ts). */
+function runnerProxyHeaders(ctx: RunCtx): Record<string, string> {
+  if (!ctx.cronSecret) {
+    throw new Error(
+      "CRON_SECRET env var is not set. Server-side runner needs it to authenticate against the destination/source proxies. Add it to .env.local (dev) and Vercel env vars (prod)."
+    );
+  }
+  return { "Content-Type": "application/json", "Authorization": `Bearer ${ctx.cronSecret}`, ...vercelBypassHeaders() };
+}
+
 export async function runChunk(run: ClaimedRun, admin: SupabaseClient, ctx: RunCtx): Promise<ChunkResult> {
   const startMs = Date.now();
   const nowIso = () => new Date().toISOString();
@@ -1231,7 +1243,7 @@ async function fetchIvantiRows(
   const cfg = sourceConn.config as unknown as { url?: string; api_key?: string; tenant_id?: string };
   const res = await fetch(`${ctx.origin}/api/ivanti-proxy`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json", ...vercelBypassHeaders() },
+    headers: runnerProxyHeaders(ctx),
     body: JSON.stringify({
       ivantiUrl: cfg.url,
       apiKey: cfg.api_key,
@@ -1287,7 +1299,7 @@ async function fetchIntuneRows(
   };
   const res = await fetch(`${ctx.origin}/api/intune-proxy`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json", ...vercelBypassHeaders() },
+    headers: runnerProxyHeaders(ctx),
     body: JSON.stringify({
       tenantId: cfg.tenant_id,
       clientId: cfg.client_id,
@@ -1379,7 +1391,7 @@ async function postRowToIvanti(args: {
   try {
     const res = await fetch(`${ctx.origin}/api/ivanti-proxy`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...vercelBypassHeaders() },
+      headers: runnerProxyHeaders(ctx),
       body: JSON.stringify({
         ivantiUrl: cfg.url,
         data: mapped,
@@ -1581,7 +1593,7 @@ async function hydrateInstalledSoftware(args: {
     try {
       const res = await fetch(`${ctx.origin}/api/ivanti-proxy`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...vercelBypassHeaders() },
+        headers: runnerProxyHeaders(ctx),
         body: JSON.stringify({
           ivantiUrl: cfg.url,
           apiKey: cfg.api_key,

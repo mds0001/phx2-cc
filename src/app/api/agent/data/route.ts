@@ -79,9 +79,16 @@ export async function POST(req: NextRequest) {
     if (payload.ivanti_url && rows.length > 0) {
       const proxyUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/api/ivanti-proxy`;
 
+      // ivanti-proxy requires a session or the CRON_SECRET bearer (this call has no session).
+      const cronSecret = process.env.CRON_SECRET;
+      if (!cronSecret) {
+        console.error("[agent/data] CRON_SECRET is not set - cannot authenticate to ivanti-proxy");
+        return NextResponse.json({ error: "Server misconfigured" }, { status: 500 });
+      }
+
       const proxyRes = await fetch(proxyUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${cronSecret}` },
         body: JSON.stringify({
           ivantiUrl:            payload.ivanti_url,
           apiKey:               payload.api_key,

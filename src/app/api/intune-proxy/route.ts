@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
+import { requireProxyAuth } from "@/lib/proxy-auth";
 import { DEMO_DEVICES, DEMO_TENANT } from "@/lib/intuneDemoFleet";
 import {
   loadKnowledge, resolveDeviceApps, attachSoftwareFields, UnknownCollector,
@@ -115,9 +116,15 @@ async function graphGetAll(url: string, token: string, cap: number): Promise<Rec
 const bytesToGB = (b: unknown): number | null =>
   typeof b === "number" && b > 0 ? Math.round(b / 1024 ** 3) : null;
 
+/** Trim + lowercase for tolerant comparison (used for the demo-tenant check). */
+const norm = (s?: string | null): string => (s ?? "").trim().toLowerCase();
+
 // ── PUT: source read — one row per managed device ─────────────────────────
 export async function PUT(req: NextRequest) {
   try {
+    const denied = await requireProxyAuth(req);
+    if (denied) return denied;
+
     const body = (await req.json()) as {
       tenantId?: string;
       clientId?: string;

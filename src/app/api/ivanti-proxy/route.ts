@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { pushBinaryRow, type StrategyAttempt } from "@/lib/dev-log";
+import { requireProxyAuth } from "@/lib/proxy-auth";
+import { ssrfDenied } from "@/lib/ssrf-guard";
 
 // FALLBACK_API_KEY removed - do not hardcode credentials in source code.
 
@@ -380,6 +382,9 @@ async function resolveLinkFields(
 
 export async function POST(request: NextRequest) {
   try {
+    const denied = await requireProxyAuth(request);
+    if (denied) return denied;
+
     const body = await request.json();
 
     // ── Mode: clear-cache ─────────────────────────────────────────────────────
@@ -415,6 +420,8 @@ export async function POST(request: NextRequest) {
       if (!ceUrl || !Array.isArray(keyValues) || keyValues.length === 0) {
         return NextResponse.json({ existing: [] });
       }
+      const ceDenied = await ssrfDenied(ceUrl, "ivantiUrl");
+      if (ceDenied) return NextResponse.json(ceDenied, { status: 400 });
       const resolvedCeKey  = ceApiKey ?? "";
       const resolvedCeBo   = encodeBoForUrl(ceBo ?? "CI__Computers");
       const keyField       = ceKey ?? "Name";
@@ -483,6 +490,8 @@ export async function POST(request: NextRequest) {
       if (!m2mUrl || !m2mRel || !m2mData) {
         return NextResponse.json({ error: "M2M mode requires ivantiUrl, relationshipName, and data" }, { status: 400 });
       }
+      const m2mDenied = await ssrfDenied(m2mUrl, "ivantiUrl");
+      if (m2mDenied) return NextResponse.json(m2mDenied, { status: 400 });
 
       const m2mBase   = m2mUrl.replace(/\/$/, "");
       const m2mApiKey = m2mApiKeyRaw ?? "";
@@ -826,6 +835,9 @@ export async function POST(request: NextRequest) {
 
     // ── Direct DELETE by known RecID (fast path used by resetTask) ───────────
     // Bypasses BO name probe and upsert lookup — just DELETE the record directly.
+    const mainDenied = await ssrfDenied(ivantiUrl, "ivantiUrl");
+    if (mainDenied) return NextResponse.json(mainDenied, { status: 400 });
+
     if (method === "DELETE" && directRecId && directBoName) {
       const base = ivantiUrl.replace(/\/$/, "");
       const resolvedKey = apiKey ?? "";
@@ -1773,6 +1785,9 @@ async function fetchMetadataFields(
 // Returns: { rows: [...], count: N }
 export async function PUT(request: NextRequest) {
   try {
+    const denied = await requireProxyAuth(request);
+    if (denied) return denied;
+
     const body = await request.json();
     const { ivantiUrl, apiKey, businessObject, tenantId, top, skip } = body as {
       ivantiUrl: string;
@@ -1786,6 +1801,8 @@ export async function PUT(request: NextRequest) {
     if (!ivantiUrl) {
       return NextResponse.json({ error: "Missing ivantiUrl" }, { status: 400 });
     }
+    const putDenied = await ssrfDenied(ivantiUrl, "ivantiUrl");
+    if (putDenied) return NextResponse.json(putDenied, { status: 400 });
 
     const resolvedKey    = apiKey         ?? "";
     const resolvedObject = encodeBoForUrl(businessObject ?? "CI__Computers");
